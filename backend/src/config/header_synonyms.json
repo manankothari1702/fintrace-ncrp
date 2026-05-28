@@ -1,0 +1,93 @@
+{
+  "ack_no": [
+    "Acknowledgement No",
+    "Ack No",
+    "Acknowledgement Number",
+    "Complaint Number",
+    "NCRP No"
+  ],
+  "complaint_date": [
+    "Complaint Date",
+    "Complaint Dt"
+  ],
+  "victim_account": [
+    "Victim Account No",
+    "Victim A/C",
+    "Victim Account"
+  ],
+  "victim_bank": [
+    "Victim Bank",
+    "Victim Bank Name"
+  ],
+  "beneficiary_account": [
+    "Beneficiary A/C",
+    "Beneficiary Account",
+    "Bene Account",
+    "Recipient A/C"
+  ],
+  "beneficiary_bank": [
+    "Beneficiary Bank",
+    "Beneficiary Bank Name",
+    "Bene Bank"
+  ],
+  "beneficiary_name": [
+    "Beneficiary Name",
+    "Bene Name"
+  ],
+  "ifsc_code": [
+    "IFSC Code",
+    "IFSC",
+    "Bene IFSC"
+  ],
+  "transaction_date": [
+    "Transaction Date",
+    "Txn Date",
+    "Trans Date"
+  ],
+  "transaction_amount": [
+    "Transaction Amount",
+    "Txn Amount",
+    "Amount",
+    "Amount (INR)"
+  ],
+  "disputed_amount": [
+    "Disputed Amount",
+    "Dispute Amount"
+  ],
+  "utr_no": [
+    "UTR/Reference No",
+    "UTR No",
+    "Reference No",
+    "Ref No",
+    "RRN",
+    "Transaction Ref No"
+  ],
+  "payment_mode": [
+    "Payment Mode",
+    "Mode of Payment",
+    "Mode"
+  ],
+  "layer_no": [
+    "Layer No",
+    "Layer",
+    "Layer Number"
+  ],
+  "atm_id": [
+    "ATM ID",
+    "ATM Id"
+  ],
+  "atm_location": [
+    "ATM Location",
+    "ATM Loc"
+  ],
+  "city": [
+    "City"
+  ],
+  "state": [
+    "State"
+  ],
+  "remarks": [
+    "Remarks",
+    "Remark"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "fintrace-ncrp-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FinTrace NCRP — backend analysis engine for cyber-fraud transaction trails.",
+  "main": "src/analyzers/analyzer.js",
+  "scripts": {
+    "test": "jest --testPathPatterns=src/__tests__",
+    "test:coverage": "jest --coverage --testPathPatterns=src/__tests__",
+    "test:watch": "jest --watch --testPathPatterns=src/__tests__"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dayjs": "^1.11.13",
+    "electron-log": "^5.2.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "multer": "^2.0.0",
+    "pdfkit": "^0.15.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2"
+  }
+}

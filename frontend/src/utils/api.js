@@ -1,0 +1,214 @@
+/**
+ * FinTrace NCRP — Axios API client.
+ *
+ * One configured Axios instance plus a typed function per backend route. The
+ * backend (backend/src/routes/ncrp.js) is mounted at `/api` on the loopback
+ * server, and replies with a uniform error envelope:
+ *
+ *   { "error": { "code": "...", "message": "...", "details"?: {...} } }
+ *
+ * The response interceptor unwraps that envelope into a normalised `ApiError`
+ * so every caller can rely on `err.code` / `err.message` regardless of whether
+ * the failure was an HTTP error, a network drop, or a timeout.
+ */
+
+import axios from 'axios';
+
+// Per spec: bare origin. The `/api` mount prefix lives on each path below so a
+// future reverse-proxy/base change is a one-line edit here.
+export const API_BASE_URL = 'http://127.0.0.1:3847';
+const API_PREFIX = '/api';
+
+/** Normalised error thrown by every client function. */
+export class ApiError extends Error {
+  constructor(message, { code = 'UNKNOWN', status = 0, details = null } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.status = status;
+    this.details = details;
+  }
+}
+
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// ─── Request interceptor ────────────────────────────────────────────
+// Stamp every request with a relative `/api` prefix unless it is already
+// absolute. Keeps each call site terse (`/ncrp/reports`).
+api.interceptors.request.use((config) => {
+  const url = config.url || '';
+  if (!/^https?:\/\//i.test(url) && !url.startsWith(API_PREFIX)) {
+    config.url = `${API_PREFIX}${url.startsWith('/') ? '' : '/'}${url}`;
+  }
+  return config;
+});
+
+// ─── Response interceptor ───────────────────────────────────────────
+// Pass success through untouched; fold every failure into an ApiError.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response) {
+      const { status, data } = error.response;
+      const env = data && typeof data === 'object' ? data.error : null;
+      throw new ApiError(
+        (env && env.message) || `Request failed with status ${status}.`,
+        { code: (env && env.code) || 'HTTP_ERROR', status, details: env && env.details },
+      );
+    }
+    if (error.request) {
+      throw new ApiError(
+        'Could not reach the FinTrace backend. Is it running on port 3847?',
+        { code: 'NETWORK_ERROR' },
+      );
+    }
+    throw new ApiError(error.message || 'Unexpected request error.', {
+      code: 'REQUEST_SETUP_ERROR',
+    });
+  },
+);
+
+export default api;
+
+// ════════════════════════════════════════════════════════════════════
+//  Endpoint functions — one per backend route.
+// ════════════════════════════════════════════════════════════════════
+
+/** Liveness probe. GET /api/health → { status, timestamp, dbPath }. */
+export const checkHealth = () => api.get('/health').then((r) => r.data);
+
+/**
+ * Upload an NCRP Excel export. Returns 202 immediately; analysis runs in the
+ * background, so poll {@link getReport} until analysis_status === 'complete'.
+ *
+ * @param {File} file - The .xlsx / .xls file from a file input or drop.
+ * @param {(percent: number) => void} [onProgress] - Upload progress (0–100).
+ * @returns {Promise<{ reportId: number, filename: string, rowCount: number, warnings: string[] }>}
+ */
+export function uploadReport(file, onProgress) {
+  const form = new FormData();
+  form.append('ncrpFile', file);
+  return api
+    .post('/ncrp/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000, // large files take longer to stream + persist
+      onUploadProgress: (e) => {
+        if (onProgress && e.total) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      },
+    })
+    .then((r) => r.data);
+}
+
+/** List all reports, newest first. */
+export const listReports = () => api.get('/ncrp/reports').then((r) => r.data);
+
+/** Full report with `analysis_json` parsed into an object. */
+export const getReport = (id) => api.get(`/ncrp/${id}`).then((r) => r.data);
+
+/** Delete a report and all its owned rows (cascade). */
+export const deleteReport = (id) => api.delete(`/ncrp/${id}`).then((r) => r.data);
+
+/**
+ * Paginated, filterable transaction listing.
+ * @param {number} id
+ * @param {object} [params] - page, limit, layer, bank, payment_mode,
+ *   date_from, date_to, min_amount, max_amount, search.
+ * @returns {Promise<{ data: object[], total: number, page: number, limit: number, total_pages: number }>}
+ */
+export const getTransactions = (id, params = {}) =>
+  api.get(`/ncrp/${id}/transactions`, { params }).then((r) => r.data);
+
+/** Persisted per-layer aggregates. */
+export const getLayers = (id) => api.get(`/ncrp/${id}/layers`).then((r) => r.data);
+
+/** Mule-detection rows from the analysis snapshot. */
+export const getMules = (id) => api.get(`/ncrp/${id}/mules`).then((r) => r.data);
+
+/** Lien worksheet rows. */
+export const getLiens = (id) => api.get(`/ncrp/${id}/lien`).then((r) => r.data);
+
+/**
+ * Insert or update a lien record by account.
+ * @param {number} id
+ * @param {{ account_no: string, lien_status?: string, remarks?: string }} payload
+ */
+export const saveLien = (id, payload) =>
+  api.post(`/ncrp/${id}/lien`, payload).then((r) => r.data);
+
+/** Draft lien-request letters (generated on first access). */
+export const getEmails = (id) => api.get(`/ncrp/${id}/emails`).then((r) => r.data);
+
+/**
+ * Update a draft email's status (e.g. mark a letter as sent).
+ * @param {number} id - Report id.
+ * @param {number} emailId - draft_emails row id.
+ * @param {'draft'|'sent'} status
+ */
+export const updateEmailStatus = (id, emailId, status) =>
+  api.post(`/ncrp/${id}/emails/${emailId}`, { status }).then((r) => r.data);
+
+/** Daily timeline from the analysis snapshot. */
+export const getTimeline = (id) => api.get(`/ncrp/${id}/timeline`).then((r) => r.data);
+
+/** Geography (by_state / by_city) from the analysis snapshot. */
+export const getGeography = (id) => api.get(`/ncrp/${id}/geography`).then((r) => r.data);
+
+/** Absolute URL to the dossier PDF download (open directly in a new tab). */
+export const reportPdfUrl = (id) => `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/pdf`;
+
+/**
+ * Map an {@link ApiError} to an officer-facing message per the Phase 6 error
+ * rules. Returns undefined for cases best served by the raw `error.message`
+ * (so {@link ErrorAlert} falls back to it):
+ *   • NETWORK_ERROR → backend is down.
+ *   • 404           → report missing.
+ *   • 5xx           → technical message + MINT support pointer.
+ *
+ * @param {ApiError|Error|null} error
+ * @returns {string|undefined}
+ */
+export function friendlyErrorMessage(error) {
+  if (!error) return undefined;
+  if (error.code === 'NETWORK_ERROR') {
+    return 'Backend not available. Please restart the application.';
+  }
+  if (error.status === 404) {
+    return 'Report not found. It may have been deleted.';
+  }
+  if (typeof error.status === 'number' && error.status >= 500) {
+    return `${error.message} — please contact MINT support.`;
+  }
+  return undefined;
+}
+
+/**
+ * Poll {@link getReport} until analysis settles ('complete' | 'error') or the
+ * attempt budget is exhausted. Used by the upload flow.
+ *
+ * @param {number} id
+ * @param {{ intervalMs?: number, maxAttempts?: number }} [opts]
+ * @returns {Promise<object>} The settled report.
+ */
+export function pollReportUntilDone(id, { intervalMs = 2000, maxAttempts = 30 } = {}) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  return (async () => {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const report = await getReport(id);
+      if (report.analysis_status === 'complete' || report.analysis_status === 'error') {
+        return report;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(intervalMs);
+    }
+    throw new ApiError('Analysis timed out. Please check the report status and retry.', {
+      code: 'ANALYSIS_TIMEOUT',
+    });
+  })();
+}

@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+frontend/dist/
+
+# Database files
+*.db
+*.sqlite
+backend/data/
+
+# Upload/Export folders
+backend/uploads/
+backend/exports/
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test artifacts
+backend/test.db
+backend/sample_ncrp.xlsx
+
+# Electron build cache
+.cache/
+
+# VS Code
+.vscode/
+
+# Coverage
+coverage/

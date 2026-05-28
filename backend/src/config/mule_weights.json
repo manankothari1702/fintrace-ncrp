@@ -1,0 +1,8 @@
+{
+  "passThrough": 30,
+  "cashoutSpeed": 20,
+  "txnCount": 15,
+  "crossCase": 20,
+  "geoSpread": 10,
+  "kycVariance": 5
+}
