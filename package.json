@@ -1,0 +1,85 @@
+{
+  "name": "fintrace-ncrp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FinTrace NCRP — offline-first Electron desktop app for cyber-fraud transaction analysis.",
+  "author": "M Intergraph Systems Pvt. Ltd.",
+  "license": "UNLICENSED",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:electron": "electron .",
+    "prebuild": "node scripts/prebuild.js",
+    "build:frontend": "cd frontend && npx vite build",
+    "build:win": "npm run build:frontend && npx electron-builder --win",
+    "build": "npm run build:win",
+    "rebuild-sqlite": "npx electron-rebuild -f -w better-sqlite3",
+    "rebuild:sqlite": "npx @electron/rebuild -f -w better-sqlite3 -v 33.4.11 --module-dir backend",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "call-bind-apply-helpers": "1.0.2",
+    "dayjs": "^1.11.13",
+    "electron-log": "^5.2.0",
+    "electron-updater": "^6.3.9",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "multer": "^2.0.0",
+    "pdfkit": "^0.15.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.mint.fintrace-ncrp",
+    "productName": "FinTrace NCRP",
+    "electronVersion": "33.4.11",
+    "copyright": "Copyright © 2024 M Intergraph Systems Pvt. Ltd.",
+    "forceCodeSigning": false,
+    "npmRebuild": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron/**/*",
+      "backend/src/**/*",
+      "backend/config/**/*",
+      "frontend/dist/**/*",
+      {
+        "from": "node_modules",
+        "to": "node_modules",
+        "filter": ["**/*", "!**/.bin/**", "!**/electron/**", "!**/electron-builder/**"]
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "assets/",
+        "to": "assets/"
+      }
+    ],
+    "asar": false,
+    "asarUnpack": [
+      "**/better-sqlite3/build/Release/*.node"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FinTrace NCRP"
+    }
+  }
+}
