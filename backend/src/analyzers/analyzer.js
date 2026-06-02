@@ -183,11 +183,18 @@ function istDayKey(iso) {
 /**
  * Classify a single transaction's cashout mode per FR-11.
  *
- *   • payment_mode contains 'ATM' OR atm_id present → ATM_WITHDRAWAL
+ *   • payment_mode contains 'ATM'/'AEPS' OR atm_id present → ATM_WITHDRAWAL
  *   • payment_mode contains 'POS'                    → POS_PURCHASE
  *   • payment_mode === 'UPI'                         → UPI_TRANSFER_OUT
  *   • payment_mode ∈ {IMPS, NEFT, RTGS}              → ONLINE_PURCHASE
  *   • otherwise                                      → UNKNOWN
+ *
+ * AEPS (Aadhaar-enabled biometric withdrawal at a banking correspondent) is a
+ * physical cash exit, indistinguishable from an ATM withdrawal for recovery
+ * purposes, so it is classified as ATM_WITHDRAWAL — this makes it count in the
+ * cash-exit totals, same-day-cashout detection (FR-12), and layer cashout_count
+ * with no other branch changes. The original 'AEPS' value is preserved in the
+ * row's payment_mode for display/filtering.
  *
  * @param {Record<string, unknown>} txn
  * @returns {string} One of CASHOUT_MODE.
@@ -195,7 +202,7 @@ function istDayKey(iso) {
 function classifyCashoutMode(txn) {
   const mode = (str(txn.payment_mode) || '').toUpperCase();
   const hasAtm = str(txn.atm_id) !== null;
-  if (mode.includes('ATM') || hasAtm) return CASHOUT_MODE.ATM;
+  if (mode.includes('ATM') || mode.includes('AEPS') || hasAtm) return CASHOUT_MODE.ATM;
   if (mode.includes('POS')) return CASHOUT_MODE.POS;
   if (mode === 'UPI') return CASHOUT_MODE.UPI;
   if (mode === 'IMPS' || mode === 'NEFT' || mode === 'RTGS') {
@@ -498,6 +505,8 @@ function buildAccountRollup(txns) {
         txn_count: 0,
         total_received: 0,
         total_cashed_out: 0,
+        disputed_received: 0,
+        disputed_cashed_out: 0,
         firstReceiptMs: null,
         firstExitMs: null,
         cashoutStates: new Set(),
@@ -511,6 +520,7 @@ function buildAccountRollup(txns) {
 
     a.txn_count += 1;
     a.total_received += amt;
+    a.disputed_received += num(t.disputed_amount);
     if (str(t.beneficiary_name)) a.names.add(str(t.beneficiary_name));
     if (str(t.beneficiary_bank)) a.banks.add(str(t.beneficiary_bank));
     if (str(t.ifsc_code)) a.ifscs.add(str(t.ifsc_code));
@@ -523,6 +533,7 @@ function buildAccountRollup(txns) {
 
     if (CASH_EXIT_MODES.has(t.cashout_mode)) {
       a.total_cashed_out += amt;
+      a.disputed_cashed_out += num(t.disputed_amount);
       if (ms !== null && (a.firstExitMs === null || ms < a.firstExitMs)) {
         a.firstExitMs = ms;
       }
@@ -537,11 +548,19 @@ function buildAccountRollup(txns) {
   for (const a of accounts.values()) {
     const isTerminal = a.minLayer >= maxLayer;
     const nonCashout = Math.max(0, a.total_received - a.total_cashed_out);
-    // Lien target = inflow not confirmed withdrawn as cash. Onward transfers
-    // are recoverable downstream, so they are not deducted here.
+    // Lien target = the DISPUTED (fraud-attributed) inflow not confirmed
+    // withdrawn as cash — NOT the gross transaction value. Each NCRP row carries
+    // a gross transaction_amount that can dwarf its disputed slice (e.g. a
+    // ₹40,00,000 transfer with only ₹500 disputed), so a transaction-based lien
+    // over-states recoverable funds by orders of magnitude (~100x on real
+    // files). Computed per unique account_no from the disputed_amount column.
+    // Onward transfers are recoverable downstream, so they are not deducted.
+    const disputedLien = Math.max(0, a.disputed_received - a.disputed_cashed_out);
     a.is_terminal = isTerminal;
     a.total_forwarded = round(a.total_cashed_out);
-    a.lien_eligible_amount = round(nonCashout);
+    a.lien_eligible_amount = round(disputedLien);
+    a.disputed_received = round(a.disputed_received);
+    a.disputed_cashed_out = round(a.disputed_cashed_out);
     a.total_received = round(a.total_received);
     a.total_cashed_out = round(a.total_cashed_out);
     // Mule pass-through: cash withdrawn + (non-terminal) remainder moved deeper.
@@ -674,17 +693,22 @@ function lienCalculation(rollup) {
   const rows = [];
   for (const a of rollup.values()) {
     if (a.lien_eligible_amount <= 0) continue;
+    // Report the disputed (fraud-attributed) figures so the note arithmetic is
+    // coherent with the disputed-based lien_eligible_amount. Fall back to the
+    // gross totals when a caller hands a rollup without the disputed fields.
+    const received = num(a.disputed_received != null ? a.disputed_received : a.total_received);
+    const cashed = num(a.disputed_cashed_out != null ? a.disputed_cashed_out : a.total_forwarded);
     rows.push({
       account_no: a.account_no,
       bank_name: a.bank_name,
       ifsc_code: a.ifsc_code,
       layer_no: Number.isFinite(a.minLayer) ? a.minLayer : null,
-      total_received: a.total_received,
-      total_forwarded: a.total_forwarded,
+      total_received: received,
+      total_forwarded: cashed,
       lien_eligible_amount: a.lien_eligible_amount,
       note:
-        `Received ${formatINR(a.total_received)}; ` +
-        `${formatINR(a.total_forwarded)} confirmed withdrawn as cash. ` +
+        `${formatINR(received)} of disputed funds received; ` +
+        `${formatINR(cashed)} confirmed withdrawn as cash. ` +
         `${formatINR(a.lien_eligible_amount)} not yet confirmed withdrawn — ` +
         `request lien (subject to available balance at bank).`,
     });

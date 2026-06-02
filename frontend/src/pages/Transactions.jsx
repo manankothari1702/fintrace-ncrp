@@ -22,7 +22,7 @@ import { getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 const PAGE_SIZES = [100, 250, 500];
-const PAYMENT_MODES = ['ATM', 'UPI', 'IMPS', 'NEFT', 'RTGS', 'POS'];
+const PAYMENT_MODES = ['UPI', 'IMPS', 'NEFT', 'RTGS', 'ATM', 'POS', 'AEPS', 'HOLD'];
 const BANKS = ['HDFC Bank', 'ICICI Bank', 'SBI', 'Axis Bank', 'Kotak', 'Yes Bank'];
 const CASH_EXIT_MODES = new Set(['ATM', 'POS']);
 

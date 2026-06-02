@@ -161,7 +161,7 @@ const TXN_FILTERS = Object.freeze({
   date_to:             { sql: 'transaction_date <= @date_to',                          bind: 'date_to' },
   amount_min:          { sql: 'transaction_amount >= @amount_min',                     bind: 'amount_min' },
   amount_max:          { sql: 'transaction_amount <= @amount_max',                     bind: 'amount_max' },
-  cashout_only:        { sql: "payment_mode IN ('ATM','POS')",                         bind: null },
+  cashout_only:        { sql: "payment_mode IN ('ATM','POS','AEPS')",                   bind: null },
 });
 
 // ─── Prepared-statement cache ────────────────────────────────────────

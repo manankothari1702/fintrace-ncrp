@@ -1,6 +1,7 @@
 {
   "ack_no": [
     "Acknowledgement No",
+    "Acknowledgement No.",
     "Ack No",
     "Acknowledgement Number",
     "Complaint Number",
@@ -13,22 +14,31 @@
   "victim_account": [
     "Victim Account No",
     "Victim A/C",
-    "Victim Account"
+    "Victim Account",
+    "Account No./ (Wallet /PG/PA) Id",
+    "Account No./(Wallet /PG/PA) Id",
+    "Account No./ (Wallet/PG/PA) Id"
   ],
   "victim_bank": [
     "Victim Bank",
-    "Victim Bank Name"
+    "Victim Bank Name",
+    "Bank/FIs",
+    "Bank/FI",
+    "Bank / FIs"
   ],
   "beneficiary_account": [
     "Beneficiary A/C",
     "Beneficiary Account",
     "Bene Account",
-    "Recipient A/C"
+    "Recipient A/C",
+    "Account No"
   ],
   "beneficiary_bank": [
     "Beneficiary Bank",
     "Beneficiary Bank Name",
-    "Bene Bank"
+    "Bene Bank",
+    "Action Taken By bank",
+    "Action Taken By Bank"
   ],
   "beneficiary_name": [
     "Beneficiary Name",
@@ -36,19 +46,26 @@
   ],
   "ifsc_code": [
     "IFSC Code",
+    "Ifsc Code",
     "IFSC",
     "Bene IFSC"
   ],
   "transaction_date": [
     "Transaction Date",
     "Txn Date",
-    "Trans Date"
+    "Trans Date",
+    "Withdrawal Date & Time",
+    "Withdrawal Date",
+    "Put on hold Date",
+    "Date"
   ],
   "transaction_amount": [
     "Transaction Amount",
     "Txn Amount",
     "Amount",
-    "Amount (INR)"
+    "Amount (INR)",
+    "Withdrawal Amount",
+    "Put on hold Amount"
   ],
   "disputed_amount": [
     "Disputed Amount",
@@ -60,7 +77,9 @@
     "Reference No",
     "Ref No",
     "RRN",
-    "Transaction Ref No"
+    "Transaction Ref No",
+    "Transaction Id / UTR Number",
+    "Transaction ID / UTR Number"
   ],
   "payment_mode": [
     "Payment Mode",
@@ -74,11 +93,17 @@
   ],
   "atm_id": [
     "ATM ID",
-    "ATM Id"
+    "ATM Id",
+    "TID",
+    "Terminal ID"
   ],
   "atm_location": [
     "ATM Location",
-    "ATM Loc"
+    "ATM Loc",
+    "Place/Location of ATM",
+    "Place of ATM",
+    "Place/Location Of ATM",
+    "Merchant Name"
   ],
   "city": [
     "City"
