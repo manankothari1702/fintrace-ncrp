@@ -40,3 +40,6 @@ backend/sample_ncrp.xlsx
 
 # Coverage
 coverage/
+
+*.xlsx
+*.xls
