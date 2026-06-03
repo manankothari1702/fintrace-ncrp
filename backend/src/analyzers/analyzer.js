@@ -1044,19 +1044,26 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     txns.map((t) => ({ ...t, cashout_mode: CASHOUT_MODE.UNKNOWN, same_day_cashout: 0 }))
   );
 
-  // Optional write-back of derived columns.
+  // Optional write-back of derived columns. Wrap the whole sweep in a single
+  // SQLite transaction: on a 50k-row file this is the difference between one
+  // fsync and 50k of them (each bare UPDATE auto-commits otherwise), and was
+  // the dominant cost of analysing a large report. better-sqlite3's
+  // db.transaction() returns a function that runs the body atomically.
   let transactionsUpdated = 0;
   if (options && options.db) {
     transactionsUpdated = runModule('cashoutWriteback', () => {
-      let n = 0;
-      for (const t of enriched) {
-        if (t.id === undefined || t.id === null) continue;
-        n += updateTransactionCashout(options.db, t.id, {
-          same_day_cashout: t.same_day_cashout,
-          cashout_mode: t.cashout_mode,
-        });
-      }
-      return n;
+      const writeAll = options.db.transaction((rows) => {
+        let n = 0;
+        for (const t of rows) {
+          if (t.id === undefined || t.id === null) continue;
+          n += updateTransactionCashout(options.db, t.id, {
+            same_day_cashout: t.same_day_cashout,
+            cashout_mode: t.cashout_mode,
+          });
+        }
+        return n;
+      });
+      return writeAll(enriched);
     }, 0);
   }
 

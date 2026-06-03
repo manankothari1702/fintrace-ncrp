@@ -20,5 +20,33 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // Split the heavy third-party libraries out of the entry chunk. recharts
+    // (+ its d3/victory transitive deps) was the bulk of the old 786 KB
+    // index-*.js; isolating it — plus the TanStack table/virtual stack and the
+    // React runtime — keeps the main chunk small and lets the browser cache
+    // each vendor group independently across releases.
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        // Three vendor buckets. `charts` (recharts + its d3/victory transitive
+        // deps) is the heavyweight and is only reached from the lazy Dashboard
+        // and Timeline pages, so it never touches first paint. `table` is the
+        // TanStack stack. Everything else — React, the router, axios — lands in
+        // one `vendor` chunk; keeping React and react-router together (rather
+        // than in separate buckets) avoids a circular chunk reference.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (
+            id.includes('recharts') ||
+            id.includes('victory-vendor') ||
+            id.includes('d3-')
+          ) {
+            return 'charts';
+          }
+          if (id.includes('@tanstack')) return 'table';
+          return 'vendor';
+        },
+      },
+    },
   },
 });

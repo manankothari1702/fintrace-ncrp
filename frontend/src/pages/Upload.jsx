@@ -19,7 +19,6 @@ import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
 import DataTable from '../components/DataTable.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import { formatCrore, formatINR, formatDate, formatNumber } from '../utils/format.js';
 import {
   uploadReport,
@@ -381,13 +380,12 @@ export default function Upload() {
           message={friendlyErrorMessage(reportsError)}
           onRetry={refreshReports}
         />
-      ) : reportsLoading ? (
-        <LoadingSpinner block label="Loading previous reports…" />
       ) : (
         <DataTable
           columns={reportColumns}
           data={reports}
-          emptyMessage="No reports uploaded yet."
+          loading={reportsLoading}
+          emptyMessage="No reports uploaded yet. Drop an NCRP Excel export above to analyse your first case."
           exportFilename="ncrp-reports.csv"
         />
       )}

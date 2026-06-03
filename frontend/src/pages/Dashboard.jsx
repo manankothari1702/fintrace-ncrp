@@ -31,6 +31,7 @@ import {
 import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber } from '../utils/format.js';
 import { getReport, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -147,8 +148,16 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="page">
-        <header className="page-header"><h1>Dashboard</h1></header>
-        <LoadingSpinner block label="Loading case overview…" />
+        <header className="page-header">
+          <h1>Dashboard</h1>
+          <p className="subtitle">Loading case overview…</p>
+        </header>
+        <SkeletonStats count={4} />
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', marginBottom: 20 }}>
+          <SkeletonChart />
+          <SkeletonChart />
+        </div>
+        <SkeletonTable rows={5} />
       </div>
     );
   }
@@ -283,15 +292,23 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {(analysis?.cashout_analysis?.atm_cashouts || []).map((a) => (
-                <tr key={a.atm_id}>
-                  <td>{a.atm_id}</td>
-                  <td>{a.atm_location || '—'}</td>
-                  <td>{a.state || '—'}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(a.amount)}</td>
-                  <td style={{ textAlign: 'right' }}>{formatNumber(a.count)}</td>
+              {(analysis?.cashout_analysis?.atm_cashouts || []).length === 0 ? (
+                <tr>
+                  <td colSpan={5}>
+                    <div className="empty-state">No ATM or POS cashouts were detected in this trail — funds may still be sitting in beneficiary accounts (check the Lien Tracker).</div>
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                (analysis?.cashout_analysis?.atm_cashouts || []).map((a) => (
+                  <tr key={a.atm_id}>
+                    <td>{a.atm_id || '—'}</td>
+                    <td>{a.atm_location || '—'}</td>
+                    <td>{a.state || '—'}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(a.amount)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatNumber(a.count)}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

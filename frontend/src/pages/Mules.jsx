@@ -17,6 +17,7 @@ import Badge from '../components/Badge.jsx';
 import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatPercent, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getMules, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -98,7 +99,16 @@ export default function Mules() {
   );
 
   if (loading) {
-    return <div className="page"><header className="page-header"><h1>Mule Account Detection</h1></header><LoadingSpinner block label="Scoring accounts…" /></div>;
+    return (
+      <div className="page">
+        <header className="page-header">
+          <h1>Mule Account Detection</h1>
+          <p className="subtitle">Scoring accounts…</p>
+        </header>
+        <SkeletonStats count={3} />
+        <SkeletonTable rows={8} />
+      </div>
+    );
   }
   if (error) {
     return (
@@ -133,7 +143,9 @@ export default function Mules() {
         columns={columns}
         data={filtered}
         renderExpanded={renderExpanded}
-        emptyMessage="No accounts match the current filters."
+        emptyMessage={mules.length === 0
+          ? 'No mule accounts detected. Every beneficiary account in this trail has a low pass-through ratio and stayed below the scoring threshold.'
+          : 'No accounts match the current filters. Try a different risk level, layer, or bank — or clear the filters above.'}
         exportFilename="mule-accounts.csv"
         toolbar={(
           <>

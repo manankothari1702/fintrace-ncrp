@@ -1,6 +1,11 @@
+import { memo } from 'react';
+
 /**
  * Metric tile for dashboards. White card with a coloured left border that
  * keys the metric to the app's colour grammar (money green, risk orange, …).
+ *
+ * Memoised: dashboards render four–eight of these in a grid and re-render on
+ * every poll tick / filter change while their own props rarely move.
  *
  * @param {object} props
  * @param {string} props.title - Short metric label (rendered uppercase).
@@ -10,7 +15,7 @@
  * @param {string} [props.color] - Left-border + value tint (CSS colour).
  * @param {{ direction: 'up'|'down', label: string }} [props.trend]
  */
-export default function StatCard({ title, value, subtitle, icon, color = 'var(--brand)', trend }) {
+function StatCard({ title, value, subtitle, icon, color = 'var(--brand)', trend }) {
   return (
     <div className="stat-card" style={{ borderLeftColor: color }}>
       <div className="stat-head">
@@ -35,3 +40,5 @@ export default function StatCard({ title, value, subtitle, icon, color = 'var(--
     </div>
   );
 }
+
+export default memo(StatCard);

@@ -66,6 +66,13 @@ export default function Emails() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Escape collapses the open letter (the expanded letter behaves like a modal).
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && openId !== null) setOpenId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openId]);
+
   const copyBody = (email) => {
     navigator.clipboard.writeText(email.body)
       .then(() => {
@@ -158,13 +165,13 @@ export default function Emails() {
       </div>
 
       {emails.length === 0 ? (
-        <div className="card card-pad"><div className="empty-state">No draft letters for this report.</div></div>
+        <div className="card card-pad"><div className="empty-state">No draft letters for this report. A lien-request letter is generated automatically for each bank once an account carries a recoverable (lien-eligible) balance — see the Lien Tracker.</div></div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {emails.map((email) => {
             const isOpen = openId === email.id;
             return (
-              <div className="card" key={email.id}>
+              <div className="card letter-card" key={email.id}>
                 <button
                   type="button"
                   onClick={() => setOpenId(isOpen ? null : email.id)}
@@ -179,29 +186,32 @@ export default function Emails() {
                   <span style={{ color: 'var(--brand)' }}>{isOpen ? '▾' : '▸'}</span>
                 </button>
 
-                {isOpen && (
-                  <div style={{ padding: '0 18px 18px', borderTop: '1px solid var(--border)' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', margin: '14px 0', fontSize: 13 }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Subject</span><span style={{ fontWeight: 600 }}>{email.subject}</span>
-                      <span style={{ color: 'var(--text-muted)' }}>To</span><span>{bankEmailPlaceholder(email.bank_name)} <em style={{ color: 'var(--text-muted)' }}>(placeholder)</em></span>
-                    </div>
-
-                    <pre style={{
-                      fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
-                      background: '#fafbfd', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                      padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
-                    }}>{email.body}</pre>
-
-                    <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                      <button type="button" className="btn btn-sm btn-primary" onClick={() => copyBody(email)}>
-                        {copiedId === email.id ? '✓ Copied!' : '📋 Copy to Clipboard'}
-                      </button>
-                      <button type="button" className="btn btn-sm" disabled={email.status === 'sent' || savingId === email.id} onClick={() => markSent(email)}>
-                        {email.status === 'sent' ? 'Marked as Sent' : savingId === email.id ? 'Saving…' : 'Mark as Sent'}
-                      </button>
-                    </div>
+                {/* Body stays mounted (hidden when collapsed) so the print
+                    stylesheet can reveal every letter at once for the case file. */}
+                <div
+                  className={`letter-body${isOpen ? '' : ' is-collapsed'}`}
+                  style={{ padding: '0 18px 18px', borderTop: '1px solid var(--border)' }}
+                >
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', margin: '14px 0', fontSize: 13 }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Subject</span><span style={{ fontWeight: 600 }}>{email.subject}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>To</span><span>{bankEmailPlaceholder(email.bank_name)} <em style={{ color: 'var(--text-muted)' }}>(placeholder)</em></span>
                   </div>
-                )}
+
+                  <pre style={{
+                    fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
+                    background: '#fafbfd', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                    padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
+                  }}>{email.body}</pre>
+
+                  <div className="letter-actions" style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                    <button type="button" className="btn btn-sm btn-primary" onClick={() => copyBody(email)}>
+                      {copiedId === email.id ? '✓ Copied!' : '📋 Copy to Clipboard'}
+                    </button>
+                    <button type="button" className="btn btn-sm" disabled={email.status === 'sent' || savingId === email.id} onClick={() => markSent(email)}>
+                      {email.status === 'sent' ? 'Marked as Sent' : savingId === email.id ? 'Saving…' : 'Mark as Sent'}
+                    </button>
+                  </div>
+                </div>
               </div>
             );
           })}

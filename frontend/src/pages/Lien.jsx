@@ -16,8 +16,8 @@ import { Link } from 'react-router-dom';
 
 import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatDate, formatPercent } from '../utils/format.js';
 import { getLiens, getReport, saveLien, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -160,7 +160,16 @@ export default function Lien() {
   };
 
   if (loading) {
-    return <div className="page"><header className="page-header"><h1>Lien Tracker</h1></header><LoadingSpinner block label="Loading lien worksheet…" /></div>;
+    return (
+      <div className="page">
+        <header className="page-header">
+          <h1>Lien Tracker</h1>
+          <p className="subtitle">Loading lien worksheet…</p>
+        </header>
+        <SkeletonStats count={4} />
+        <SkeletonTable rows={8} />
+      </div>
+    );
   }
   if (error) {
     return (
@@ -243,7 +252,7 @@ export default function Lien() {
             </thead>
             <tbody>
               {liens.length === 0 ? (
-                <tr><td colSpan={11}><div className="empty-state">No lien-eligible accounts for this report.</div></td></tr>
+                <tr><td colSpan={11}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail was already withdrawn as cash, so there is no remaining balance to place a lien on.</div></td></tr>
               ) : (
                 liens.map((l) => (
                   <tr key={l.id}>

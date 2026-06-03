@@ -10,7 +10,7 @@
  * `/` redirects to /upload — the natural entry point of the workflow.
  */
 
-import { Component, useState } from 'react';
+import { Component, Suspense, lazy, useState } from 'react';
 import {
   HashRouter,
   Navigate,
@@ -19,16 +19,23 @@ import {
 } from 'react-router-dom';
 
 import Sidebar from './components/Sidebar.jsx';
+import LoadingSpinner from './components/LoadingSpinner.jsx';
 import { ReportProvider } from './context/ReportContext.jsx';
 
+// Upload is the entry point (`/` redirects here), so it stays in the main
+// chunk — first paint must never wait on a lazy fetch. Every other page is
+// code-split into its own chunk, so the heavy chart/table libraries (recharts,
+// TanStack) load only when their page is first opened instead of bloating the
+// initial bundle.
 import UploadPage from './pages/Upload.jsx';
-import DashboardPage from './pages/Dashboard.jsx';
-import LayersPage from './pages/Layers.jsx';
-import MulesPage from './pages/Mules.jsx';
-import LienPage from './pages/Lien.jsx';
-import TransactionsPage from './pages/Transactions.jsx';
-import EmailsPage from './pages/Emails.jsx';
-import TimelinePage from './pages/Timeline.jsx';
+
+const DashboardPage = lazy(() => import('./pages/Dashboard.jsx'));
+const LayersPage = lazy(() => import('./pages/Layers.jsx'));
+const MulesPage = lazy(() => import('./pages/Mules.jsx'));
+const LienPage = lazy(() => import('./pages/Lien.jsx'));
+const TransactionsPage = lazy(() => import('./pages/Transactions.jsx'));
+const EmailsPage = lazy(() => import('./pages/Emails.jsx'));
+const TimelinePage = lazy(() => import('./pages/Timeline.jsx'));
 
 // ─── Global error boundary ───────────────────────────────────────────
 
@@ -83,18 +90,25 @@ export default function App() {
           <div className="app-shell">
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
             <main className={`app-main${collapsed ? ' is-collapsed' : ''}`}>
-              <Routes>
-                <Route path="/" element={<Navigate to="/upload" replace />} />
-                <Route path="/upload" element={<UploadPage />} />
-                <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/layers" element={<LayersPage />} />
-                <Route path="/mules" element={<MulesPage />} />
-                <Route path="/lien" element={<LienPage />} />
-                <Route path="/transactions" element={<TransactionsPage />} />
-                <Route path="/emails" element={<EmailsPage />} />
-                <Route path="/timeline" element={<TimelinePage />} />
-                <Route path="*" element={<Navigate to="/upload" replace />} />
-              </Routes>
+              <Suspense fallback={(
+                <div className="page">
+                  <LoadingSpinner block label="Loading…" />
+                </div>
+              )}
+              >
+                <Routes>
+                  <Route path="/" element={<Navigate to="/upload" replace />} />
+                  <Route path="/upload" element={<UploadPage />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/layers" element={<LayersPage />} />
+                  <Route path="/mules" element={<MulesPage />} />
+                  <Route path="/lien" element={<LienPage />} />
+                  <Route path="/transactions" element={<TransactionsPage />} />
+                  <Route path="/emails" element={<EmailsPage />} />
+                  <Route path="/timeline" element={<TimelinePage />} />
+                  <Route path="*" element={<Navigate to="/upload" replace />} />
+                </Routes>
+              </Suspense>
             </main>
           </div>
         </ReportProvider>

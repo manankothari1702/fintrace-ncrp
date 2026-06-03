@@ -26,8 +26,8 @@ import {
 } from 'recharts';
 
 import StatCard from '../components/StatCard.jsx';
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatDate, formatNumber } from '../utils/format.js';
 import { getReport, getTimeline, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -104,7 +104,17 @@ export default function Timeline() {
   const responseGap = daysBetween(fraudStart, uploadDate);
 
   if (loading) {
-    return <div className="page"><header className="page-header"><h1>Money Movement Timeline</h1></header><LoadingSpinner block label="Building timeline…" /></div>;
+    return (
+      <div className="page">
+        <header className="page-header">
+          <h1>Money Movement Timeline</h1>
+          <p className="subtitle">Building timeline…</p>
+        </header>
+        <SkeletonStats count={4} />
+        <div style={{ marginBottom: 20 }}><SkeletonChart height={340} /></div>
+        <SkeletonTable rows={6} />
+      </div>
+    );
   }
   if (error) {
     return (
@@ -118,6 +128,20 @@ export default function Timeline() {
             : friendlyErrorMessage(error)}
         />
         <div style={{ marginTop: 16 }}><Link className="btn btn-primary" to="/upload">← Go to Upload</Link></div>
+      </div>
+    );
+  }
+
+  if (timeline.length === 0) {
+    return (
+      <div className="page">
+        <header className="page-header"><h1>Money Movement Timeline</h1></header>
+        <div className="card card-pad">
+          <div className="empty-state">
+            No dated activity to plot. The uploaded file did not carry transaction
+            dates this analysis could read, so a day-by-day timeline cannot be drawn.
+          </div>
+        </div>
       </div>
     );
   }

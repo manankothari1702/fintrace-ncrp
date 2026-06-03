@@ -14,8 +14,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import Badge from '../components/Badge.jsx';
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonLine, SkeletonCards } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getLayers, getMules, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -76,8 +76,14 @@ export default function Layers() {
   if (loading) {
     return (
       <div className="page">
-        <header className="page-header"><h1>Layer Analysis</h1></header>
-        <LoadingSpinner block label="Tracing the layers…" />
+        <header className="page-header">
+          <h1>Layer Analysis</h1>
+          <p className="subtitle">Tracing the layers…</p>
+        </header>
+        <div className="card card-pad" style={{ marginBottom: 20 }}>
+          <SkeletonLine height={84} />
+        </div>
+        <SkeletonCards count={4} />
       </div>
     );
   }

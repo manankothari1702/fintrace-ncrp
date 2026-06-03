@@ -167,6 +167,11 @@ const CREATE_INDEXES = Object.freeze([
   'CREATE INDEX IF NOT EXISTS idx_txn_layer_no           ON ncrp_transactions(layer_no)',
   'CREATE INDEX IF NOT EXISTS idx_txn_transaction_date   ON ncrp_transactions(transaction_date)',
   'CREATE INDEX IF NOT EXISTS idx_txn_payment_mode       ON ncrp_transactions(payment_mode)',
+  // Composite index matching the Transaction Browser's hot query: filter by
+  // report_id, then ORDER BY transaction_date DESC, id DESC. Without it, every
+  // page on a 50k-row report sorts the whole report in memory (>100ms); with
+  // it SQLite walks the index backwards and the LIMIT/OFFSET is a cheap slice.
+  'CREATE INDEX IF NOT EXISTS idx_txn_report_date        ON ncrp_transactions(report_id, transaction_date DESC, id DESC)',
 
   // layer_analysis: prevent dupes + enable per-report lookup
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_layer_report_layer ON layer_analysis(report_id, layer_no)',

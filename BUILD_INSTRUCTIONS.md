@@ -1,7 +1,7 @@
 # FinTrace NCRP — Windows Build Guide
 
 End-to-end instructions for building the **FinTrace NCRP** Windows installer
-(`FinTrace NCRP Setup 1.0.0.exe`) from a fresh checkout on a clean Windows
+(`FinTrace NCRP Setup 0.1.0.exe`) from a fresh checkout on a clean Windows
 machine.
 
 ---
@@ -132,7 +132,7 @@ cached at `%LOCALAPPDATA%\electron\Cache`). Subsequent builds are faster.
 
 ```
 dist/
-├── FinTrace NCRP Setup 1.0.0.exe   ← the installer you ship
+├── FinTrace NCRP Setup 0.1.0.exe   ← the installer you ship
 ├── win-unpacked/                   ← unpackaged app for quick smoke-test
 └── builder-effective-config.yaml   ← effective electron-builder config (debug)
 ```
@@ -148,7 +148,7 @@ Smoke-test the unpacked build directly without installing:
 ## 8. Install and verify
 
 ```powershell
-.\dist\"FinTrace NCRP Setup 1.0.0.exe"
+.\dist\"FinTrace NCRP Setup 0.1.0.exe"
 ```
 
 The installer:
@@ -175,7 +175,7 @@ Recommended before shipping any release:
 1. Spin up a fresh Windows 10/11 VM (Hyper-V, VirtualBox, or Parallels).
 2. **Do NOT install Node.js, Python, or VS Build Tools.** The whole point is to
    verify the installer is self-contained.
-3. Copy `FinTrace NCRP Setup 1.0.0.exe` to the VM and run it.
+3. Copy `FinTrace NCRP Setup 0.1.0.exe` to the VM and run it.
 4. Walk through the install wizard, launch the app, repeat the smoke test from
    step 8.
 5. Uninstall via **Settings → Apps & features** and confirm:
@@ -203,11 +203,12 @@ repackage.
 
 ## 11. Version bumps
 
-1. Update `version` in the root `package.json` (e.g. `1.0.0` → `1.0.1`).
-2. Update `frontend/package.json` and `backend/package.json` to match
-   (optional but recommended for traceability).
+1. Update `version` in the root `package.json` (e.g. `0.1.0` → `0.1.1`).
+2. Update `frontend/package.json` and `backend/package.json` to match, plus the
+   `APP_VERSION` constant in `frontend/src/components/Sidebar.jsx` (the version
+   shown in the sidebar footer).
 3. Re-run `npm run build:win`. The new installer name reflects the version:
-   `FinTrace NCRP Setup 1.0.1.exe`.
+   `FinTrace NCRP Setup 0.1.1.exe`.
 
 ---
 

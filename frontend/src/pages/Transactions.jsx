@@ -15,8 +15,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { SkeletonLine } from '../components/Skeleton.jsx';
 import { formatINR, formatDateTime, formatNumber } from '../utils/format.js';
 import { getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -25,6 +25,9 @@ const PAGE_SIZES = [100, 250, 500];
 const PAYMENT_MODES = ['UPI', 'IMPS', 'NEFT', 'RTGS', 'ATM', 'POS', 'AEPS', 'HOLD'];
 const BANKS = ['HDFC Bank', 'ICICI Bank', 'SBI', 'Axis Bank', 'Kotak', 'Yes Bank'];
 const CASH_EXIT_MODES = new Set(['ATM', 'POS']);
+// High-value transactions (over ₹1,00,000) are tinted orange so an officer can
+// spot the big movements at a glance while scanning a long trail.
+const HIGH_AMOUNT_THRESHOLD = 100000;
 
 const EMPTY_FILTERS = {
   page: 1,
@@ -126,6 +129,16 @@ export default function Transactions() {
     return () => { cancelled = true; };
   }, [filters, reportId]);
 
+  // Keyboard: Escape collapses the filter panel (the only modal-like surface on
+  // this page) so an officer can clear the chrome and focus the table.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape' && showFilters) setShowFilters(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showFilters]);
+
   // Debounce the search box (300ms) → folds into filters.page = 1.
   const onSearchChange = (value) => {
     setSearchText(value);
@@ -133,6 +146,14 @@ export default function Transactions() {
     searchTimer.current = setTimeout(() => {
       setFilters((f) => ({ ...f, search: value, page: 1 }));
     }, 300);
+  };
+
+  // Enter applies the current search immediately instead of waiting out the
+  // 300ms debounce — the expected "submit" affordance for a search box.
+  const onSearchKeyDown = (e) => {
+    if (e.key !== 'Enter') return;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    setFilters((f) => ({ ...f, search: e.target.value, page: 1 }));
   };
 
   const setFilter = (patch) => setFilters((f) => ({ ...f, ...patch, page: 1 }));
@@ -198,7 +219,7 @@ export default function Transactions() {
     <div className="page">
       <header className="page-header">
         <h1>All Transactions</h1>
-        <p className="subtitle">{resp ? `${formatNumber(resp.total)} transactions` : 'Loading…'} · cashout rows tinted red, ⚡ marks same-day cashouts</p>
+        <p className="subtitle">{resp ? `${formatNumber(resp.total)} transactions` : 'Loading…'} · cashout rows tinted red, ⚡ marks same-day cashouts, amounts over ₹1L in orange</p>
       </header>
 
       {/* Collapsible filter panel */}
@@ -212,6 +233,7 @@ export default function Transactions() {
             placeholder="Search account / name / UTR / IFSC…"
             value={searchText}
             onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={onSearchKeyDown}
             style={{ minWidth: 280 }}
           />
           <span className="spacer" />
@@ -264,7 +286,12 @@ export default function Transactions() {
       {/* Virtualized table */}
       <div className="card card-pad">
         {loading && !resp ? (
-          <LoadingSpinner block label="Loading transactions…" />
+          <div>
+            <SkeletonLine height={32} style={{ marginBottom: 12 }} />
+            {Array.from({ length: 10 }).map((_, i) => (
+              <SkeletonLine key={i} height={20} style={{ margin: '12px 0' }} />
+            ))}
+          </div>
         ) : rows.length === 0 ? (
           <div className="empty-state">
             No transactions match the current filters. Try widening the date range or clearing filters.
@@ -285,23 +312,29 @@ export default function Transactions() {
                   {virtualItems.map((vi) => {
                     const t = rows[vi.index];
                     const isCashout = CASH_EXIT_MODES.has(t.payment_mode) || t.cashout_mode === 'ATM_WITHDRAWAL' || t.cashout_mode === 'POS_PURCHASE';
+                    const isHighValue = Number(t.transaction_amount) > HIGH_AMOUNT_THRESHOLD;
                     return (
                       <tr key={t.id} style={isCashout ? { background: '#FFF5F5' } : undefined}>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {t.same_day_cashout ? <span title="Same-day cashout" style={{ marginRight: 4 }}>⚡</span> : null}
                           {formatDateTime(t.transaction_date)}
                         </td>
-                        <td>{t.beneficiary_account}</td>
-                        <td>{t.beneficiary_name}</td>
-                        <td>{t.beneficiary_bank}</td>
-                        <td>{t.ifsc_code}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(t.transaction_amount)}</td>
+                        <td>{t.beneficiary_account || '—'}</td>
+                        <td>{t.beneficiary_name || '—'}</td>
+                        <td>{t.beneficiary_bank || '—'}</td>
+                        <td>{t.ifsc_code || '—'}</td>
+                        <td
+                          style={{ textAlign: 'right', fontWeight: 600, color: isHighValue ? 'var(--accent-orange)' : undefined }}
+                          title={isHighValue ? 'High-value transaction (over ₹1,00,000)' : undefined}
+                        >
+                          {formatINR(t.transaction_amount)}
+                        </td>
                         <td style={{ textAlign: 'right' }}>{formatINR(t.disputed_amount)}</td>
-                        <td>{t.payment_mode}</td>
+                        <td>{t.payment_mode || '—'}</td>
                         <td>L{t.layer_no}</td>
-                        <td>{t.utr_no}</td>
-                        <td>{t.city}</td>
-                        <td>{t.state}</td>
+                        <td>{t.utr_no || '—'}</td>
+                        <td>{t.city || '—'}</td>
+                        <td>{t.state || '—'}</td>
                       </tr>
                     );
                   })}

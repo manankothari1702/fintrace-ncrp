@@ -586,3 +586,146 @@ table.data-table tbody tr:hover {
 .boundary-fallback .card-pad {
   max-width: 560px;
 }
+
+/* ─── Skeleton loaders ───────────────────────────────────────────────
+   Shape-matched placeholders shown while a page's data is in flight, so
+   the layout settles into place instead of flashing a bare spinner. They
+   reuse the same shimmer animation as the table skeleton rows. */
+
+.skeleton {
+  background: linear-gradient(90deg, #eef1f6 25%, #e3e8f0 37%, #eef1f6 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.3s ease infinite;
+  border-radius: 6px;
+}
+
+.skeleton-line {
+  height: 12px;
+  margin: 8px 0;
+}
+
+.skeleton-stat {
+  height: 92px;
+}
+
+.skeleton-chart {
+  height: 280px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .skeleton-row,
+  .spinner {
+    animation: none;
+  }
+}
+
+/* ─── Responsive: narrow screens (< 1200px) ──────────────────────────
+   Below the design width the wide data tables would otherwise crush their
+   columns; force them to keep a sensible minimum width and scroll
+   horizontally inside their wrapper instead. */
+
+@media (max-width: 1200px) {
+  .page {
+    padding: 20px 18px;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table-wrap > table.data-table {
+    min-width: 920px;
+  }
+}
+
+/* ─── Print stylesheet ───────────────────────────────────────────────
+   Optimised for the Lien worksheet and the Draft Emails letters, which
+   officers print for the case file. Strips the app chrome (sidebar,
+   buttons, toolbars, filters, toasts), flattens cards, repeats table
+   headers across pages, and keeps rows/letters from splitting mid-break.
+   Collapsed letter bodies are revealed so the whole set prints at once. */
+
+@media print {
+  :root {
+    --bg: #ffffff;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+    font-size: 11pt;
+  }
+
+  /* Hide everything that is interactive-only or pure navigation. */
+  .sidebar,
+  .collapse-btn,
+  .btn,
+  .table-toolbar,
+  .table-footer,
+  .col-filter,
+  .dropzone,
+  .sort-indicator,
+  [role="status"] {
+    display: none !important;
+  }
+
+  /* Reclaim the full page width once the sidebar is gone. */
+  .app-main,
+  .app-main.is-collapsed {
+    margin-left: 0 !important;
+  }
+
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  /* Flatten cards so they read as document sections, not UI tiles. */
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #bbb;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 12px;
+  }
+
+  /* Tables: repeat the header on every printed page, never split a row. */
+  table.data-table thead {
+    display: table-header-group;
+  }
+
+  table.data-table thead th {
+    background: #e9eef5 !important;
+    color: #000 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  table.data-table tbody tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Draft Emails: print every letter (even collapsed ones), each starting
+     on a fresh page so they detach cleanly into the file. */
+  .letter-body.is-collapsed {
+    display: block !important;
+  }
+
+  .letter-card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .letter-card + .letter-card {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  /* Don't append raw URLs after links when printing. */
+  a[href]::after {
+    content: '';
+  }
+}

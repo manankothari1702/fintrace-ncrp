@@ -896,7 +896,9 @@ function parseNcrpFile(filePath) {
   }
   if (duplicateCount > 0) {
     warnings.push(
-      `${duplicateCount} duplicate row(s) detected (same UTR + beneficiary account + amount + date)`
+      `${duplicateCount} duplicate row(s) detected (identical UTR, account, amount and date). ` +
+      'The same transaction often appears in more than one NCRP channel sheet — ' +
+      'this is normal NCRP portal behaviour and does not indicate a problem with your file.'
     );
   }
 

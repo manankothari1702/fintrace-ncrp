@@ -25,7 +25,7 @@
  * @param {(rowData: any) => React.ReactNode} [props.renderExpanded] - When set,
  *   rows become click-to-expand and this renders the detail panel below a row.
  */
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import {
   flexRender,
   getCoreRowModel,
@@ -86,7 +86,7 @@ function SkeletonBody({ columnCount, rows = 8 }) {
   );
 }
 
-export default function DataTable({
+function DataTable({
   columns,
   data,
   loading = false,
@@ -271,3 +271,5 @@ export default function DataTable({
     </div>
   );
 }
+
+export default memo(DataTable);

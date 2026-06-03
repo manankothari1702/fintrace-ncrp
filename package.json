@@ -1,6 +1,6 @@
 {
   "name": "fintrace-ncrp",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "FinTrace NCRP — offline-first Electron desktop app for cyber-fraud transaction analysis.",
   "author": "M Intergraph Systems Pvt. Ltd.",

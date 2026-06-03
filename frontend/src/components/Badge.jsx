@@ -9,6 +9,8 @@
  * color-mix, falling back gracefully if the value is a CSS variable.
  */
 
+import { memo } from 'react';
+
 import { getLienStatusColor, getMuleRiskColor, getMuleRiskLabel } from '../utils/format';
 
 /**
@@ -19,7 +21,7 @@ import { getLienStatusColor, getMuleRiskColor, getMuleRiskLabel } from '../utils
  * @param {string|number} [props.value] - Status string (lien) or score (risk).
  * @param {boolean} [props.dot=true] - Show the leading status dot.
  */
-export default function Badge({ children, color, variant = 'plain', value, dot = true }) {
+function Badge({ children, color, variant = 'plain', value, dot = true }) {
   let resolvedColor = color;
   let label = children;
 
@@ -48,3 +50,5 @@ export default function Badge({ children, color, variant = 'plain', value, dot =
     </span>
   );
 }
+
+export default memo(Badge);
