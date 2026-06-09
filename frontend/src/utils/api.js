@@ -159,11 +159,66 @@ export const getTimeline = (id) => api.get(`/ncrp/${id}/timeline`).then((r) => r
 /** Geography (by_state / by_city) from the analysis snapshot. */
 export const getGeography = (id) => api.get(`/ncrp/${id}/geography`).then((r) => r.data);
 
-/** Absolute URL to the dossier PDF download (open directly in a new tab). */
+/** Absolute URL to the dossier PDF download (browser/dev: open in a new tab). */
 export const reportPdfUrl = (id) => `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/pdf`;
 
 /** Absolute URL to the multi-sheet Excel workbook download. */
 export const reportExcelUrl = (id) => `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/excel`;
+
+/**
+ * True when running inside the packaged Electron shell (preload bridge present).
+ * In that environment new windows are denied, so a browser-style blob/attachment
+ * download cannot work — exports must round-trip through the OS handler via IPC.
+ */
+export const isElectron = () =>
+  typeof window !== 'undefined' &&
+  window.fintrace &&
+  typeof window.fintrace.openFile === 'function';
+
+/**
+ * Open the dossier PDF for a report.
+ *
+ *   • Electron → ask the backend to write the PDF to the per-user exports folder
+ *     (`?mode=file` → `{ fileName }`) and open it through the OS handler over IPC.
+ *   • Browser (Vite dev) → open the streaming attachment URL in a new tab.
+ *
+ * @param {number} id
+ * @returns {Promise<void>}
+ */
+export async function openReportPdf(id) {
+  if (isElectron()) {
+    const { fileName } = await api
+      .get(`/ncrp/${id}/pdf`, { params: { mode: 'file' } })
+      .then((r) => r.data);
+    const res = await window.fintrace.openFile(fileName);
+    if (!res || !res.ok) {
+      throw new ApiError((res && res.error) || 'Could not open the PDF.', { code: 'OPEN_FAILED' });
+    }
+    return;
+  }
+  window.open(reportPdfUrl(id), '_blank', 'noopener');
+}
+
+/**
+ * Open the multi-sheet Excel workbook for a report. Same dual behaviour as
+ * {@link openReportPdf}.
+ *
+ * @param {number} id
+ * @returns {Promise<void>}
+ */
+export async function openReportExcel(id) {
+  if (isElectron()) {
+    const { fileName } = await api
+      .get(`/ncrp/${id}/excel`, { params: { mode: 'file' } })
+      .then((r) => r.data);
+    const res = await window.fintrace.openFile(fileName);
+    if (!res || !res.ok) {
+      throw new ApiError((res && res.error) || 'Could not open the workbook.', { code: 'OPEN_FAILED' });
+    }
+    return;
+  }
+  window.open(reportExcelUrl(id), '_blank', 'noopener');
+}
 
 /**
  * Map an {@link ApiError} to an officer-facing message per the Phase 6 error

@@ -31,6 +31,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const ALLOWED_CHANNELS = Object.freeze([
   'app:get-version',
   'shell:open-pdf',
+  'shell:open-file',
   'shell:open-exports',
   'dialog:save-pdf',
 ]);
@@ -68,6 +69,14 @@ contextBridge.exposeInMainWorld('fintrace', {
    * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
    */
   openPdf: (fileName) => invoke('shell:open-pdf', fileName),
+
+  /**
+   * Open a generated export file (PDF or XLSX) in its OS-default handler.
+   * The main process validates that the path is inside EXPORTS_DIR.
+   * @param {string} fileName - Bare file name (no slashes / backslashes).
+   * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+   */
+  openFile: (fileName) => invoke('shell:open-file', fileName),
 
   /**
    * Open the exports/ folder in the OS file manager.

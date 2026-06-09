@@ -345,16 +345,18 @@ function initAutoUpdater() {
 let EXPORTS_DIR_RUNTIME = '';
 
 /**
- * Resolve a renderer-supplied PDF file name against EXPORTS_DIR, rejecting any
- * path that escapes the folder (path traversal) or that doesn't exist.
+ * Resolve a renderer-supplied export file name against EXPORTS_DIR, rejecting
+ * any path that escapes the folder (path traversal), has a disallowed
+ * extension, or that doesn't exist.
  *
  * @param {unknown} fileName
+ * @param {RegExp} [extPattern] - Allowed extension(s). Defaults to PDF + XLSX.
  * @returns {string | null} Absolute, validated path, or null on rejection.
  */
-function resolveExportedPdf(fileName) {
+function resolveExportedFile(fileName, extPattern = /\.(pdf|xlsx)$/i) {
   if (typeof fileName !== 'string' || fileName.trim() === '') return null;
   if (/[\\/]/.test(fileName) || fileName.includes('..')) return null;
-  if (!/\.pdf$/i.test(fileName)) return null;
+  if (!extPattern.test(fileName)) return null;
 
   const candidate = path.resolve(EXPORTS_DIR_RUNTIME, fileName);
   const exportsRoot = path.resolve(EXPORTS_DIR_RUNTIME);
@@ -362,6 +364,11 @@ function resolveExportedPdf(fileName) {
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
   if (!fs.existsSync(candidate)) return null;
   return candidate;
+}
+
+/** PDF-only resolver — preserves the original contract for PDF-specific IPC. */
+function resolveExportedPdf(fileName) {
+  return resolveExportedFile(fileName, /\.pdf$/i);
 }
 
 function registerIpcHandlers() {
@@ -377,6 +384,23 @@ function registerIpcHandlers() {
     if (err) {
       log.error('shell.openPath failed:', err);
       return { ok: false, error: 'Could not open the PDF in the system viewer.' };
+    }
+    return { ok: true };
+  });
+
+  // Open any generated export (PDF or XLSX) in its OS-default handler. The
+  // renderer passes only the bare file name; resolveExportedFile pins it to
+  // EXPORTS_DIR and rejects traversal / unknown extensions.
+  ipcMain.handle('shell:open-file', async (_event, fileName) => {
+    const safePath = resolveExportedFile(fileName);
+    if (!safePath) {
+      log.warn('shell:open-file rejected for', fileName);
+      return { ok: false, error: 'Invalid or unknown export file.' };
+    }
+    const err = await shell.openPath(safePath);
+    if (err) {
+      log.error('shell.openPath failed:', err);
+      return { ok: false, error: 'Could not open the file in the system viewer.' };
     }
     return { ok: true };
   });

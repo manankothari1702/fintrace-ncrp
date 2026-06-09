@@ -7,13 +7,20 @@
  * SheetJS (already a backend dependency). One sheet per investigative view, so
  * the whole case can be handed to a prosecutor or a bank as a single file:
  *
- *   1. Summary            — headline figures + recovery breakdown.
- *   2. Layer Breakdown    — per-layer hop counts, amounts, fan-out, top banks.
- *   3. Lien Calculation   — recoverable balance per account (the worksheet a
- *                           bank acts on).
- *   4. Suspected Mules    — scored accounts with their suspicion reasons.
- *   5. Transactions       — the full raw ledger (every parsed leg).
- *   6. Money Flow Network — heaviest account→account edges + collectors.
+ *    1. Summary                  — headline figures + recovery breakdown.
+ *    2. Layer Breakdown          — per-layer hop counts, amounts, fan-out.
+ *    3. Lien Calculation         — recoverable balance per account.
+ *    4. Suspected Mules          — scored accounts with suspicion reasons.
+ *    5. Transactions             — the full raw ledger (every parsed leg).
+ *    6. Money Flow Network       — heaviest account→account edges + collectors.
+ *    7. Victim Accounts (Layer 0)— the victims and what each lost.
+ *    8. ATM Exit Details         — ATM withdrawal hotspots.
+ *    9. POS Exit Details         — POS / merchant cash-outs.
+ *   10. Daily Volume             — transfers vs cash-outs per day.
+ *   11. Hourly Pattern           — transaction activity by hour of day.
+ *   12. Bank Rankings            — per-bank received / sent / on-hold / lien.
+ *   13. Geographic Hotspots      — cash-out by state + top merchants.
+ *   14. Glossary                 — plain-language definitions of every term.
  *
  * Returns a Buffer the route streams as an attachment. Amounts are written as
  * real numbers (not pre-formatted strings) so the recipient can sort/sum in
@@ -38,6 +45,14 @@ function fmtDate(iso) {
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const p = (x) => String(x).padStart(2, '0');
   return `${p(d.getUTCDate())} ${M[d.getUTCMonth()]} ${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+/** ISO instant → "YYYY-MM-DD" calendar day (UTC), or '' for unparseable. @param {unknown} iso */
+function isoDay(iso) {
+  if (iso === null || iso === undefined || iso === '') return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
@@ -173,6 +188,166 @@ function generateReportExcel(bundle = {}) {
     ['AGGREGATOR / COLLECTOR ACCOUNTS'],
     ['Account No.', 'Bank', 'In-degree', 'Out-degree', 'Total In [Rs.]', 'Total Out [Rs.]'],
     ...aggs.map((a) => [a.account_no, a.bank || '', num(a.in_degree), num(a.out_degree), num(a.total_in), num(a.total_out)]),
+  ]);
+
+  // ── 7. Victim Accounts (Layer 0) ─────────────────────────────────────────
+  // The victims and what each sent into the fraud network. Prefer the analysis
+  // snapshot; fall back to aggregating Layer-1 victim_account legs from the
+  // raw ledger for reports analysed before victim_accounts existed.
+  let victimRows = Array.isArray(analysis.victim_accounts) ? analysis.victim_accounts : [];
+  if (victimRows.length === 0) {
+    const vmap = new Map();
+    for (const t of transactions) {
+      if (num(t.layer_no) === 1 && t.victim_account) {
+        const k = String(t.victim_account);
+        if (!vmap.has(k)) vmap.set(k, { account_no: k, txn_count: 0, amount_sent: 0 });
+        const e = vmap.get(k);
+        e.txn_count += 1;
+        e.amount_sent += num(t.transaction_amount);
+      }
+    }
+    victimRows = [...vmap.values()].sort((a, b) => b.amount_sent - a.amount_sent);
+  }
+  addSheet(wb, 'Victim Accounts (Layer 0)', [
+    ['Account No.', 'Transactions', 'Amount Sent [Rs.]'],
+    ...victimRows.map((v) => [v.account_no, num(v.txn_count), num(v.amount_sent)]),
+  ]);
+
+  // ── 8. ATM Exit Details ───────────────────────────────────────────────────
+  const geo = analysis.geography || {};
+  const cashAnalysis = analysis.cashout_analysis || {};
+  // City/State aren't carried on top_atms; enrich from the cashout analysis
+  // (matched on ATM id) when those columns were present in the NCRP export.
+  const atmLoc = new Map();
+  for (const ac of (cashAnalysis.atm_cashouts || [])) {
+    atmLoc.set(String(ac.atm_id), { city: ac.city, state: ac.state });
+  }
+  const topAtms = Array.isArray(geo.top_atms) ? geo.top_atms : [];
+  addSheet(wb, 'ATM Exit Details', [
+    ['ATM ID', 'Location', 'City', 'State', 'Amount [Rs.]', 'Txns', 'Accounts'],
+    ...topAtms.map((a) => {
+      const loc = atmLoc.get(String(a.atm_id)) || {};
+      return [a.atm_id || '', a.location || '', loc.city || '', loc.state || '',
+        num(a.amount), num(a.txn_count), num(a.account_count)];
+    }),
+  ]);
+
+  // ── 9. POS Exit Details ───────────────────────────────────────────────────
+  // POS cash-outs straight from the ledger. The merchant name and terminal id
+  // live in the atm_location / atm_id columns for POS legs.
+  const posRows = (transactions || [])
+    .filter((t) => String(t.payment_mode || '').toUpperCase() === 'POS');
+  addSheet(wb, 'POS Exit Details', [
+    ['Date', 'Account', 'Bank', 'Amount [Rs.]', 'Merchant', 'Terminal ID'],
+    ...posRows.map((t) => [
+      fmtDate(t.transaction_date), t.beneficiary_account || '', t.beneficiary_bank || '',
+      num(t.transaction_amount), t.atm_location || '', t.atm_id || '',
+    ]),
+  ]);
+
+  // ── 10. Daily Volume ──────────────────────────────────────────────────────
+  // Per calendar day, split into onward transfers vs cash exits. Cash exits are
+  // the ATM/POS channels; everything else is treated as an onward transfer/hop.
+  const isCashout = (t) => {
+    const pm = String(t.payment_mode || '').toUpperCase();
+    return pm === 'ATM' || pm === 'POS';
+  };
+  const dayMap = new Map();
+  for (const t of (transactions || [])) {
+    const day = isoDay(t.transaction_date);
+    if (!day) continue;
+    if (!dayMap.has(day)) dayMap.set(day, { date: day, tc: 0, ta: 0, cc: 0, ca: 0 });
+    const e = dayMap.get(day);
+    const amt = num(t.transaction_amount);
+    if (isCashout(t)) { e.cc += 1; e.ca += amt; } else { e.tc += 1; e.ta += amt; }
+  }
+  const dayRows = [...dayMap.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+  addSheet(wb, 'Daily Volume', [
+    ['Date', 'Transfer Count', 'Transfer Amount [Rs.]', 'Cashout Count', 'Cashout Amount [Rs.]'],
+    ...dayRows.map((d) => [d.date, d.tc, num(d.ta), d.cc, num(d.ca)]),
+  ]);
+
+  // ── 11. Hourly Pattern ────────────────────────────────────────────────────
+  // Activity by hour of day (00–23). Date-only legs bucket into hour 00.
+  const hours = Array.from({ length: 24 }, (_, h) => ({ h, count: 0, amount: 0 }));
+  for (const t of (transactions || [])) {
+    const d = new Date(t.transaction_date);
+    if (Number.isNaN(d.getTime())) continue;
+    const h = d.getUTCHours();
+    hours[h].count += 1;
+    hours[h].amount += num(t.transaction_amount);
+  }
+  addSheet(wb, 'Hourly Pattern', [
+    ['Hour', 'Transaction Count', 'Total Amount [Rs.]'],
+    ...hours.map((x) => [`${String(x.h).padStart(2, '0')}:00`, x.count, num(x.amount)]),
+  ]);
+
+  // ── 12. Bank Rankings ─────────────────────────────────────────────────────
+  // Per-bank totals aggregated from the per-account lien calculation (which
+  // carries the received / forwarded / on-hold / lien figures), with the raw
+  // transaction count joined in by beneficiary bank.
+  const lienCalc = Array.isArray(analysis.lien_calculation) ? analysis.lien_calculation : [];
+  const bankMap = new Map();
+  const ensureBank = (name) => {
+    if (!bankMap.has(name)) {
+      bankMap.set(name, { bank: name, accounts: 0, received: 0, sent: 0, on_hold: 0, lien: 0, txns: 0 });
+    }
+    return bankMap.get(name);
+  };
+  for (const l of lienCalc) {
+    const b = ensureBank(l.bank_name || 'Unknown');
+    b.accounts += 1;
+    b.received += num(l.total_received);
+    b.sent += num(l.onward_forwarded ?? l.total_forwarded);
+    b.on_hold += num(l.total_on_hold);
+    b.lien += num(l.lien_eligible_amount ?? l.lien_amount);
+  }
+  for (const t of (transactions || [])) {
+    if (t.beneficiary_bank && bankMap.has(t.beneficiary_bank)) {
+      bankMap.get(t.beneficiary_bank).txns += 1;
+    }
+  }
+  const bankRows = [...bankMap.values()].sort((a, b) => b.received - a.received);
+  addSheet(wb, 'Bank Rankings', [
+    ['Bank', 'Accounts', 'Total Received [Rs.]', 'Total Sent [Rs.]', 'On Hold [Rs.]', 'Lien [Rs.]', 'Txns'],
+    ...bankRows.map((b) => [
+      b.bank, b.accounts, num(b.received), num(b.sent), num(b.on_hold), num(b.lien), b.txns,
+    ]),
+  ]);
+
+  // ── 13. Geographic Hotspots ───────────────────────────────────────────────
+  const byState = Array.isArray(geo.by_state) ? geo.by_state : [];
+  const merchants = Array.isArray(geo.top_merchants) ? geo.top_merchants : [];
+  addSheet(wb, 'Geographic Hotspots', [
+    ['CASHOUT BY STATE'],
+    ['State', 'Amount [Rs.]', 'Txns', 'Share %'],
+    ...byState.map((s) => [s.state || '', num(s.amount), num(s.txn_count ?? s.count), num(s.pct)]),
+    [],
+    ['TOP MERCHANTS (POS)'],
+    ['Merchant', 'Type', 'Amount [Rs.]', 'Txns'],
+    ...merchants.map((m) => [m.name || '', m.type || 'Merchant', num(m.amount), num(m.txn_count)]),
+  ]);
+
+  // ── 14. Glossary ──────────────────────────────────────────────────────────
+  addSheet(wb, 'Glossary', [
+    ['Term', 'Definition'],
+    ['Victim Loss (Layer 1)', 'Disputed money that left the victim(s) and entered the fraud network at the first hop. This is the actual amount stolen.'],
+    ['Total Trail Disputed', 'Disputed amount summed across every layer. The same rupees are re-counted at each hop, so this exceeds the victim loss and is a reach metric, not a loss figure.'],
+    ['Layer', 'Distance (in hops) from the victim. Layer 1 receives directly from the victim; each further layer is one transfer further out toward cash-out.'],
+    ['Disputed Amount', 'The portion of a transaction flagged as fraud proceeds (as reported in the NCRP complaint), as opposed to the gross transaction amount.'],
+    ['Lien Amount', 'Funds still recoverable in an account: money received but not yet forwarded onward, withdrawn as cash, or already on hold. Subject to the actual balance confirmed by the bank.'],
+    ['On Hold', 'Amount a bank has already frozen / marked under hold for an account.'],
+    ['Cashed Out', 'Disputed funds withdrawn from the network as cash via ATM or POS — generally unrecoverable.'],
+    ['Mule Score', 'A 0–100 risk score for a beneficiary account. Higher means stronger indicators of being a money-mule (high velocity, many senders, same-day in/out, fast forwarding).'],
+    ['Risk Label', 'Banded mule score: HIGH (>= 70), MEDIUM, or LOW. HIGH accounts are priority targets for lien and KYC requests.'],
+    ['Fan-out Ratio', 'How widely funds spread at a layer — distinct destination accounts relative to source accounts. High fan-out signals deliberate layering.'],
+    ['Aggregator / Collector', 'An account that gathers funds from many senders (high in-degree) before forwarding — a hub in the money-flow network.'],
+    ['Same-day In/Out', 'An account that received and forwarded funds on the same calendar day — a classic pass-through mule behaviour.'],
+    ['ATM / POS Exit', 'Points where money left the banking system as cash: ATM withdrawals and POS (merchant terminal) transactions.'],
+    ['AEPS', 'Aadhaar Enabled Payment System — a cash-out channel using Aadhaar-authenticated withdrawals at banking agents.'],
+    ['UTR', 'Unique Transaction Reference — the bank-issued identifier for a fund transfer, used to trace a specific leg.'],
+    ['IFSC', 'Indian Financial System Code — identifies the specific bank branch holding an account.'],
+    ['ACK No.', 'NCRP acknowledgement number — the complaint reference this dossier is built from.'],
   ]);
 
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

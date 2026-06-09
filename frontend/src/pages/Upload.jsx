@@ -24,7 +24,7 @@ import {
   uploadReport,
   listReports,
   deleteReport,
-  reportPdfUrl,
+  openReportPdf,
   pollReportUntilDone,
   friendlyErrorMessage,
   ApiError,
@@ -174,9 +174,16 @@ export default function Upload() {
 
   // ── Previous-reports actions ───────────────────────────────────────────────
 
-  const handleDownloadPdf = useCallback((reportId) => {
-    // The backend generates the dossier on demand and streams it as a download.
-    window.open(reportPdfUrl(reportId), '_blank', 'noopener');
+  const handleDownloadPdf = useCallback(async (reportId) => {
+    // The backend generates the dossier on demand. In Electron it is written to
+    // the exports folder and opened via the OS handler over IPC (new windows are
+    // denied); in a browser it opens the streaming URL in a new tab.
+    setReportsError(null);
+    try {
+      await openReportPdf(reportId);
+    } catch (err) {
+      setReportsError(err);
+    }
   }, []);
 
   const handleDelete = useCallback(async (reportId) => {

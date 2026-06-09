@@ -858,10 +858,20 @@ function createNcrpRouter(db) {
     res.json(analysis && analysis.geography ? analysis.geography : { by_state: [], by_city: [] });
   });
 
-  // GET /api/ncrp/:id/pdf — generate the dossier and stream it as a download.
+  // GET /api/ncrp/:id/pdf — generate the dossier and return it.
+  //
+  // Two delivery modes:
+  //   • default            → stream the file as an attachment (browser / Vite dev).
+  //   • ?mode=file         → write to EXPORTS_DIR and return { fileName } JSON.
+  //     The packaged Electron renderer uses this because new windows are denied
+  //     (main.js setWindowOpenHandler), so it cannot rely on a browser download;
+  //     instead it opens the returned file via the OS handler over IPC.
   router.get('/ncrp/:id/pdf', async (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
+
+    const fileMode = req.query.mode === 'file';
+    console.log(`[ncrp] GET /ncrp/${report.id}/pdf (mode=${fileMode ? 'file' : 'download'})`);
 
     try {
       const analysis = parseAnalysis(report) || {};
@@ -885,6 +895,12 @@ function createNcrpRouter(db) {
         report_id: report.id, action: 'pdf.generated', details: { file: fileName },
       });
 
+      // Electron path: the file is already on disk in EXPORTS_DIR; hand the
+      // renderer just the bare name so it can open it via shell.openPath IPC.
+      if (fileMode) {
+        return res.json({ fileName });
+      }
+
       return res.download(outPath, fileName, (err) => {
         if (err) console.error('[ncrp] res.download failed:', err);
         if (err && !res.headersSent) {
@@ -900,10 +916,17 @@ function createNcrpRouter(db) {
     }
   });
 
-  // GET /api/ncrp/:id/excel — build the multi-sheet workbook and stream it.
+  // GET /api/ncrp/:id/excel — build the multi-sheet workbook and return it.
+  //
+  // Same dual delivery as /pdf: stream the buffer as an attachment by default,
+  // or (?mode=file) write it to EXPORTS_DIR and return { fileName } for the
+  // Electron renderer to open over IPC.
   router.get('/ncrp/:id/excel', (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
+
+    const fileMode = req.query.mode === 'file';
+    console.log(`[ncrp] GET /ncrp/${report.id}/excel (mode=${fileMode ? 'file' : 'download'})`);
 
     try {
       const analysis = parseAnalysis(report) || {};
@@ -926,6 +949,15 @@ function createNcrpRouter(db) {
       insertAuditLog(db, {
         report_id: report.id, action: 'excel.generated', details: { file: fileName },
       });
+
+      // Electron path: persist the workbook to EXPORTS_DIR and return its name
+      // so the renderer can open it via shell.openPath IPC (new windows are
+      // denied in the packaged app, so an attachment stream can't be saved).
+      if (fileMode) {
+        const outPath = path.join(EXPORTS_DIR, fileName);
+        fs.writeFileSync(outPath, buffer);
+        return res.json({ fileName });
+      }
 
       res.setHeader('Content-Type',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

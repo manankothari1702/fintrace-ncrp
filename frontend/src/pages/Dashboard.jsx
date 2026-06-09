@@ -34,7 +34,7 @@ import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatDate } from '../utils/format.js';
 import {
-  getReport, getTransactions, reportPdfUrl, reportExcelUrl,
+  getReport, getTransactions, openReportPdf, openReportExcel,
   friendlyErrorMessage, ApiError,
 } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -157,6 +157,22 @@ export default function Dashboard() {
   const [paymentSplit, setPaymentSplit] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Export feedback: which button is busy ('pdf' | 'excel' | null) + last error.
+  const [exporting, setExporting] = useState(null);
+  const [exportError, setExportError] = useState(null);
+
+  async function handleExport(kind) {
+    setExportError(null);
+    setExporting(kind);
+    try {
+      if (kind === 'pdf') await openReportPdf(report.id);
+      else await openReportExcel(report.id);
+    } catch (err) {
+      setExportError(err);
+    } finally {
+      setExporting(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -295,10 +311,34 @@ export default function Dashboard() {
           <p className="subtitle">{report.original_filename} · case overview &amp; recommended actions</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <a className="btn btn-sm" href={reportExcelUrl(report.id)} target="_blank" rel="noreferrer">⬇ Export Excel</a>
-          <a className="btn btn-sm btn-primary" href={reportPdfUrl(report.id)} target="_blank" rel="noreferrer">⬇ Export PDF</a>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => handleExport('excel')}
+            disabled={exporting !== null}
+          >
+            {exporting === 'excel' ? '… Exporting' : '⬇ Export Excel'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => handleExport('pdf')}
+            disabled={exporting !== null}
+          >
+            {exporting === 'pdf' ? '… Exporting' : '⬇ Export PDF'}
+          </button>
         </div>
       </header>
+
+      {exportError && (
+        <div style={{ marginBottom: 16 }}>
+          <ErrorAlert
+            error={exportError}
+            title="Export failed"
+            message={friendlyErrorMessage(exportError)}
+          />
+        </div>
+      )}
 
       {/* Row 1 — headline metrics (Victim Loss is the actual loss; Trail Disputed re-counts the same money across hops). */}
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
