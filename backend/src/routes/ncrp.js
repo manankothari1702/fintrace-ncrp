@@ -26,6 +26,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const XLSX = require('xlsx');
 
 // Optional dep — added in Phase 7. If the package isn't installed yet, fall
 // back to a no-op middleware so the routes still load during incremental dev.
@@ -245,6 +246,43 @@ function isExcelMagicBytes(filePath) {
       try { fs.closeSync(fd); } catch (_e) { /* ignore */ }
     }
   }
+}
+
+/**
+ * Second-line content gate (after the magic-byte check): confirm the workbook
+ * actually looks like an NCRP CompleteTrail export, not just any valid Excel
+ * file (or a text file SheetJS happily parses as a one-column CSV).
+ *
+ * A genuine NCRP sheet always carries at least one of the canonical header
+ * tokens. We read only the first few rows of each sheet (`sheetRows: 5`) so the
+ * scan is cheap even on a 50 MB workbook, and stop at the first match.
+ *
+ * @param {string} filePath
+ * @returns {boolean} true if any sheet's first rows contain an NCRP header token.
+ */
+const NCRP_HEADER_TOKEN = /layer|acknowledg|account\s*no|beneficiary|disputed|utr/i;
+function looksLikeNcrpFile(filePath) {
+  let wb;
+  try {
+    wb = XLSX.readFile(filePath, { sheetRows: 5, raw: true });
+  } catch (_e) {
+    return false; // unreadable as a workbook → certainly not an NCRP export
+  }
+  if (!Array.isArray(wb.SheetNames) || wb.SheetNames.length === 0) return false;
+  for (const name of wb.SheetNames) {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], {
+      header: 1, raw: true, defval: null, blankrows: false,
+    });
+    for (const row of aoa) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (cell !== null && cell !== undefined && NCRP_HEADER_TOKEN.test(String(cell))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /** Parse a stored account_list JSON column back to an array. @param {unknown} v */
@@ -544,6 +582,16 @@ function createNcrpRouter(db) {
         try { fs.unlinkSync(req.file.path); } catch (_e) { /* best effort */ }
         return sendError(res, 400, 'INVALID_FILE_CONTENT',
           'File does not appear to be a valid Excel workbook.');
+      }
+
+      // Content gate: a file can pass the magic-byte check (a real .xlsx of
+      // unrelated data) or be a text file SheetJS parses as CSV, yet carry none
+      // of the NCRP header tokens. Reject those before any DB work so we never
+      // ingest a 0-row "report" from a non-NCRP upload.
+      if (!looksLikeNcrpFile(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch (_e) { /* best effort */ }
+        return sendError(res, 400, 'INVALID_FILE_CONTENT',
+          'File does not appear to be an NCRP CompleteTrail export.');
       }
 
       const safeOriginalName = sanitizeOriginalFilename(req.file.originalname);
@@ -1064,4 +1112,11 @@ function createNcrpRouter(db) {
   return router;
 }
 
-module.exports = { createNcrpRouter, UPLOADS_DIR, EXPORTS_DIR };
+module.exports = {
+  createNcrpRouter,
+  UPLOADS_DIR,
+  EXPORTS_DIR,
+  // Upload content gates — exported for direct testing (accuracy_test.js).
+  isExcelMagicBytes,
+  looksLikeNcrpFile,
+};

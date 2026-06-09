@@ -836,6 +836,16 @@ function parseNcrpFile(filePath) {
       aoa, headerInfo, mapping, category
     );
 
+    // No Layer column on an accepted sheet that produced rows: every row was
+    // defaulted to Layer 1 (see parseLayer), which flattens the layer analysis.
+    // Surface it so the officer knows the layer breakdown is approximate.
+    if (mapping.layer_no === undefined && sheetRows.length > 0) {
+      warnings.push(
+        `Layer column not found in sheet '${sheetName}' — defaulting all rows to Layer 1. ` +
+        'This may affect layer analysis accuracy.'
+      );
+    }
+
     if (firstMapping === null) firstMapping = mapping;
     for (const r of sheetRows) allRows.push(r);
     totalSkippedRows += skipped;

@@ -765,13 +765,18 @@ function buildAccountRollup(txns) {
 
 // ─── Module 3 — mule detection ─────────────────────────────────────────
 
-/** Bonus signal weights layered on top of the six config weights (Module 8). */
+/**
+ * Bonus signal weights layered on top of the six base config weights (Module 8).
+ * Sourced from config/mule_weights.json so the scoring is fully config-driven and
+ * tunable without code changes; the literals below are fallbacks for older config
+ * files that predate these keys.
+ */
 const MULE_BONUS = Object.freeze({
-  bothSheets: 10,        // received via transfer AND cashed out
-  multiChannel: 8,       // used more than one cash-out channel (ATM + POS)
-  fanIn: 8,              // collects from two or more upstream accounts
-  highCashoutRatio: 10,  // withdrew as cash ≥ 90% of what it received
-  sameDayInOut: 7,       // money in and money out on the same calendar day
+  bothSheets: num(MULE_WEIGHTS.bothSheets) || 18,        // received via transfer AND cashed out
+  multiChannel: num(MULE_WEIGHTS.multiChannel) || 8,     // used more than one cash-out channel (ATM + POS)
+  fanIn: num(MULE_WEIGHTS.fanIn) || 8,                   // collects from two or more upstream accounts
+  highCashoutRatio: num(MULE_WEIGHTS.highCashoutRatio) || 15, // withdrew as cash ≥ 90% of what it received
+  sameDayInOut: num(MULE_WEIGHTS.sameDayInOut) || 17,    // money in and money out on the same calendar day
 });
 
 /**
