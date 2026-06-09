@@ -55,6 +55,37 @@ const CASH_EXIT_MODES = Object.freeze(
   new Set([CASHOUT_MODE.ATM, CASHOUT_MODE.POS])
 );
 
+/**
+ * Row kind — the fundamental distinction that makes FinTrace's numbers match a
+ * forensic reading of an NCRP CompleteTrail export (and CypherSOL).
+ *
+ * A CompleteTrail file mixes two very different kinds of rows on its channel
+ * sheets, and counting them all as "transactions" double-counts the same money:
+ *
+ *   • HOP   — a real fund movement between two DISTINCT accounts
+ *             (beneficiary_account ≠ victim_account, from the "Money Transfer
+ *             to" sheet). This is THE transaction — one laundering hop.
+ *   • EXIT  — a cash exit (ATM / POS / AEPS withdrawal). A *disposition* of money
+ *             already received, not a new transaction. Its account column is the
+ *             account-under-investigation (folded into beneficiary_account by the
+ *             parser's cross-sheet join, so beneficiary === victim).
+ *   • HOLD  — funds frozen by the holding bank ("Transaction put on hold"). Also
+ *             a disposition, also benef === victim.
+ *   • OTHER — self-referential transfers (benef === victim, e.g. a wallet round-
+ *             trip) and the misc "Other" / "Others Less Then 500" rows.
+ *
+ * Transaction counts, layer amounts, and the headline victim-loss are computed
+ * over HOP rows only; EXIT / HOLD feed the recovery / lien view as dispositions.
+ *
+ * @enum {string}
+ */
+const ROW_KIND = Object.freeze({
+  HOP: 'HOP',
+  EXIT: 'EXIT',
+  HOLD: 'HOLD',
+  OTHER: 'OTHER',
+});
+
 /** Mule risk-label thresholds against the 0-100 score. */
 const RISK_HIGH = 70;
 const RISK_MEDIUM = 40;
@@ -212,9 +243,56 @@ function classifyCashoutMode(txn) {
 }
 
 /**
- * Annotate every transaction with its computed `cashout_mode` and
- * `same_day_cashout` (FR-11 + FR-12) on a shallow copy, leaving the inputs
- * untouched.
+ * Classify a row into one of {@link ROW_KIND}. Order matters: a frozen-funds or
+ * cash-exit row is a *disposition* even though its account columns look like a
+ * transfer, so HOLD / EXIT are tested before the HOP (distinct-account) test.
+ *
+ * @param {Record<string, unknown>} t - A row already carrying `cashout_mode`.
+ * @returns {string} One of ROW_KIND.
+ */
+function classifyRowKind(t) {
+  const mode = (str(t.payment_mode) || '').toUpperCase();
+  if (mode === 'HOLD') return ROW_KIND.HOLD;
+  if (CASH_EXIT_MODES.has(t.cashout_mode)) return ROW_KIND.EXIT;
+  const benef = str(t.beneficiary_account);
+  const victim = str(t.victim_account);
+  if (benef && benef !== victim) return ROW_KIND.HOP;
+  return ROW_KIND.OTHER;
+}
+
+/**
+ * Collapse rows that are the SAME money appearing on more than one channel
+ * sheet — identical (beneficiary_account, transaction_date, transaction_amount,
+ * utr_no). NCRP routinely re-lists one leg across sheets; without this collapse
+ * the same rupees are counted two or three times in every aggregate. Rows
+ * missing a UTR are never merged (the composite key would be too loose), and the
+ * first occurrence of each key is kept.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} rows - Enriched rows.
+ * @returns {{ rows: Array<Record<string, unknown>>, removed: number }}
+ */
+function dedupeRows(rows) {
+  const seen = new Set();
+  const out = [];
+  let removed = 0;
+  for (const r of rows) {
+    const utr = str(r.utr_no);
+    // Only merge when a UTR is present AND the row carries an amount — a shared
+    // batch reference with no amount/date is too weak a key to collapse on.
+    if (utr) {
+      const key = `${str(r.beneficiary_account) || ''}|${str(r.transaction_date) || ''}|${num(r.transaction_amount)}|${utr}`;
+      if (seen.has(key)) { removed += 1; continue; }
+      seen.add(key);
+    }
+    out.push(r);
+  }
+  return { rows: out, removed };
+}
+
+/**
+ * Annotate every transaction with its computed `cashout_mode`,
+ * `same_day_cashout` (FR-11 + FR-12), and `row_kind` on a shallow copy, leaving
+ * the inputs untouched.
  *
  * Same-day rule (FR-12): a transaction is a same-day cashout when its
  * classification is ATM_WITHDRAWAL AND it falls on the same IST calendar day
@@ -249,44 +327,78 @@ function enrichTransactions(txns) {
         if (txnDay !== null && txnDay === inboundDay) sameDay = 1;
       }
     }
-    return { ...t, cashout_mode: cashoutMode, same_day_cashout: sameDay };
+    const enriched = { ...t, cashout_mode: cashoutMode, same_day_cashout: sameDay };
+    enriched.row_kind = classifyRowKind(enriched);
+    return enriched;
   });
 }
 
 // ─── Module 1 — layer analysis ─────────────────────────────────────────
 
 /**
- * Per-layer aggregates plus the average time funds dwell before being
- * forwarded to the next layer.
+ * Per-layer aggregates over the laundering trail (Module 5).
  *
- * Forward-time model: for each beneficiary account in layer N, take the
- * earliest moment it received funds in layer N, and the earliest transaction
- * in layer N+1 sharing the same ack_no; the positive hour gap between them is
- * that account's forward time. The layer's `avg_forward_time_hours` is the
- * mean of those gaps. Layers with no measurable forward (e.g. the terminal
- * layer) report null.
+ * Transaction counts and amounts are computed over HOP rows only — a layer's
+ * "transactions" are the fund movements INTO that layer (the "Money Transfer to"
+ * legs), not the ATM/POS/hold dispositions that happen to carry the same Layer
+ * number. This is what makes Layer 1 read "19 transactions, ₹10.65L" on a real
+ * file instead of "70 rows, ₹18.8L" (the latter folds in every cashout leg).
+ *
+ * Per layer:
+ *   • txn_count    — HOP rows arriving at the layer.
+ *   • total_amount / disputed_amount — summed over those hops.
+ *   • account_count / bank_count     — distinct beneficiary accounts / banks.
+ *   • cashout_count — EXIT rows (ATM/POS) attributed to the layer.
+ *   • fan_out_ratio — accounts_in_next_layer / accounts_in_this_layer.
+ *   • top_banks     — up to three "Bank (n)" labels by hop count.
+ *   • avg_forward_time_hours — mean hours from receipt at layer N to the
+ *     earliest hop at layer N+1 sharing the account's ack_no (null at the tail).
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @returns {Array<{
- *   layer_no: number, account_count: number, total_amount: number,
- *   disputed_amount: number, cashout_count: number,
+ *   layer_no: number, txn_count: number, account_count: number,
+ *   total_amount: number, disputed_amount: number, cashout_count: number,
  *   avg_forward_time_hours: number|null, unique_banks: number,
+ *   bank_count: number, fan_out_ratio: number|null, top_banks: string[],
  * }>} Sorted ascending by layer_no.
  */
 function layerAnalysis(txns) {
   /** @type {Map<number, any>} */
   const byLayer = new Map();
-  // earliest[`${ack}|${layer}`] = min ms — for cross-layer forward timing.
+  // earliest[`${ack}|${layer}`] = min hop ms — for cross-layer forward timing.
   /** @type {Map<string, number>} */
   const earliestAckLayer = new Map();
   // account → { layer → earliest receipt ms } and set of acks it touches.
   /** @type {Map<string, { receipt: Map<number, number>, acks: Set<string> }>} */
   const acct = new Map();
 
+  const ensureLayer = (layer) => {
+    if (!byLayer.has(layer)) {
+      byLayer.set(layer, {
+        layer_no: layer,
+        accounts: new Set(),
+        banks: new Set(),
+        bankCounts: new Map(),
+        txn_count: 0,
+        total_amount: 0,
+        disputed_amount: 0,
+        cashout_count: 0,
+      });
+    }
+    return byLayer.get(layer);
+  };
+
   for (const t of txns) {
     const layer = layerOf(t.layer_no);
     const ms = toMs(t.transaction_date);
     const ackKey = str(t.ack_no) || '∅';
+    const g = ensureLayer(layer);
+
+    if (t.row_kind === ROW_KIND.EXIT) {
+      g.cashout_count += 1;
+      continue; // dispositions don't add to the hop aggregates
+    }
+    if (t.row_kind !== ROW_KIND.HOP) continue; // HOLD / OTHER: not transactions
 
     if (ms !== null) {
       const k = `${ackKey}|${layer}`;
@@ -294,24 +406,16 @@ function layerAnalysis(txns) {
       if (prev === undefined || ms < prev) earliestAckLayer.set(k, ms);
     }
 
-    if (!byLayer.has(layer)) {
-      byLayer.set(layer, {
-        layer_no: layer,
-        accounts: new Set(),
-        banks: new Set(),
-        total_amount: 0,
-        disputed_amount: 0,
-        cashout_count: 0,
-      });
-    }
-    const g = byLayer.get(layer);
+    g.txn_count += 1;
+    g.total_amount += num(t.transaction_amount);
+    g.disputed_amount += num(t.disputed_amount);
     const benef = str(t.beneficiary_account);
     if (benef) g.accounts.add(benef);
     const bank = str(t.beneficiary_bank);
-    if (bank) g.banks.add(bank);
-    g.total_amount += num(t.transaction_amount);
-    g.disputed_amount += num(t.disputed_amount);
-    if (t.cashout_mode === CASHOUT_MODE.ATM) g.cashout_count += 1;
+    if (bank) {
+      g.banks.add(bank);
+      g.bankCounts.set(bank, (g.bankCounts.get(bank) || 0) + 1);
+    }
 
     if (benef && ms !== null) {
       if (!acct.has(benef)) acct.set(benef, { receipt: new Map(), acks: new Set() });
@@ -322,38 +426,53 @@ function layerAnalysis(txns) {
     }
   }
 
-  return [...byLayer.values()]
-    .sort((a, b) => a.layer_no - b.layer_no)
-    .map((g) => {
-      // Average forward time for accounts that received in this layer.
-      const diffs = [];
-      for (const [account, info] of acct) {
-        const receiptMs = info.receipt.get(g.layer_no);
-        if (receiptMs === undefined) continue;
-        let nextMs;
-        for (const ack of info.acks) {
-          const cand = earliestAckLayer.get(`${ack}|${g.layer_no + 1}`);
-          if (cand !== undefined && (nextMs === undefined || cand < nextMs)) {
-            nextMs = cand;
-          }
-        }
-        if (nextMs !== undefined && nextMs >= receiptMs) {
-          diffs.push((nextMs - receiptMs) / 3_600_000);
-        }
+  const sorted = [...byLayer.values()].sort((a, b) => a.layer_no - b.layer_no);
+  // Account count of the immediately-following layer, for fan-out.
+  const accountsByLayer = new Map(sorted.map((g) => [g.layer_no, g.accounts.size]));
+
+  return sorted.map((g) => {
+    // Average forward time for accounts that received hops in this layer.
+    const diffs = [];
+    for (const [, info] of acct) {
+      const receiptMs = info.receipt.get(g.layer_no);
+      if (receiptMs === undefined) continue;
+      let nextMs;
+      for (const ack of info.acks) {
+        const cand = earliestAckLayer.get(`${ack}|${g.layer_no + 1}`);
+        if (cand !== undefined && (nextMs === undefined || cand < nextMs)) nextMs = cand;
       }
-      const avg = diffs.length
-        ? round(diffs.reduce((s, d) => s + d, 0) / diffs.length, 2)
-        : null;
-      return {
-        layer_no: g.layer_no,
-        account_count: g.accounts.size,
-        total_amount: round(g.total_amount),
-        disputed_amount: round(g.disputed_amount),
-        cashout_count: g.cashout_count,
-        avg_forward_time_hours: avg,
-        unique_banks: g.banks.size,
-      };
-    });
+      if (nextMs !== undefined && nextMs >= receiptMs) {
+        diffs.push((nextMs - receiptMs) / 3_600_000);
+      }
+    }
+    const avg = diffs.length
+      ? round(diffs.reduce((s, d) => s + d, 0) / diffs.length, 2)
+      : null;
+
+    const nextAccounts = accountsByLayer.get(g.layer_no + 1);
+    const fanOut = (nextAccounts !== undefined && g.accounts.size > 0)
+      ? round(nextAccounts / g.accounts.size, 2)
+      : null;
+
+    const topBanks = [...g.bankCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([bank, n]) => `${bank} (${n})`);
+
+    return {
+      layer_no: g.layer_no,
+      txn_count: g.txn_count,
+      account_count: g.accounts.size,
+      total_amount: round(g.total_amount),
+      disputed_amount: round(g.disputed_amount),
+      cashout_count: g.cashout_count,
+      avg_forward_time_hours: avg,
+      unique_banks: g.banks.size,
+      bank_count: g.banks.size,
+      fan_out_ratio: fanOut,
+      top_banks: topBanks,
+    };
+  });
 }
 
 // ─── Module 2 — cashout analysis ───────────────────────────────────────
@@ -457,147 +576,224 @@ function cashoutAnalysis(txns) {
 // ─── Per-account rollup (shared by mule + lien) ───────────────────────
 
 /**
- * Build a per-beneficiary-account rollup used by both mule scoring and lien
- * calculation, so the two modules agree on `total_received` / `total_forwarded`.
+ * Build a per-account rollup used by mule scoring, lien calculation, and the
+ * recovery view, so every module agrees on each account's money flow.
  *
- * Money model (single-case trail; intermediate senders are NOT recorded, so
- * onward bank-to-bank transfers out of an account are not directly observable):
- *   • total_received   = Σ inbound transaction_amount for the account.
- *   • total_cashed_out = Σ inbound withdrawn via ATM/POS here — the only funds
- *     we can *prove* left the recoverable banking system.
- *   • total_forwarded  = total_cashed_out. "Forwarded" here means "confirmed
- *     gone as cash". Onward transfers are deliberately NOT deducted: that money
- *     is still in the banking system and is recoverable by lien at whichever
- *     downstream account now holds it, so each account is held accountable for
- *     everything it received that was not converted to cash.
- *   • lien_eligible_amount = total_received − total_cashed_out (≥ 0): the
- *     disputed inflow not yet confirmed withdrawn, i.e. what a lien request can
- *     still target (the bank confirms the true balance separately).
- *   • pass_through_ratio (mule signal, NOT used for lien): the share of inflow
- *     that moved on — cash withdrawn, plus, for non-terminal accounts, the
- *     remainder presumed pushed deeper. ~1.0 marks a classic "money in, money
- *     straight out" mule; low values mark accounts where funds came to rest.
+ * Unlike a single bank statement, an NCRP CompleteTrail lets us observe BOTH
+ * sides of an account: it appears as a `beneficiary_account` when it receives a
+ * hop, and as the `victim_account` (sender) of the next layer's hop when it
+ * forwards onward. That lets us reconstruct a real per-account balance:
+ *
+ *   • total_received   — Σ gross HOP amounts where the account is the beneficiary.
+ *   • onward_forwarded — Σ gross HOP amounts where the account is the sender
+ *                        (the money it pushed to the next layer).
+ *   • total_cashed_out — Σ EXIT (ATM/POS/AEPS) amounts at the account.
+ *   • total_on_hold    — Σ HOLD amounts frozen at the account.
+ *   • lien_eligible_amount = max(0, received − onward_forwarded − on_hold −
+ *     cashed_out): the money that flowed in but cannot be accounted for as
+ *     having left — i.e. the balance a lien can still freeze. This is the
+ *     CypherSOL formula (Received − Sent − On Hold − Exits), and it reproduces
+ *     their per-account figures exactly (e.g. an account that received ₹94,300
+ *     and did nothing else → lien ₹94,300).
+ *   • total_forwarded  — onward_forwarded + cashed_out (everything that left;
+ *     shown in the UI and used for the mule pass-through ratio).
+ *   • pass_through_ratio — total_forwarded / total_received (mule signal; can
+ *     exceed 1 when an account commingles funds from several inflows).
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @returns {Map<string, any>}
  */
 function buildAccountRollup(txns) {
   const maxLayer = txns.reduce((m, t) => {
+    if (t.row_kind !== ROW_KIND.HOP) return m;
     const l = layerOf(t.layer_no);
     return l > m ? l : m;
   }, 0);
 
   /** @type {Map<string, any>} */
   const accounts = new Map();
-  for (const t of txns) {
-    const acct = str(t.beneficiary_account);
-    if (!acct) continue;
+  const ensure = (acct, seed = {}) => {
     if (!accounts.has(acct)) {
       accounts.set(acct, {
         account_no: acct,
-        bank_name: str(t.beneficiary_bank),
-        ifsc_code: str(t.ifsc_code),
+        bank_name: null,
+        ifsc_code: null,
         names: new Set(),
         banks: new Set(),
         ifscs: new Set(),
         acks: new Set(),
+        senders: new Set(),
+        channels: new Set(),
         minLayer: Infinity,
         txn_count: 0,
         total_received: 0,
+        onward_forwarded: 0,
         total_cashed_out: 0,
+        total_on_hold: 0,
         disputed_received: 0,
         disputed_cashed_out: 0,
         firstReceiptMs: null,
         firstExitMs: null,
+        firstForwardMs: null,
+        lastActivityMs: null,
         cashoutStates: new Set(),
         homeStates: new Set(),
       });
     }
     const a = accounts.get(acct);
-    const layer = layerOf(t.layer_no);
-    const amt = num(t.transaction_amount);
+    if (!a.bank_name && seed.bank) a.bank_name = seed.bank;
+    if (!a.ifsc_code && seed.ifsc) a.ifsc_code = seed.ifsc;
+    return a;
+  };
+  const touchLast = (a, ms) => {
+    if (ms !== null && (a.lastActivityMs === null || ms > a.lastActivityMs)) a.lastActivityMs = ms;
+  };
+
+  // ── Pass 1 — inflows (hops), exits, holds; identity + timing ──────────
+  for (const t of txns) {
     const ms = toMs(t.transaction_date);
+    const amt = num(t.transaction_amount);
+    const disp = num(t.disputed_amount);
 
-    a.txn_count += 1;
-    a.total_received += amt;
-    a.disputed_received += num(t.disputed_amount);
-    if (str(t.beneficiary_name)) a.names.add(str(t.beneficiary_name));
-    if (str(t.beneficiary_bank)) a.banks.add(str(t.beneficiary_bank));
-    if (str(t.ifsc_code)) a.ifscs.add(str(t.ifsc_code));
-    if (str(t.ack_no)) a.acks.add(str(t.ack_no));
-    if (layer < a.minLayer) a.minLayer = layer;
-
-    if (ms !== null && (a.firstReceiptMs === null || ms < a.firstReceiptMs)) {
-      a.firstReceiptMs = ms;
-    }
-
-    if (CASH_EXIT_MODES.has(t.cashout_mode)) {
-      a.total_cashed_out += amt;
-      a.disputed_cashed_out += num(t.disputed_amount);
-      if (ms !== null && (a.firstExitMs === null || ms < a.firstExitMs)) {
-        a.firstExitMs = ms;
-      }
-      const cState = str(t.state);
-      if (cState) a.cashoutStates.add(cState);
-    } else {
+    if (t.row_kind === ROW_KIND.HOP) {
+      const benef = str(t.beneficiary_account);
+      if (!benef) continue;
+      const a = ensure(benef, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      const layer = layerOf(t.layer_no);
+      a.txn_count += 1;
+      a.total_received += amt;
+      a.disputed_received += disp;
+      if (str(t.beneficiary_name)) a.names.add(str(t.beneficiary_name));
+      if (str(t.beneficiary_bank)) a.banks.add(str(t.beneficiary_bank));
+      if (str(t.ifsc_code)) a.ifscs.add(str(t.ifsc_code));
+      if (str(t.ack_no)) a.acks.add(str(t.ack_no));
+      if (str(t.victim_account)) a.senders.add(str(t.victim_account));
+      if (layer < a.minLayer) a.minLayer = layer;
+      if (ms !== null && (a.firstReceiptMs === null || ms < a.firstReceiptMs)) a.firstReceiptMs = ms;
       const hState = str(t.state);
       if (hState) a.homeStates.add(hState);
+      touchLast(a, ms);
+    } else if (t.row_kind === ROW_KIND.EXIT) {
+      const acct = str(t.beneficiary_account) || str(t.victim_account);
+      if (!acct) continue;
+      const a = ensure(acct, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      a.total_cashed_out += amt;
+      a.disputed_cashed_out += disp;
+      a.channels.add(t.cashout_mode === CASHOUT_MODE.POS ? 'POS' : 'ATM');
+      if (str(t.ack_no)) a.acks.add(str(t.ack_no));
+      if (ms !== null && (a.firstExitMs === null || ms < a.firstExitMs)) a.firstExitMs = ms;
+      const cState = str(t.state);
+      if (cState) a.cashoutStates.add(cState);
+      touchLast(a, ms);
+    } else if (t.row_kind === ROW_KIND.HOLD) {
+      const acct = str(t.beneficiary_account) || str(t.victim_account);
+      if (!acct) continue;
+      const a = ensure(acct, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      a.total_on_hold += amt;
+      if (str(t.ack_no)) a.acks.add(str(t.ack_no));
+      touchLast(a, ms);
     }
   }
 
+  // ── Pass 2 — onward transfers (the sender side of every hop) ──────────
+  // Attribute a hop's amount to its SENDER, but only when that sender is an
+  // account we already track (a beneficiary / cash-out / hold holder). A pure
+  // layer-0 victim that only ever sends is not a suspect and gets no entry.
+  for (const t of txns) {
+    if (t.row_kind !== ROW_KIND.HOP) continue;
+    const sender = str(t.victim_account);
+    if (!sender || !accounts.has(sender)) continue;
+    const a = accounts.get(sender);
+    const ms = toMs(t.transaction_date);
+    a.onward_forwarded += num(t.transaction_amount);
+    if (ms !== null && (a.firstForwardMs === null || ms < a.firstForwardMs)) a.firstForwardMs = ms;
+    touchLast(a, ms);
+  }
+
+  // ── Derived fields ────────────────────────────────────────────────────
   for (const a of accounts.values()) {
-    const isTerminal = a.minLayer >= maxLayer;
-    const nonCashout = Math.max(0, a.total_received - a.total_cashed_out);
-    // Lien target = the DISPUTED (fraud-attributed) inflow not confirmed
-    // withdrawn as cash — NOT the gross transaction value. Each NCRP row carries
-    // a gross transaction_amount that can dwarf its disputed slice (e.g. a
-    // ₹40,00,000 transfer with only ₹500 disputed), so a transaction-based lien
-    // over-states recoverable funds by orders of magnitude (~100x on real
-    // files). Computed per unique account_no from the disputed_amount column.
-    // Onward transfers are recoverable downstream, so they are not deducted.
-    const disputedLien = Math.max(0, a.disputed_received - a.disputed_cashed_out);
+    const isTerminal = a.minLayer === Infinity ? true : a.minLayer >= maxLayer;
+    // Gross balance still sitting in the account: what came in, minus everything
+    // we can prove left (onward transfers, cash exits, frozen funds). This is the
+    // CypherSOL formula (Received − Sent − On Hold − Exits).
+    const grossBalance = Math.max(
+      0,
+      a.total_received - a.onward_forwarded - a.total_on_hold - a.total_cashed_out
+    );
+    // Cap the lien at the DISPUTED (fraud-attributed) inflow. On real files a
+    // single account can legitimately receive crores in gross value while only a
+    // few thousand rupees are the disputed fraud (e.g. a payment-aggregator
+    // settlement account). Liening the gross balance would over-state recoverable
+    // funds ~100x; the lien can never exceed the fraud money that entered.
+    const lien = Math.min(grossBalance, Math.max(0, a.disputed_received));
+    a.gross_balance = round(grossBalance);
     a.is_terminal = isTerminal;
-    a.total_forwarded = round(a.total_cashed_out);
-    a.lien_eligible_amount = round(disputedLien);
+    a.total_forwarded = round(a.onward_forwarded + a.total_cashed_out);
+    a.onward_forwarded = round(a.onward_forwarded);
+    a.total_cashed_out = round(a.total_cashed_out);
+    a.total_on_hold = round(a.total_on_hold);
+    a.lien_eligible_amount = round(lien);
     a.disputed_received = round(a.disputed_received);
     a.disputed_cashed_out = round(a.disputed_cashed_out);
     a.total_received = round(a.total_received);
-    a.total_cashed_out = round(a.total_cashed_out);
-    // Mule pass-through: cash withdrawn + (non-terminal) remainder moved deeper.
-    const movedOn = a.total_cashed_out + (isTerminal ? 0 : nonCashout);
-    a.pass_through_ratio = a.total_received > 0
-      ? round(movedOn / a.total_received, 4)
-      : 0;
+
+    const movedOn = a.total_forwarded;
+    a.pass_through_ratio = a.total_received > 0 ? round(movedOn / a.total_received, 4) : 0;
+
+    // First disposition (cash out OR onward forward) for speed + same-day.
+    let firstOutMs = null;
+    if (a.firstExitMs !== null) firstOutMs = a.firstExitMs;
+    if (a.firstForwardMs !== null && (firstOutMs === null || a.firstForwardMs < firstOutMs)) {
+      firstOutMs = a.firstForwardMs;
+    }
     a.forward_speed_hours =
-      a.firstReceiptMs !== null && a.firstExitMs !== null && a.firstExitMs >= a.firstReceiptMs
-        ? round((a.firstExitMs - a.firstReceiptMs) / 3_600_000, 2)
+      a.firstReceiptMs !== null && firstOutMs !== null && firstOutMs >= a.firstReceiptMs
+        ? round((firstOutMs - a.firstReceiptMs) / 3_600_000, 2)
         : null;
+    a.same_day_in_out = Boolean(
+      a.firstReceiptMs !== null && firstOutMs !== null &&
+      istDayKey(new Date(a.firstReceiptMs).toISOString()) ===
+        istDayKey(new Date(firstOutMs).toISOString())
+    );
+    a.first_date = a.firstReceiptMs !== null
+      ? new Date(a.firstReceiptMs).toISOString()
+      : (a.lastActivityMs !== null ? new Date(a.lastActivityMs).toISOString() : null);
+    a.last_date = a.lastActivityMs !== null ? new Date(a.lastActivityMs).toISOString() : null;
   }
   return accounts;
 }
 
 // ─── Module 3 — mule detection ─────────────────────────────────────────
 
+/** Bonus signal weights layered on top of the six config weights (Module 8). */
+const MULE_BONUS = Object.freeze({
+  bothSheets: 10,        // received via transfer AND cashed out
+  multiChannel: 8,       // used more than one cash-out channel (ATM + POS)
+  fanIn: 8,              // collects from two or more upstream accounts
+  highCashoutRatio: 10,  // withdrew as cash ≥ 90% of what it received
+  sameDayInOut: 7,       // money in and money out on the same calendar day
+});
+
 /**
- * Score every beneficiary account 0-100 across six weighted signals (weights
- * loaded from config/mule_weights.json):
- *   1. passThrough   — high forwarded/received ratio.
- *   2. cashoutSpeed  — funds left within a few hours of arriving.
- *   3. txnCount      — high transaction volume.
- *   4. crossCase     — appears across multiple cases (this file + history).
- *   5. geoSpread     — cashed out in a different state than its home/bank state.
- *   6. kycVariance   — inconsistent name / bank / IFSC across rows.
+ * Score every account across the six weighted laundering signals (weights from
+ * config/mule_weights.json) PLUS five behavioural bonus signals, and attach a
+ * plain-language `suspicion_reasons` list naming exactly which signals fired.
+ *
+ * The score is intentionally NOT capped at 100: a textbook mule that trips every
+ * signal lands above 100 (matching CypherSOL's >100 scores), which keeps the
+ * worst offenders visually distinct. Risk bands still key off the 70 / 40
+ * thresholds. Base signals:
+ *   1. passThrough · 2. cashoutSpeed · 3. txnCount · 4. crossCase ·
+ *   5. geoSpread · 6. kycVariance.
+ * Bonus signals: appears in both transfer & cash-out sheets, multiple cash-out
+ * channels, fan-in from several accounts, high cash-out ratio, same-day in/out.
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @param {Map<string, any>} rollup - Output of buildAccountRollup.
  * @param {ReadonlyArray<Record<string, unknown>>} [existingRepeatAccounts=[]]
  *   Cross-case registry rows ({ account_no, appearance_count, ... }).
- * @returns {Array<{
- *   account_no: string, bank_name: string|null, mule_score: number,
- *   pass_through_ratio: number, total_received: number, total_forwarded: number,
- *   forward_speed_hours: number|null, appears_in_cases: number,
- *   layer_no: number, risk_label: 'HIGH'|'MEDIUM'|'LOW',
- * }>} Sorted by mule_score descending.
+ * @returns {Array<object>} Sorted by mule_score descending. Each row carries the
+ *   scoring inputs, `suspicion_reasons`, channels, cash-out total, and dates.
  */
 function muleDetection(txns, rollup, existingRepeatAccounts = []) {
   if (!rollup || typeof rollup.values !== 'function') return [];
@@ -612,63 +808,96 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
 
   const results = [];
   for (const a of rollup.values()) {
+    const reasons = [];
+
     // 1. Pass-through — full weight at/above the threshold, linear below.
-    const passPts = num(w.passThrough) *
-      Math.min(1, a.pass_through_ratio / PASS_THROUGH_FULL);
+    const passPts = num(w.passThrough) * Math.min(1, a.pass_through_ratio / PASS_THROUGH_FULL);
+    if (a.pass_through_ratio >= PASS_THROUGH_FULL) {
+      reasons.push(`High pass-through (${Math.round(a.pass_through_ratio * 100)}% of inflow moved on)`);
+    }
 
     // 2. Cashout speed — full if forwarded fast, decaying to zero by 24h.
     let speedPts = 0;
     if (a.forward_speed_hours !== null) {
+      if (a.forward_speed_hours <= FAST_FORWARD_HOURS) speedPts = num(w.cashoutSpeed);
+      else if (a.forward_speed_hours < SLOW_FORWARD_HOURS) {
+        speedPts = num(w.cashoutSpeed) *
+          ((SLOW_FORWARD_HOURS - a.forward_speed_hours) / (SLOW_FORWARD_HOURS - FAST_FORWARD_HOURS));
+      }
       if (a.forward_speed_hours <= FAST_FORWARD_HOURS) {
-        speedPts = num(w.cashoutSpeed);
-      } else if (a.forward_speed_hours < SLOW_FORWARD_HOURS) {
-        const frac =
-          (SLOW_FORWARD_HOURS - a.forward_speed_hours) /
-          (SLOW_FORWARD_HOURS - FAST_FORWARD_HOURS);
-        speedPts = num(w.cashoutSpeed) * frac;
+        reasons.push(`Funds moved within ${round(a.forward_speed_hours, 1)}h of receipt`);
       }
     }
 
     // 3. Transaction count.
-    const countPts = num(w.txnCount) *
-      Math.min(1, a.txn_count / HIGH_TXN_COUNT);
+    const countPts = num(w.txnCount) * Math.min(1, a.txn_count / HIGH_TXN_COUNT);
+    if (a.txn_count > 5) reasons.push(`High transaction velocity (${a.txn_count} txns)`);
 
     // 4. Cross-case — distinct cases in this file plus historical appearances.
-    const appearsInCases = Math.max(
-      a.acks.size,
-      (historyCount.get(a.account_no) || 0)
-    );
+    const appearsInCases = Math.max(a.acks.size, historyCount.get(a.account_no) || 0);
     const crossPts = appearsInCases > 1 ? num(w.crossCase) : 0;
+    if (appearsInCases > 1) reasons.push(`Appears across ${appearsInCases} cases`);
 
     // 5. Geographic spread — cashed out in a state other than its home state.
     let geoSpread = false;
     for (const cState of a.cashoutStates) {
-      if (a.homeStates.size > 0 && !a.homeStates.has(cState)) {
-        geoSpread = true;
-        break;
-      }
+      if (a.homeStates.size > 0 && !a.homeStates.has(cState)) { geoSpread = true; break; }
     }
     const geoPts = geoSpread ? num(w.geoSpread) : 0;
+    if (geoSpread) reasons.push('Cashed out in a different state than its home state');
 
     // 6. KYC variance — inconsistent identity attributes across rows.
     const kycVariance = a.names.size > 1 || a.banks.size > 1 || a.ifscs.size > 1;
     const kycPts = kycVariance ? num(w.kycVariance) : 0;
+    if (kycVariance) reasons.push('Inconsistent KYC (name / bank / IFSC across rows)');
 
-    const score = Math.max(0, Math.min(100, Math.round(
-      passPts + speedPts + countPts + crossPts + geoPts + kycPts
-    )));
+    // ── Bonus behavioural signals ──────────────────────────────────────
+    let bonus = 0;
+    const channels = [...a.channels];
+    const cashoutRatio = a.total_received > 0 ? a.total_cashed_out / a.total_received : 0;
+    if (a.total_received > 0 && a.total_cashed_out > 0) {
+      bonus += MULE_BONUS.bothSheets;
+      reasons.push('Appears in both transfer & cash-out sheets');
+    }
+    if (channels.length > 1) {
+      bonus += MULE_BONUS.multiChannel;
+      reasons.push(`Multiple cash-out channels: ${channels.join(', ')}`);
+    }
+    if (a.senders.size >= 2) {
+      bonus += MULE_BONUS.fanIn;
+      reasons.push(`Receives from ${a.senders.size} accounts`);
+    }
+    if (cashoutRatio >= 0.9) {
+      bonus += MULE_BONUS.highCashoutRatio;
+      reasons.push(`High cashout ratio (${Math.round(cashoutRatio * 100)}% of received)`);
+    }
+    if (a.same_day_in_out) {
+      bonus += MULE_BONUS.sameDayInOut;
+      reasons.push('Same-day receive & cashout/forward');
+    }
+
+    const score = Math.max(0, Math.round(
+      passPts + speedPts + countPts + crossPts + geoPts + kycPts + bonus
+    ));
 
     results.push({
       account_no: a.account_no,
       bank_name: a.bank_name,
       mule_score: score,
+      risk_label: score >= RISK_HIGH ? 'HIGH' : score >= RISK_MEDIUM ? 'MEDIUM' : 'LOW',
       pass_through_ratio: a.pass_through_ratio,
       total_received: a.total_received,
       total_forwarded: a.total_forwarded,
+      total_cashout: a.total_cashed_out,
       forward_speed_hours: a.forward_speed_hours,
       appears_in_cases: appearsInCases,
       layer_no: Number.isFinite(a.minLayer) ? a.minLayer : null,
-      risk_label: score >= RISK_HIGH ? 'HIGH' : score >= RISK_MEDIUM ? 'MEDIUM' : 'LOW',
+      txn_count: a.txn_count,
+      channels,
+      same_day_in_out: a.same_day_in_out,
+      first_date: a.first_date,
+      last_date: a.last_date,
+      suspicion_reasons: reasons,
     });
   }
 
@@ -678,14 +907,20 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
 // ─── Module 4 — lien calculation ───────────────────────────────────────
 
 /**
- * Recoverable-amount worksheet: for each account still presumed to hold
- * disputed funds (received minus everything that provably left), one row with
- * the lien-eligible amount and a plain-language justification.
+ * Recoverable-amount worksheet (Module 3 / BUG 3 fix): one row per account that
+ * still presumably holds money, with the lien-eligible balance and a plain-
+ * language justification.
+ *
+ * The lien-eligible figure is the gross balance reconstructed in
+ * {@link buildAccountRollup}: received − onward-forwarded − on-hold − cashed-out.
+ * Reporting the gross legs in the note keeps the arithmetic transparent and
+ * matches the CypherSOL worksheet (Received − Sent − On Hold − Exits).
  *
  * @param {Map<string, any>} rollup - Output of buildAccountRollup.
  * @returns {Array<{
  *   account_no: string, bank_name: string|null, ifsc_code: string|null,
  *   layer_no: number|null, total_received: number, total_forwarded: number,
+ *   onward_forwarded: number, total_on_hold: number, total_cashed_out: number,
  *   lien_eligible_amount: number, note: string,
  * }>} Only accounts with lien_eligible_amount > 0, sorted by amount desc.
  */
@@ -693,23 +928,25 @@ function lienCalculation(rollup) {
   const rows = [];
   for (const a of rollup.values()) {
     if (a.lien_eligible_amount <= 0) continue;
-    // Report the disputed (fraud-attributed) figures so the note arithmetic is
-    // coherent with the disputed-based lien_eligible_amount. Fall back to the
-    // gross totals when a caller hands a rollup without the disputed fields.
-    const received = num(a.disputed_received != null ? a.disputed_received : a.total_received);
-    const cashed = num(a.disputed_cashed_out != null ? a.disputed_cashed_out : a.total_forwarded);
+    const received = num(a.total_received);
+    const onward = num(a.onward_forwarded);
+    const hold = num(a.total_on_hold);
+    const exits = num(a.total_cashed_out);
     rows.push({
       account_no: a.account_no,
       bank_name: a.bank_name,
       ifsc_code: a.ifsc_code,
       layer_no: Number.isFinite(a.minLayer) ? a.minLayer : null,
       total_received: received,
-      total_forwarded: cashed,
+      total_forwarded: num(a.total_forwarded),
+      onward_forwarded: onward,
+      total_on_hold: hold,
+      total_cashed_out: exits,
       lien_eligible_amount: a.lien_eligible_amount,
       note:
-        `${formatINR(received)} of disputed funds received; ` +
-        `${formatINR(cashed)} confirmed withdrawn as cash. ` +
-        `${formatINR(a.lien_eligible_amount)} not yet confirmed withdrawn — ` +
+        `Received ${formatINR(received)}; forwarded ${formatINR(onward)} onward, ` +
+        `${formatINR(exits)} withdrawn as cash, ${formatINR(hold)} already on hold. ` +
+        `${formatINR(a.lien_eligible_amount)} remains unaccounted-for — ` +
         `request lien (subject to available balance at bank).`,
     });
   }
@@ -813,12 +1050,18 @@ function timelineAnalysis(txns) {
 // ─── Module 7 — geography analysis ─────────────────────────────────────
 
 /**
- * Money + transaction + cashout distribution across states and cities.
+ * Money + cash-out distribution across states, cities, ATMs, and merchants
+ * (Module 6). State/city aggregates are driven by cash-exit (ATM/POS/AEPS) rows
+ * — that is the geography an officer can act on (CCTV, local police) — and each
+ * carries the share of the total cash-out it represents. ATM and merchant
+ * hotspots are ranked separately so the dossier can point at specific terminals.
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @returns {{
- *   by_state: Array<{ state: string, amount: number, count: number, cashout_count: number }>,
- *   by_city: Array<{ city: string, state: string|null, amount: number, count: number }>,
+ *   by_state: Array<{ state: string, amount: number, txn_count: number, count: number, cashout_count: number, pct: number }>,
+ *   by_city: Array<{ city: string, state: string|null, amount: number, count: number, pct: number }>,
+ *   top_atms: Array<{ atm_id: string, location: string|null, txn_count: number, amount: number, account_count: number }>,
+ *   top_merchants: Array<{ name: string, type: string, amount: number, txn_count: number }>,
  * }}
  */
 function geographyAnalysis(txns) {
@@ -826,42 +1069,335 @@ function geographyAnalysis(txns) {
   const byState = new Map();
   /** @type {Map<string, any>} */
   const byCity = new Map();
+  /** @type {Map<string, any>} */
+  const byAtm = new Map();
+  /** @type {Map<string, any>} */
+  const byMerchant = new Map();
+  let cashoutTotal = 0;
 
   for (const t of txns) {
+    const isCashout = t.row_kind === ROW_KIND.EXIT;
+    if (!isCashout) continue;
     const amt = num(t.transaction_amount);
-    const isCashout = CASH_EXIT_MODES.has(t.cashout_mode);
+    cashoutTotal += amt;
 
     const state = str(t.state);
     if (state) {
-      if (!byState.has(state)) {
-        byState.set(state, { state, amount: 0, count: 0, cashout_count: 0 });
-      }
+      if (!byState.has(state)) byState.set(state, { state, amount: 0, count: 0, cashout_count: 0 });
       const s = byState.get(state);
-      s.amount += amt;
-      s.count += 1;
-      if (isCashout) s.cashout_count += 1;
+      s.amount += amt; s.count += 1; s.cashout_count += 1;
     }
 
     const city = str(t.city);
     if (city) {
       const key = `${city}|${state || ''}`;
-      if (!byCity.has(key)) {
-        byCity.set(key, { city, state, amount: 0, count: 0 });
-      }
+      if (!byCity.has(key)) byCity.set(key, { city, state, amount: 0, count: 0 });
       const c = byCity.get(key);
-      c.amount += amt;
-      c.count += 1;
+      c.amount += amt; c.count += 1;
+    }
+
+    const acct = str(t.beneficiary_account) || str(t.victim_account);
+    if (t.cashout_mode === CASHOUT_MODE.ATM) {
+      const atmId = str(t.atm_id) || 'UNKNOWN_ATM';
+      if (!byAtm.has(atmId)) {
+        byAtm.set(atmId, { atm_id: atmId, location: str(t.atm_location) || str(t.city), txn_count: 0, amount: 0, accounts: new Set() });
+      }
+      const a = byAtm.get(atmId);
+      a.txn_count += 1; a.amount += amt;
+      if (acct) a.accounts.add(acct);
+    } else if (t.cashout_mode === CASHOUT_MODE.POS) {
+      const name = str(t.atm_location) || str(t.beneficiary_name) || 'UNKNOWN_MERCHANT';
+      if (!byMerchant.has(name)) byMerchant.set(name, { name, type: 'Merchant', amount: 0, txn_count: 0 });
+      const m = byMerchant.get(name);
+      m.amount += amt; m.txn_count += 1;
     }
   }
 
+  const pctOf = (x) => (cashoutTotal > 0 ? round((x / cashoutTotal) * 100, 1) : 0);
+
   return {
     by_state: [...byState.values()]
-      .map((s) => ({ ...s, amount: round(s.amount) }))
+      .map((s) => ({ state: s.state, amount: round(s.amount), txn_count: s.count, count: s.count, cashout_count: s.cashout_count, pct: pctOf(s.amount) }))
       .sort((a, b) => b.amount - a.amount),
     by_city: [...byCity.values()]
-      .map((c) => ({ ...c, amount: round(c.amount) }))
+      .map((c) => ({ city: c.city, state: c.state, amount: round(c.amount), count: c.count, pct: pctOf(c.amount) }))
       .sort((a, b) => b.amount - a.amount),
+    top_atms: [...byAtm.values()]
+      .map((a) => ({ atm_id: a.atm_id, location: a.location, txn_count: a.txn_count, amount: round(a.amount), account_count: a.accounts.size }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 10),
+    top_merchants: [...byMerchant.values()]
+      .map((m) => ({ ...m, amount: round(m.amount) }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 10),
   };
+}
+
+// ─── Module — money-flow network ───────────────────────────────────────
+
+/**
+ * Account-to-account money-flow graph (Module 1).
+ *
+ *   • top_edges      — the heaviest source→destination transfer relationships
+ *                      (aggregated across every hop between the pair).
+ *   • aggregators    — collector accounts ranked by fan-in (distinct senders),
+ *                      with total money in vs out.
+ *   • circular_flows — accounts that route money to themselves (self-referential
+ *                      rows, e.g. wallet round-trips) — a layering red flag.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
+ * @param {Map<string, any>} rollup - Output of buildAccountRollup.
+ * @returns {{ top_edges: Array<object>, aggregators: Array<object>, circular_flows: Array<object> }}
+ */
+function moneyFlowNetwork(txns, rollup) {
+  /** @type {Map<string, any>} */
+  const edges = new Map();
+  // out_degree / total_out per source account, from the hop edges.
+  /** @type {Map<string, { dests: Set<string>, out: number }>} */
+  const outBy = new Map();
+  /** @type {Map<string, any>} */
+  const circular = new Map();
+
+  for (const t of txns) {
+    const benef = str(t.beneficiary_account);
+    const victim = str(t.victim_account);
+
+    // Self-referential transfer rows (money routed back to the same account,
+    // e.g. wallet round-trips). EXIT / HOLD rows also carry benef === victim via
+    // the parser's cross-sheet join, but those are cash-out / freeze dispositions
+    // — not circular flow — so only OTHER-kind self-loops count here.
+    if (t.row_kind === ROW_KIND.OTHER && benef && victim && benef === victim) {
+      if (!circular.has(benef)) circular.set(benef, { account_no: benef, amount: 0, txn_count: 0 });
+      const c = circular.get(benef);
+      c.amount += num(t.transaction_amount); c.txn_count += 1;
+      continue;
+    }
+    if (t.row_kind !== ROW_KIND.HOP || !benef || !victim) continue;
+
+    const key = `${victim} ${benef}`;
+    if (!edges.has(key)) {
+      edges.set(key, { source: victim, destination: benef, amount: 0, txn_count: 0, layers: new Set(), banks: new Set() });
+    }
+    const e = edges.get(key);
+    e.amount += num(t.transaction_amount);
+    e.txn_count += 1;
+    e.layers.add(layerOf(t.layer_no));
+    if (str(t.beneficiary_bank)) e.banks.add(str(t.beneficiary_bank));
+
+    if (!outBy.has(victim)) outBy.set(victim, { dests: new Set(), out: 0 });
+    const o = outBy.get(victim);
+    o.dests.add(benef); o.out += num(t.transaction_amount);
+  }
+
+  const top_edges = [...edges.values()]
+    .map((e) => ({
+      source: e.source,
+      destination: e.destination,
+      amount: round(e.amount),
+      txn_count: e.txn_count,
+      layers: [...e.layers].sort((a, b) => a - b).join(','),
+      banks: [...e.banks].join(', ') || null,
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 10);
+
+  // Aggregators: any account that received from ≥1 sender, ranked by fan-in.
+  const aggregators = [];
+  for (const a of rollup.values()) {
+    const out = outBy.get(a.account_no);
+    const inDegree = a.senders ? a.senders.size : 0;
+    const outDegree = out ? out.dests.size : 0;
+    if (inDegree === 0 && outDegree === 0) continue;
+    aggregators.push({
+      account_no: a.account_no,
+      bank: a.bank_name,
+      in_degree: inDegree,
+      out_degree: outDegree,
+      total_in: round(a.total_received),
+      total_out: round(out ? out.out : 0),
+    });
+  }
+  aggregators.sort((a, b) => (b.in_degree - a.in_degree) || (b.total_in - a.total_in));
+
+  const circular_flows = [...circular.values()]
+    .map((c) => ({ account_no: c.account_no, amount: round(c.amount), txn_count: c.txn_count }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 10);
+
+  return { top_edges, aggregators: aggregators.slice(0, 10), circular_flows };
+}
+
+// ─── Module — recovery status ──────────────────────────────────────────
+
+/**
+ * Where the victim money ended up (Module 2): cashed out, frozen on hold,
+ * refunded, or still recoverable — as amounts and as a share of the headline
+ * victim loss, ready to render as a single coloured "fund trail" bar.
+ *
+ * @param {number} victimLoss - Headline disputed money that entered the network.
+ * @param {number} cashedOut  - Σ cash-exit (ATM/POS/AEPS) amounts.
+ * @param {number} onHold     - Σ amounts frozen by banks.
+ * @param {number} [refunded=0]
+ * @returns {object}
+ */
+function recoveryStatus(victimLoss, cashedOut, onHold, refunded = 0) {
+  const base = num(victimLoss) > 0 ? num(victimLoss) : (num(cashedOut) + num(onHold) + num(refunded));
+  const recoverable = Math.max(0, base - num(cashedOut) - num(onHold) - num(refunded));
+  const pct = (x) => (base > 0 ? round((x / base) * 100, 1) : 0);
+  return {
+    base_amount: round(base),
+    cashed_out: round(cashedOut),
+    cashed_out_pct: pct(num(cashedOut)),
+    on_hold: round(onHold),
+    on_hold_pct: pct(num(onHold)),
+    refunded: round(refunded),
+    refunded_pct: pct(num(refunded)),
+    recoverable: round(recoverable),
+    recoverable_pct: pct(recoverable),
+    fund_trail_bar: true,
+  };
+}
+
+// ─── Module — victim accounts (Layer 0) ────────────────────────────────
+
+/**
+ * The victims behind the case (Module 4): the distinct sender accounts on the
+ * first-layer hops — i.e. the "Account No./ (Wallet/PG/PA) Id" values that fed
+ * money into the laundering network — with how much each sent.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
+ * @returns {Array<{ account_no: string, txn_count: number, amount_sent: number }>}
+ */
+function victimAccounts(txns) {
+  const hops = txns.filter((t) => t.row_kind === ROW_KIND.HOP);
+  if (hops.length === 0) return [];
+  const minLayer = hops.reduce((m, t) => Math.min(m, layerOf(t.layer_no)), Infinity);
+  /** @type {Map<string, { account_no: string, txn_count: number, amount_sent: number }>} */
+  const byVictim = new Map();
+  for (const t of hops) {
+    if (layerOf(t.layer_no) !== minLayer) continue;
+    const v = str(t.victim_account);
+    if (!v) continue;
+    if (!byVictim.has(v)) byVictim.set(v, { account_no: v, txn_count: 0, amount_sent: 0 });
+    const g = byVictim.get(v);
+    g.txn_count += 1;
+    g.amount_sent += num(t.transaction_amount);
+  }
+  return [...byVictim.values()]
+    .map((g) => ({ ...g, amount_sent: round(g.amount_sent) }))
+    .sort((a, b) => b.amount_sent - a.amount_sent);
+}
+
+// ─── Module — timeline summary (key dates) ─────────────────────────────
+
+/**
+ * Key milestone dates + response-gap metrics (Module 7). "Bank action" is the
+ * first time funds were put on hold; "cashout" is the first ATM/POS withdrawal.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
+ * @returns {object}
+ */
+function timelineSummary(txns) {
+  let firstFraud = null, firstCashout = null, firstHold = null, lastActivity = null;
+  for (const t of txns) {
+    const ms = toMs(t.transaction_date);
+    if (ms === null) continue;
+    if (lastActivity === null || ms > lastActivity) lastActivity = ms;
+    if (t.row_kind === ROW_KIND.HOP && (firstFraud === null || ms < firstFraud)) firstFraud = ms;
+    if (t.row_kind === ROW_KIND.EXIT && (firstCashout === null || ms < firstCashout)) firstCashout = ms;
+    if (t.row_kind === ROW_KIND.HOLD && (firstHold === null || ms < firstHold)) firstHold = ms;
+  }
+  const dayKey = (ms) => (ms === null ? null : istDayKey(new Date(ms).toISOString()));
+  const hoursBetween = (a, b) => (a === null || b === null ? null : round((b - a) / 3_600_000, 1));
+  const daysBetween = (a, b) => (a === null || b === null ? null : round((b - a) / 86_400_000, 1));
+  return {
+    first_fraud_date: dayKey(firstFraud),
+    first_cashout_date: dayKey(firstCashout),
+    first_bank_action_date: dayKey(firstHold),
+    first_refund_date: null,
+    timeline_span_days: daysBetween(firstFraud, lastActivity),
+    fraud_to_cashout_hours: hoursBetween(firstFraud, firstCashout),
+    fraud_to_bank_action_days: daysBetween(firstFraud, firstHold),
+    cashout_to_bank_action_days: daysBetween(firstCashout, firstHold),
+  };
+}
+
+// ─── Module — investigation roadmap ────────────────────────────────────
+
+/**
+ * Auto-generated, prioritised action plan (Module 3) derived from the other
+ * modules. P0 = act in 24-48h, P1 = within a week, P2 = 2-4 weeks, P3 = routine.
+ *
+ * @param {{ mules?: Array<any>, liens?: Array<any>, geography?: any, recovery?: any }} ctx
+ * @returns {Array<{ priority: string, title: string, description: string, action_type: string }>}
+ */
+function investigationRoadmap(ctx) {
+  const { mules = [], liens = [], geography = {} } = ctx;
+  const roadmap = [];
+
+  // P0 — freeze critical-risk mules.
+  const critical = mules.filter((m) => m.mule_score >= RISK_HIGH);
+  if (critical.length > 0) {
+    const names = critical.slice(0, 3)
+      .map((m) => `${m.account_no}${m.bank_name ? ` (${m.bank_name})` : ''}`).join(', ');
+    roadmap.push({
+      priority: 'P0',
+      title: `Freeze ${critical.length} critical-risk mule account(s) immediately`,
+      description: `Mule score ≥ ${RISK_HIGH}. Includes: ${names}${critical.length > 3 ? ', …' : ''}.`,
+      action_type: 'freeze',
+    });
+  }
+
+  // P0 — lien recovery.
+  if (liens.length > 0) {
+    const total = liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0);
+    const top = liens[0];
+    roadmap.push({
+      priority: 'P0',
+      title: `Pursue lien recovery of ${formatINR(total)} across ${liens.length} account(s)`,
+      description: `Top target: ${top.account_no}${top.bank_name ? ` at ${top.bank_name}` : ''} ` +
+        `(${formatINR(top.lien_eligible_amount)}).`,
+      action_type: 'lien',
+    });
+  }
+
+  // P1 — KYC + statements for high-velocity collectors.
+  const collectors = mules.filter((m) => (m.appears_in_cases > 1) || (m.txn_count >= HIGH_TXN_COUNT));
+  if (collectors.length > 0) {
+    roadmap.push({
+      priority: 'P1',
+      title: `Obtain KYC & statements for ${collectors.length} high-activity account(s)`,
+      description: 'Accounts that collect from many senders or transact at high velocity — ' +
+        'request account-opening forms, registered mobile/email, and full statements.',
+      action_type: 'evidence',
+    });
+  }
+
+  // P2 — cross-reference against the national database.
+  if (mules.length > 0) {
+    const n = Math.min(mules.length, 10);
+    roadmap.push({
+      priority: 'P2',
+      title: 'Cross-reference suspect accounts against I4C / NCRP database',
+      description: `Submit ${n} flagged account(s) for correlation with other cases.`,
+      action_type: 'cross_reference',
+    });
+  }
+
+  // P3 — preserve CCTV at the busiest cash-out points.
+  const atms = (geography.top_atms || []).slice(0, 2);
+  if (atms.length > 0) {
+    const where = atms
+      .map((a) => `ATM ${a.atm_id} (${formatINR(a.amount)}, ${a.txn_count} txns)`).join(', ');
+    roadmap.push({
+      priority: 'P3',
+      title: 'Preserve CCTV footage at top ATM locations',
+      description: where,
+      action_type: 'evidence',
+    });
+  }
+
+  return roadmap;
 }
 
 // ─── Module 8 — key findings ───────────────────────────────────────────
@@ -879,6 +1415,16 @@ function geographyAnalysis(txns) {
 function keyFindings(results) {
   const { cashout, mules = [], liens = [], repeats = [], geography } = results;
   const findings = [];
+
+  // 0. Headline victim loss (money that entered the network at the first layer).
+  if (results.victim_loss && results.victim_loss > 0) {
+    const recov = results.recovery;
+    const tail = recov
+      ? ` — ${formatINR(recov.cashed_out)} (${recov.cashed_out_pct}%) already cashed out, ` +
+        `${formatINR(recov.recoverable)} (${recov.recoverable_pct}%) still recoverable.`
+      : '.';
+    findings.push(`Victim loss of ${formatINR(results.victim_loss)} entered the laundering network${tail}`);
+  }
 
   // 1. Cashout urgency.
   if (cashout && cashout.total_cashout_amount > 0) {
@@ -1067,58 +1613,118 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     }, 0);
   }
 
+  // Deduplicate the SAME money re-listed across channel sheets before any
+  // analysis (BUG 1). Write-back above already stamped every raw row; analysis
+  // runs on the collapsed set so amounts and counts aren't multiplied.
+  const deduped = runModule('dedupe', () => dedupeRows(enriched), { rows: enriched, removed: 0 });
+  const rows = deduped.rows;
+  const duplicateCount = deduped.removed;
+
   // Shared rollup (mule + lien depend on it). If it fails, those two modules
   // fall back to empty via their own runModule wrappers using an empty Map.
-  const rollup = runModule('accountRollup', () => buildAccountRollup(enriched), new Map());
+  const rollup = runModule('accountRollup', () => buildAccountRollup(rows), new Map());
 
-  const layers = runModule('layerAnalysis', () => layerAnalysis(enriched), []);
-  const cashout = runModule('cashoutAnalysis', () => cashoutAnalysis(enriched), {
+  const layers = runModule('layerAnalysis', () => layerAnalysis(rows), []);
+  const cashout = runModule('cashoutAnalysis', () => cashoutAnalysis(rows), {
     total_cashout_amount: 0, total_cashout_transactions: 0, atm_cashouts: [],
     same_day_cashouts: 0, cashout_by_state: [], fastest_cashout_hours: null,
   });
   const mules = runModule(
     'muleDetection',
-    () => muleDetection(enriched, rollup, existingRepeatAccounts),
+    () => muleDetection(rows, rollup, existingRepeatAccounts),
     []
   );
   const liens = runModule('lienCalculation', () => lienCalculation(rollup), []);
   const repeats = runModule(
     'repeatAccountDetection',
-    () => repeatAccountDetection(enriched, existingRepeatAccounts),
+    () => repeatAccountDetection(rows, existingRepeatAccounts),
     []
   );
-  const timeline = runModule('timelineAnalysis', () => timelineAnalysis(enriched), []);
-  const geography = runModule('geographyAnalysis', () => geographyAnalysis(enriched), {
-    by_state: [], by_city: [],
+  const timeline = runModule('timelineAnalysis', () => timelineAnalysis(rows), []);
+  const timeline_summary = runModule('timelineSummary', () => timelineSummary(rows), {});
+  const geography = runModule('geographyAnalysis', () => geographyAnalysis(rows), {
+    by_state: [], by_city: [], top_atms: [], top_merchants: [],
   });
+  const money_flow_network = runModule(
+    'moneyFlowNetwork',
+    () => moneyFlowNetwork(rows, rollup),
+    { top_edges: [], aggregators: [], circular_flows: [] }
+  );
+  const victim_accounts = runModule('victimAccounts', () => victimAccounts(rows), []);
+
+  // ── Headline money figures (the "show both" model) ────────────────────
+  // victim_loss = disputed money entering the network at its first hop layer
+  //   (the actual victim loss — file 1 reproduces CypherSOL's ₹10.65L exactly).
+  // total_trail_disputed = disputed summed across every leg (a reference figure;
+  //   it re-counts the same money as it flows deeper).
+  const money = runModule('moneyTotals', () => {
+    const hops = rows.filter((t) => t.row_kind === ROW_KIND.HOP);
+    const minHopLayer = hops.length
+      ? hops.reduce((m, t) => Math.min(m, layerOf(t.layer_no)), Infinity)
+      : null;
+    const victimLoss = minHopLayer === null ? 0 : hops
+      .filter((t) => layerOf(t.layer_no) === minHopLayer)
+      .reduce((s, t) => s + num(t.disputed_amount), 0);
+    const cashedOut = rows
+      .filter((t) => t.row_kind === ROW_KIND.EXIT)
+      .reduce((s, t) => s + num(t.transaction_amount), 0);
+    const onHold = rows
+      .filter((t) => t.row_kind === ROW_KIND.HOLD)
+      .reduce((s, t) => s + num(t.transaction_amount), 0);
+    const trailDisputed = rows.reduce((s, t) => s + num(t.disputed_amount), 0);
+    return {
+      hopCount: hops.length,
+      benefAccounts: new Set(hops.map((t) => str(t.beneficiary_account)).filter(Boolean)).size,
+      victimLoss: round(victimLoss),
+      cashedOut: round(cashedOut),
+      onHold: round(onHold),
+      trailDisputed: round(trailDisputed),
+    };
+  }, { hopCount: 0, benefAccounts: 0, victimLoss: 0, cashedOut: 0, onHold: 0, trailDisputed: 0 });
+
+  const recovery_status = runModule(
+    'recoveryStatus',
+    () => recoveryStatus(money.victimLoss, money.cashedOut, money.onHold, 0),
+    {}
+  );
+  const investigation_roadmap = runModule(
+    'investigationRoadmap',
+    () => investigationRoadmap({ mules, liens, geography, recovery: recovery_status }),
+    []
+  );
   const findings = runModule(
     'keyFindings',
-    () => keyFindings({ layers, cashout, mules, liens, repeats, geography }),
+    () => keyFindings({
+      layers, cashout, mules, liens, repeats, geography,
+      victim_loss: money.victimLoss, recovery: recovery_status,
+    }),
     []
   );
 
-  // Summary aggregates (independent of the modules above).
+  // Summary aggregates.
   const summary = runModule('summary', () => {
-    const totalDisputed = enriched.reduce((s, t) => s + num(t.disputed_amount), 0);
-    const accounts = new Set();
     let earliest = null;
-    for (const t of enriched) {
-      const acct = str(t.beneficiary_account);
-      if (acct) accounts.add(acct);
+    for (const t of rows) {
+      if (t.row_kind !== ROW_KIND.HOP) continue;
       const ms = toMs(t.transaction_date);
       if (ms !== null && (earliest === null || ms < earliest)) earliest = ms;
     }
     return {
-      total_transactions: enriched.length,
-      total_disputed_amount: round(totalDisputed),
+      total_transactions: enriched.length,        // raw legs (matches the DB ledger)
+      unique_transactions: money.hopCount,         // distinct fund-movement hops
+      duplicate_count: duplicateCount,
+      victim_loss_amount: money.victimLoss,        // headline "Total Fraud"
+      total_disputed_amount: money.trailDisputed,  // all-layers sum (reference)
+      total_trail_disputed: money.trailDisputed,
       total_layers: layers.length,
-      total_accounts: accounts.size,
+      total_accounts: money.benefAccounts,
       fraud_start_date: earliest === null
         ? null
         : dayjs.utc(earliest).add(IST_OFFSET_MINUTES, 'minute').format('YYYY-MM-DD'),
     };
   }, {
-    total_transactions: enriched.length, total_disputed_amount: 0,
+    total_transactions: enriched.length, unique_transactions: 0, duplicate_count: duplicateCount,
+    victim_loss_amount: 0, total_disputed_amount: 0, total_trail_disputed: 0,
     total_layers: layers.length, total_accounts: 0, fraud_start_date: null,
   });
 
@@ -1132,7 +1738,12 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     lien_calculation: liens,
     repeat_accounts: repeats,
     timeline,
+    timeline_summary,
     geography,
+    money_flow_network,
+    recovery_status,
+    investigation_roadmap,
+    victim_accounts,
     key_findings: findings,
     transactions_updated: transactionsUpdated,
     errors,
@@ -1150,17 +1761,25 @@ module.exports = {
   lienCalculation,
   repeatAccountDetection,
   timelineAnalysis,
+  timelineSummary,
   geographyAnalysis,
+  moneyFlowNetwork,
+  recoveryStatus,
+  victimAccounts,
+  investigationRoadmap,
   keyFindings,
   // Helpers exposed for testing; not part of the stable contract.
   _internals: Object.freeze({
     classifyCashoutMode,
+    classifyRowKind,
     enrichTransactions,
+    dedupeRows,
     buildAccountRollup,
     formatINR,
     istDayKey,
     diffHours,
     CASHOUT_MODE,
+    ROW_KIND,
     MULE_WEIGHTS,
   }),
 };

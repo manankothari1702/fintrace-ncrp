@@ -5,8 +5,9 @@
  * and wraps the whole tree in a global error boundary so a render failure in
  * one page shows a recoverable fallback instead of a blank screen.
  *
- * Routes (8 pages, mirroring the sidebar):
- *   /upload  /dashboard  /layers  /mules  /lien  /transactions  /emails  /timeline
+ * Routes (9 pages, mirroring the sidebar):
+ *   /upload  /dashboard  /layers  /money-flow  /mules  /lien  /transactions
+ *   /emails  /timeline
  * `/` redirects to /upload — the natural entry point of the workflow.
  */
 
@@ -31,6 +32,7 @@ import UploadPage from './pages/Upload.jsx';
 
 const DashboardPage = lazy(() => import('./pages/Dashboard.jsx'));
 const LayersPage = lazy(() => import('./pages/Layers.jsx'));
+const MoneyFlowPage = lazy(() => import('./pages/MoneyFlow.jsx'));
 const MulesPage = lazy(() => import('./pages/Mules.jsx'));
 const LienPage = lazy(() => import('./pages/Lien.jsx'));
 const TransactionsPage = lazy(() => import('./pages/Transactions.jsx'));
@@ -101,6 +103,7 @@ export default function App() {
                   <Route path="/upload" element={<UploadPage />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/layers" element={<LayersPage />} />
+                  <Route path="/money-flow" element={<MoneyFlowPage />} />
                   <Route path="/mules" element={<MulesPage />} />
                   <Route path="/lien" element={<LienPage />} />
                   <Route path="/transactions" element={<TransactionsPage />} />

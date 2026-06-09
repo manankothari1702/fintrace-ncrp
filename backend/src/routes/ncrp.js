@@ -51,6 +51,7 @@ const {
   insertAuditLog,
 } = require('../db/queries');
 const { generateReportPdf } = require('../utils/pdfGenerator');
+const { generateReportExcel } = require('../utils/excelGenerator');
 const { generateDraftEmails } = require('../utils/emailGenerator');
 
 // ─── On-disk locations (backend/uploads, backend/exports) ────────────
@@ -696,11 +697,18 @@ function createNcrpRouter(db) {
     });
   });
 
-  // GET /api/ncrp/:id/layers — persisted layer aggregates.
+  // GET /api/ncrp/:id/layers — per-layer aggregates. Served from the analysis
+  // snapshot (which carries the rich Module-5 fields: txn_count, bank_count,
+  // fan_out_ratio, top_banks), falling back to the persisted table for reports
+  // analysed before those fields existed.
   router.get('/ncrp/:id/layers', (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
-    res.json(stmt.layers.all(report.id));
+    const analysis = parseAnalysis(report);
+    if (analysis && Array.isArray(analysis.layer_analysis) && analysis.layer_analysis.length) {
+      return res.json(analysis.layer_analysis);
+    }
+    return res.json(stmt.layers.all(report.id));
   });
 
   // GET /api/ncrp/:id/mules — mule detection from the analysis snapshot.
@@ -889,6 +897,47 @@ function createNcrpRouter(db) {
         return sendError(res, 500, 'PDF_GENERATION_FAILED',
           'Could not generate the PDF.');
       }
+    }
+  });
+
+  // GET /api/ncrp/:id/excel — build the multi-sheet workbook and stream it.
+  router.get('/ncrp/:id/excel', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+
+    try {
+      const analysis = parseAnalysis(report) || {};
+      const liens = stmt.liens.all(report.id);
+      // Full ledger, ordered for readability (chronological).
+      const transactions = db.prepare(
+        'SELECT * FROM ncrp_transactions WHERE report_id = ? ORDER BY transaction_date ASC, id ASC'
+      ).all(report.id);
+      const ci = stmt.caseInfo.get(report.id) || {};
+
+      const buffer = generateReportExcel({
+        report, analysis, liens, transactions,
+        ack_no: ci.ack_no ?? null,
+        complaint_date: ci.complaint_date ?? null,
+      });
+
+      const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
+      const fileName = `FinTrace-${safeAck}-${Date.now()}.xlsx`;
+
+      insertAuditLog(db, {
+        report_id: report.id, action: 'excel.generated', details: { file: fileName },
+      });
+
+      res.setHeader('Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(buffer.length));
+      return res.end(buffer);
+    } catch (err) {
+      console.error('[ncrp] Excel generation failed:', err);
+      if (!res.headersSent) {
+        return sendError(res, 500, 'EXCEL_GENERATION_FAILED', 'Could not generate the Excel workbook.');
+      }
+      return undefined;
     }
   });
 

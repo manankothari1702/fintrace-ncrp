@@ -162,6 +162,9 @@ export const getGeography = (id) => api.get(`/ncrp/${id}/geography`).then((r) =>
 /** Absolute URL to the dossier PDF download (open directly in a new tab). */
 export const reportPdfUrl = (id) => `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/pdf`;
 
+/** Absolute URL to the multi-sheet Excel workbook download. */
+export const reportExcelUrl = (id) => `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/excel`;
+
 /**
  * Map an {@link ApiError} to an officer-facing message per the Phase 6 error
  * rules. Returns undefined for cases best served by the raw `error.message`

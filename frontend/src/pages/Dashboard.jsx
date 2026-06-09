@@ -1,16 +1,16 @@
 /**
  * Dashboard page.
  *
- * Case overview for one report: four headline StatCards, two charts (amount by
- * layer + payment-mode split), the analyzer's key findings, and a cashout
- * summary table.
+ * Case overview for one report. Headline metrics use the "show both" money
+ * model: a Victim Loss figure (disputed money that entered the network at the
+ * first hop) plus the all-layers Total Trail Disputed for reference. Below that:
+ * a Recovery Status ("fund trail") bar, key milestone dates, amount-by-layer and
+ * payment-mode charts, an auto-generated Investigation Roadmap, the analyzer's
+ * key findings, and the top cashout locations. Export buttons stream the PDF
+ * dossier and the multi-sheet Excel workbook.
  *
- * The reportId is resolved by {@link useActiveReportId}: the URL (`?reportId=`)
- * wins, falling back to the shared/persisted active report.
- *
- * Loads getReport(id); when the report is still analysing it shows an
- * auto-refreshing "Analyzing…" state. The payment-mode pie is derived
- * client-side from a page of getTransactions (the analyzer emits no such split).
+ * The reportId is resolved by {@link useActiveReportId}. While the report is
+ * still analysing the page shows an auto-refreshing "Analyzing…" state.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -32,18 +32,19 @@ import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
-import { formatCrore, formatINR, formatNumber } from '../utils/format.js';
-import { getReport, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { formatCrore, formatINR, formatNumber, formatDate } from '../utils/format.js';
+import {
+  getReport, getTransactions, reportPdfUrl, reportExcelUrl,
+  friendlyErrorMessage, ApiError,
+} from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 // ─── Colour helpers ──────────────────────────────────────────────────────────
 
-// Interpolate brand navy → danger red across the layers (Layer 0 = blue,
-// final layer = red), matching the spec's "blue to red" gradient.
 function layerColor(index, total) {
   const t = total <= 1 ? 0 : index / (total - 1);
-  const from = [31, 58, 110];   // --brand  #1F3A6E
-  const to = [198, 40, 40];     // --danger #C62828
+  const from = [31, 58, 110];
+  const to = [198, 40, 40];
   const ch = (i) => Math.round(from[i] + (to[i] - from[i]) * t);
   return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`;
 }
@@ -56,16 +57,29 @@ const PAYMENT_MODE_COLORS = {
   Others: 'var(--text-muted)',
 };
 
-// Pick an icon for a finding based on its wording.
+// Recovery-bucket → colour grammar (cashed out is the worst outcome).
+const RECOVERY_COLORS = {
+  cashed_out: 'var(--danger)',
+  on_hold: 'var(--accent-orange)',
+  refunded: 'var(--brand)',
+  recoverable: 'var(--accent)',
+};
+
+// Roadmap priority → colour (P0 most urgent).
+const PRIORITY_COLORS = {
+  P0: 'var(--danger)',
+  P1: 'var(--accent-orange)',
+  P2: 'var(--brand)',
+  P3: 'var(--text-muted)',
+};
+
 function findingIcon(text) {
   const t = text.toLowerCase();
   if (/(lien|recommend|priority|action|recover)/.test(t)) return '🎯';
-  if (/(₹|cash|amount|exposure|recoverable)/.test(t)) return '💰';
+  if (/(₹|cash|amount|exposure|recoverable|victim)/.test(t)) return '💰';
   return '⚠️';
 }
 
-// The analyzer does not emit a payment-mode breakdown, so the pie is derived
-// client-side by grouping a page of transactions by payment_mode.
 function groupByPaymentMode(rows) {
   const counts = new Map();
   for (const t of rows || []) {
@@ -75,6 +89,65 @@ function groupByPaymentMode(rows) {
   return [...counts.entries()]
     .map(([mode, count]) => ({ mode, count }))
     .sort((a, b) => b.count - a.count);
+}
+
+// ─── Recovery "fund trail" bar ─────────────────────────────────────────────────
+
+function RecoveryBar({ recovery }) {
+  if (!recovery || !recovery.base_amount) return null;
+  const segments = [
+    { key: 'cashed_out', label: 'Cashed Out', amount: recovery.cashed_out, pct: recovery.cashed_out_pct },
+    { key: 'on_hold', label: 'On Hold', amount: recovery.on_hold, pct: recovery.on_hold_pct },
+    { key: 'refunded', label: 'Refunded', amount: recovery.refunded, pct: recovery.refunded_pct },
+    { key: 'recoverable', label: 'Recoverable', amount: recovery.recoverable, pct: recovery.recoverable_pct },
+  ].filter((s) => s.pct > 0);
+
+  return (
+    <div className="card card-pad" style={{ marginBottom: 20 }}>
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Fund Trail — Recovery Status</h3>
+      <p className="subtitle" style={{ marginBottom: 14 }}>
+        Where the {formatINR(recovery.base_amount)} of victim funds ended up.
+      </p>
+      <div style={{ display: 'flex', height: 28, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
+        {segments.map((s) => (
+          <div
+            key={s.key}
+            title={`${s.label}: ${formatINR(s.amount)} (${s.pct}%)`}
+            style={{
+              width: `${s.pct}%`, background: RECOVERY_COLORS[s.key],
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontSize: 11, fontWeight: 700, minWidth: s.pct > 6 ? 'auto' : 0,
+            }}
+          >
+            {s.pct >= 8 ? `${s.pct}%` : ''}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 12 }}>
+        {segments.map((s) => (
+          <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 3, background: RECOVERY_COLORS[s.key], display: 'inline-block' }} />
+            <span style={{ fontWeight: 600 }}>{s.label}</span>
+            <span style={{ color: 'var(--text-muted)' }}>{formatINR(s.amount)} ({s.pct}%)</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Milestone date card ───────────────────────────────────────────────────────
+
+function DateCard({ label, date, icon, color }) {
+  return (
+    <div className="stat-card" style={{ borderLeftColor: color }}>
+      <div className="stat-head">
+        <span className="stat-title">{label}</span>
+        <span className="stat-icon" aria-hidden="true">{icon}</span>
+      </div>
+      <div className="stat-value" style={{ color, fontSize: 20 }}>{date ? formatDate(date) : '—'}</div>
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -104,13 +177,11 @@ export default function Dashboard() {
         setLoading(false);
 
         if (r.analysis_status === 'complete') {
-          // Derive the payment-mode pie from a page of transactions.
           try {
             const txns = await getTransactions(reportId, { limit: 500 });
             if (!cancelled) setPaymentSplit(groupByPaymentMode(txns.data));
-          } catch (_e) { /* pie is non-critical; leave it empty on failure */ }
+          } catch (_e) { /* pie is non-critical */ }
         } else if (r.analysis_status !== 'error') {
-          // Still pending / processing — auto-refresh until it settles.
           timer = setTimeout(load, 2000);
         }
       } catch (err) {
@@ -126,6 +197,10 @@ export default function Dashboard() {
   }, [reportId]);
 
   const analysis = report?.analysis_json;
+  const summary = analysis?.summary;
+  const recovery = analysis?.recovery_status;
+  const timelineSummary = analysis?.timeline_summary;
+  const roadmap = analysis?.investigation_roadmap || [];
 
   const lienEligibleTotal = useMemo(
     () => (analysis?.lien_calculation || []).reduce((s, l) => s + (l.lien_eligible_amount || 0), 0),
@@ -180,7 +255,6 @@ export default function Dashboard() {
     );
   }
 
-  // Analysis failed server-side.
   if (report.analysis_status === 'error') {
     return (
       <div className="page">
@@ -196,7 +270,6 @@ export default function Dashboard() {
     );
   }
 
-  // Still analysing — show progress and auto-refresh (the effect re-polls).
   if (report.analysis_status !== 'complete') {
     return (
       <div className="page">
@@ -209,22 +282,50 @@ export default function Dashboard() {
     );
   }
 
-  const totalLayers = analysis?.summary?.total_layers ?? report.total_layers;
+  const totalLayers = summary?.total_layers ?? report.total_layers;
+  const victimLoss = summary?.victim_loss_amount ?? report.total_disputed_amount;
+  const trailDisputed = summary?.total_trail_disputed ?? summary?.total_disputed_amount ?? report.total_disputed_amount;
+  const uniqueTxns = summary?.unique_transactions ?? report.total_transactions;
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>Dashboard</h1>
-        <p className="subtitle">{report.original_filename} · case overview &amp; recommended actions</p>
+      <header className="page-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h1>Dashboard</h1>
+          <p className="subtitle">{report.original_filename} · case overview &amp; recommended actions</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a className="btn btn-sm" href={reportExcelUrl(report.id)} target="_blank" rel="noreferrer">⬇ Export Excel</a>
+          <a className="btn btn-sm btn-primary" href={reportPdfUrl(report.id)} target="_blank" rel="noreferrer">⬇ Export PDF</a>
+        </div>
       </header>
 
-      {/* Row 1 — headline metrics */}
+      {/* Row 1 — headline metrics (Victim Loss is the actual loss; Trail Disputed re-counts the same money across hops). */}
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="Total Disputed" value={formatCrore(report.total_disputed_amount)} subtitle={`${formatNumber(report.total_transactions)} transactions`} icon="💸" color="var(--danger)" />
+        <StatCard
+          title="Victim Loss (Total Fraud)"
+          value={formatCrore(victimLoss)}
+          subtitle={`Trail disputed ${formatCrore(trailDisputed)} · ${formatNumber(uniqueTxns)} transactions`}
+          icon="💸"
+          color="var(--danger)"
+        />
         <StatCard title="Layers in Trail" value={totalLayers} subtitle="laundering hops" icon="🔢" color="var(--brand)" />
         <StatCard title="Mule Accounts" value={formatNumber(analysis?.mule_detection?.length || 0)} subtitle="flagged accounts" icon="🎯" color="var(--accent-orange)" />
-        <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable" icon="💰" color="var(--accent)" />
+        <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable balance" icon="💰" color="var(--accent)" />
       </div>
+
+      {/* Recovery / fund-trail bar */}
+      <RecoveryBar recovery={recovery} />
+
+      {/* Milestone dates */}
+      {timelineSummary && (
+        <div className="grid grid-stats" style={{ marginBottom: 20 }}>
+          <DateCard label="First Fraud" date={timelineSummary.first_fraud_date} icon="🚨" color="var(--danger)" />
+          <DateCard label="First Cashout" date={timelineSummary.first_cashout_date} icon="🏧" color="var(--accent-orange)" />
+          <DateCard label="First Bank Action" date={timelineSummary.first_bank_action_date} icon="🏦" color="var(--brand)" />
+          <DateCard label="First Refund" date={timelineSummary.first_refund_date} icon="↩️" color="var(--accent)" />
+        </div>
+      )}
 
       {/* Row 2 — charts */}
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', marginBottom: 20 }}>
@@ -260,7 +361,36 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Row 3 — key findings */}
+      {/* Investigation roadmap */}
+      {roadmap.length > 0 && (
+        <div className="card card-pad" style={{ marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, marginBottom: 12 }}>Investigation Roadmap</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {roadmap.map((item, i) => (
+              <div
+                key={i}
+                style={{
+                  display: 'flex', gap: 12, alignItems: 'flex-start',
+                  padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                  borderLeft: `4px solid ${PRIORITY_COLORS[item.priority] || 'var(--text-muted)'}`,
+                }}
+              >
+                <span style={{
+                  flexShrink: 0, fontWeight: 800, fontSize: 12, color: '#fff',
+                  background: PRIORITY_COLORS[item.priority] || 'var(--text-muted)',
+                  borderRadius: 4, padding: '2px 8px',
+                }}>{item.priority}</span>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{item.title}</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>{item.description}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Key findings */}
       <div className="card card-pad" style={{ marginBottom: 20 }}>
         <h3 style={{ fontSize: 15, marginBottom: 12 }}>Key Findings &amp; Recommended Actions</h3>
         {(analysis?.key_findings || []).length === 0 ? (
@@ -277,7 +407,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Row 4 — cashout summary */}
+      {/* Top cashout locations */}
       <div className="card card-pad">
         <h3 style={{ fontSize: 15, marginBottom: 12 }}>Top Cashout Locations</h3>
         <div className="table-wrap">

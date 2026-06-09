@@ -25,10 +25,14 @@ import { useActiveReportId } from '../context/ReportContext.jsx';
 // ─── Score progress bar ──────────────────────────────────────────────────────
 
 function MuleScoreBar({ score }) {
+  // Scores are uncapped (a textbook mule trips every signal and exceeds 100),
+  // so the bar fill is clamped to its track while the numeric label shows the
+  // true score.
+  const fill = Math.min(100, Math.max(0, score));
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ width: 100, height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ width: `${score}%`, height: '100%', background: getMuleRiskColor(score), borderRadius: 4 }} />
+        <div style={{ width: `${fill}%`, height: '100%', background: getMuleRiskColor(score), borderRadius: 4 }} />
       </div>
       <span style={{ fontWeight: 700, color: getMuleRiskColor(score), minWidth: 26, textAlign: 'right' }}>{score}</span>
     </div>
@@ -87,15 +91,34 @@ export default function Mules() {
     { accessorKey: 'mule_score', header: 'Mule Score', cell: ({ getValue }) => <MuleScoreBar score={getValue()} /> },
     { accessorKey: 'pass_through_ratio', header: 'Pass-Through', cell: ({ getValue }) => formatPercent(getValue()) },
     { accessorKey: 'total_received', header: 'Received', cell: ({ getValue }) => formatINR(getValue()) },
-    { accessorKey: 'total_forwarded', header: 'Forwarded', cell: ({ getValue }) => formatINR(getValue()) },
+    { accessorKey: 'total_cashout', header: 'Cashed Out', cell: ({ getValue }) => formatINR(getValue()) },
+    { accessorKey: 'channels', header: 'Channels', cell: ({ getValue }) => (getValue() || []).join(', ') || '—' },
     { accessorKey: 'forward_speed_hours', header: 'Fwd Speed', cell: ({ getValue }) => formatHours(getValue()) },
     { accessorKey: 'risk_label', header: 'Risk', cell: ({ row }) => <Badge variant="risk" value={row.original.mule_score} /> },
     { accessorKey: 'appears_in_cases', header: 'Cases' },
   ];
 
-  // Lazily load this account's transactions when the row is expanded.
+  // Lazily load this account's transactions when the row is expanded; show the
+  // scoring rationale (suspicion reasons) above the history.
   const renderExpanded = (m) => (
-    <AccountHistory reportId={reportId} account={m.account_no} />
+    <div>
+      {Array.isArray(m.suspicion_reasons) && m.suspicion_reasons.length > 0 && (
+        <div style={{ padding: '14px 18px 0' }}>
+          <h4 style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Why this account was flagged{m.same_day_in_out ? ' · same-day in/out' : ''}
+          </h4>
+          <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, margin: 0 }}>
+            {m.suspicion_reasons.map((reason, i) => (
+              <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+                <span style={{ color: 'var(--danger)' }} aria-hidden="true">▸</span>
+                <span>{reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <AccountHistory reportId={reportId} account={m.account_no} />
+    </div>
   );
 
   if (loading) {
@@ -130,13 +153,13 @@ export default function Mules() {
     <div className="page">
       <header className="page-header">
         <h1>Mule Account Detection</h1>
-        <p className="subtitle">{mules.length} flagged accounts scored 0–100 across six laundering signals.</p>
+        <p className="subtitle">{mules.length} flagged accounts scored across 11 laundering signals (expand a row for the reasons).</p>
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score 71–100" icon="🔴" color="var(--danger)" />
-        <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 41–70" icon="🟠" color="var(--accent-orange)" />
-        <StatCard title="Low Risk" value={riskCounts.LOW} subtitle="score 0–40" icon="🟢" color="var(--accent)" />
+        <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score ≥ 70" icon="🔴" color="var(--danger)" />
+        <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 40–69" icon="🟠" color="var(--accent-orange)" />
+        <StatCard title="Low Risk" value={riskCounts.LOW} subtitle="score < 40" icon="🟢" color="var(--accent)" />
       </div>
 
       <DataTable

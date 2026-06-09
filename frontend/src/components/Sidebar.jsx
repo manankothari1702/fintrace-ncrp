@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/upload', icon: '📤', label: 'Upload' },
   { to: '/dashboard', icon: '📊', label: 'Dashboard' },
   { to: '/layers', icon: '🔢', label: 'Layers' },
+  { to: '/money-flow', icon: '🕸️', label: 'Money Flow' },
   { to: '/mules', icon: '🎯', label: 'Mule Accounts' },
   { to: '/lien', icon: '💰', label: 'Lien Tracker' },
   { to: '/transactions', icon: '📋', label: 'Transactions' },

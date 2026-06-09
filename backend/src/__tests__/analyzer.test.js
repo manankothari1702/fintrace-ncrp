@@ -11,16 +11,24 @@
  */
 
 const {
+  analyzeReport,
   layerAnalysis,
   cashoutAnalysis,
   muleDetection,
   lienCalculation,
   timelineAnalysis,
+  timelineSummary,
+  geographyAnalysis,
+  moneyFlowNetwork,
+  recoveryStatus,
+  victimAccounts,
   keyFindings,
   _internals,
 } = require('../analyzers/analyzer');
 
-const { enrichTransactions, buildAccountRollup } = _internals;
+const {
+  enrichTransactions, buildAccountRollup, dedupeRows, classifyRowKind, ROW_KIND,
+} = _internals;
 
 /**
  * Standard 3-layer fixture for layer + cashout + general tests.
@@ -92,42 +100,52 @@ function buildStandardTransactions() {
 }
 
 /**
- * High-score mule fixture: HMULE is a terminal account that receives entirely
- * via ATM (pass-through ratio 1.0) AND appears in two acknowledgement numbers
- * (cross-case bonus). Designed to land above the HIGH threshold.
+ * High-score mule fixture (new money model): HMULE RECEIVES via transfers from
+ * two different victims (two acknowledgement numbers → fan-in + cross-case) and
+ * then withdraws the lot as cash via ATM the same day (pass-through ≈ 1.0,
+ * fast forward, appears in both transfer & cash-out sheets). Designed to land
+ * comfortably above the HIGH threshold.
  */
 function buildHighMuleTransactions() {
   return [
+    // Inbound transfer #1 (a real hop: V1 → HMULE).
     {
-      ack_no: 'ACKA',
+      ack_no: 'ACKA', victim_account: 'V1', victim_bank: 'HDFC',
       beneficiary_account: 'HMULE', beneficiary_bank: 'BoB',
       beneficiary_name: 'High Mule', ifsc_code: 'BARB0009999',
       transaction_date: '2024-02-01T10:00:00.000Z',
       transaction_amount: 50000, disputed_amount: 50000,
-      utr_no: 'HA-1', payment_mode: 'ATM', layer_no: 3,
-      atm_id: 'ATM-HM', atm_location: 'HM Branch',
-      city: 'Delhi', state: 'Delhi',
+      utr_no: 'HA-1', payment_mode: 'IMPS', layer_no: 2,
+      atm_id: null, atm_location: null, city: 'Delhi', state: 'Delhi',
     },
+    // Inbound transfer #2 from a second victim/case (V2 → HMULE).
     {
-      ack_no: 'ACKA',
+      ack_no: 'ACKB', victim_account: 'V2', victim_bank: 'SBI',
       beneficiary_account: 'HMULE', beneficiary_bank: 'BoB',
       beneficiary_name: 'High Mule', ifsc_code: 'BARB0009999',
-      transaction_date: '2024-02-01T11:00:00.000Z',
-      transaction_amount: 30000, disputed_amount: 50000,
-      utr_no: 'HA-2', payment_mode: 'ATM', layer_no: 3,
-      atm_id: 'ATM-HM', atm_location: 'HM Branch',
-      city: 'Delhi', state: 'Delhi',
+      transaction_date: '2024-02-01T10:30:00.000Z',
+      transaction_amount: 30000, disputed_amount: 30000,
+      utr_no: 'HB-1', payment_mode: 'IMPS', layer_no: 2,
+      atm_id: null, atm_location: null, city: 'Delhi', state: 'Delhi',
     },
-    // Different case → cross-case bonus.
+    // Cash exits via ATM the same day (cross-sheet join → benef === victim).
     {
-      ack_no: 'ACKB',
+      ack_no: 'ACKA', victim_account: 'HMULE',
       beneficiary_account: 'HMULE', beneficiary_bank: 'BoB',
       beneficiary_name: 'High Mule', ifsc_code: 'BARB0009999',
-      transaction_date: '2024-02-02T10:00:00.000Z',
-      transaction_amount: 20000, disputed_amount: 30000,
-      utr_no: 'HB-1', payment_mode: 'ATM', layer_no: 3,
-      atm_id: 'ATM-HM', atm_location: 'HM Branch',
-      city: 'Delhi', state: 'Delhi',
+      transaction_date: '2024-02-01T12:00:00.000Z',
+      transaction_amount: 50000, disputed_amount: 50000,
+      utr_no: 'HA-2', payment_mode: 'ATM', layer_no: 2,
+      atm_id: 'ATM-HM', atm_location: 'HM Branch', city: 'Delhi', state: 'Delhi',
+    },
+    {
+      ack_no: 'ACKB', victim_account: 'HMULE',
+      beneficiary_account: 'HMULE', beneficiary_bank: 'BoB',
+      beneficiary_name: 'High Mule', ifsc_code: 'BARB0009999',
+      transaction_date: '2024-02-01T13:00:00.000Z',
+      transaction_amount: 30000, disputed_amount: 30000,
+      utr_no: 'HB-2', payment_mode: 'ATM', layer_no: 2,
+      atm_id: 'ATM-HM', atm_location: 'HM Branch', city: 'Delhi', state: 'Delhi',
     },
   ];
 }
@@ -276,5 +294,143 @@ describe('keyFindings', () => {
     for (const f of findings) {
       expect(typeof f).toBe('string');
     }
+  });
+});
+
+// ─── New money model: classification, dedup, gross lien, modules ──────
+
+/**
+ * A small but complete trail exercising the new model:
+ *   • Two victims (VIC1, VIC2) fund M1 at layer 1 (fan-in).
+ *   • M1 forwards most of it to M2 at layer 2 (a hop).
+ *   • M2 withdraws some as cash (ATM exit) and has some frozen (hold).
+ *   • One exact duplicate of the first hop (re-listed on another sheet).
+ */
+function buildTrail() {
+  return [
+    { ack_no: 'C1', victim_account: 'VIC1', beneficiary_account: 'M1', beneficiary_bank: 'BoB',
+      transaction_date: '2024-03-01T10:00:00.000Z', transaction_amount: 100000, disputed_amount: 100000,
+      utr_no: 'U-1', payment_mode: 'IMPS', layer_no: 1, state: 'Delhi' },
+    // Exact duplicate of the row above (same benef/date/amount/utr) — must collapse.
+    { ack_no: 'C1', victim_account: 'VIC1', beneficiary_account: 'M1', beneficiary_bank: 'BoB',
+      transaction_date: '2024-03-01T10:00:00.000Z', transaction_amount: 100000, disputed_amount: 100000,
+      utr_no: 'U-1', payment_mode: 'ATM', layer_no: 1, state: 'Delhi' },
+    { ack_no: 'C1', victim_account: 'VIC2', beneficiary_account: 'M1', beneficiary_bank: 'BoB',
+      transaction_date: '2024-03-01T11:00:00.000Z', transaction_amount: 50000, disputed_amount: 50000,
+      utr_no: 'U-2', payment_mode: 'IMPS', layer_no: 1, state: 'Delhi' },
+    { ack_no: 'C1', victim_account: 'M1', beneficiary_account: 'M2', beneficiary_bank: 'Axis',
+      transaction_date: '2024-03-01T14:00:00.000Z', transaction_amount: 80000, disputed_amount: 60000,
+      utr_no: 'U-3', payment_mode: 'UPI', layer_no: 2, state: 'Delhi' },
+    // M2 cash exit (cross-sheet join → benef === victim).
+    { ack_no: 'C1', victim_account: 'M2', beneficiary_account: 'M2', beneficiary_bank: 'Axis',
+      transaction_date: '2024-03-01T16:00:00.000Z', transaction_amount: 40000, disputed_amount: 30000,
+      utr_no: 'U-4', payment_mode: 'ATM', layer_no: 2, atm_id: 'ATMX', state: 'Punjab' },
+    // M2 funds frozen by the bank.
+    { ack_no: 'C1', victim_account: 'M2', beneficiary_account: 'M2', beneficiary_bank: 'Axis',
+      transaction_date: '2024-03-02T09:00:00.000Z', transaction_amount: 20000, disputed_amount: 0,
+      utr_no: 'U-5', payment_mode: 'HOLD', layer_no: 2 },
+  ];
+}
+
+describe('classifyRowKind', () => {
+  test('hop / exit / hold are distinguished correctly', () => {
+    const e = enrichTransactions(buildTrail());
+    expect(classifyRowKind(e[0])).toBe(ROW_KIND.HOP);   // VIC1 -> M1
+    expect(classifyRowKind(e[4])).toBe(ROW_KIND.EXIT);  // M2 ATM withdrawal
+    expect(classifyRowKind(e[5])).toBe(ROW_KIND.HOLD);  // M2 hold
+  });
+});
+
+describe('dedupeRows', () => {
+  test('collapses an exact (benef+date+amount+utr) duplicate', () => {
+    const e = enrichTransactions(buildTrail());
+    const { rows, removed } = dedupeRows(e);
+    expect(removed).toBe(1);
+    expect(rows).toHaveLength(e.length - 1);
+  });
+});
+
+describe('buildAccountRollup (gross-balance lien)', () => {
+  test('lien = received − forwarded − hold − exit, capped at disputed', () => {
+    const e = dedupeRows(enrichTransactions(buildTrail())).rows;
+    const rollup = buildAccountRollup(e);
+    const m1 = rollup.get('M1');
+    const m2 = rollup.get('M2');
+    // M1: received 150k, forwarded 80k onward → balance 70k (≤ disputed 150k).
+    expect(m1.total_received).toBe(150000);
+    expect(m1.onward_forwarded).toBe(80000);
+    expect(m1.lien_eligible_amount).toBe(70000);
+    expect(m1.senders.size).toBe(2); // fan-in from VIC1, VIC2
+    // M2: received 80k (disputed 60k), exit 40k, hold 20k → balance 20k, ≤ disputed.
+    expect(m2.total_cashed_out).toBe(40000);
+    expect(m2.total_on_hold).toBe(20000);
+    expect(m2.lien_eligible_amount).toBe(20000);
+  });
+
+  test('lien is capped at the disputed inflow (no gross over-statement)', () => {
+    // Received 1,000,000 gross but only 5,000 disputed; nothing left.
+    const txns = [{
+      ack_no: 'C2', victim_account: 'PAYER', beneficiary_account: 'AGG', beneficiary_bank: 'X',
+      transaction_date: '2024-04-01T00:00:00.000Z', transaction_amount: 1000000, disputed_amount: 5000,
+      utr_no: 'B-1', payment_mode: 'UPI', layer_no: 1,
+    }];
+    const rollup = buildAccountRollup(enrichTransactions(txns));
+    expect(rollup.get('AGG').lien_eligible_amount).toBe(5000);
+  });
+});
+
+describe('victimAccounts', () => {
+  test('returns the distinct layer-1 senders with amounts', () => {
+    const e = dedupeRows(enrichTransactions(buildTrail())).rows;
+    const victims = victimAccounts(e);
+    expect(victims).toHaveLength(2);
+    const byAcct = Object.fromEntries(victims.map((v) => [v.account_no, v]));
+    expect(byAcct.VIC1.amount_sent).toBe(100000);
+    expect(byAcct.VIC2.amount_sent).toBe(50000);
+  });
+});
+
+describe('moneyFlowNetwork', () => {
+  test('builds source→destination edges and ranks collectors by fan-in', () => {
+    const e = dedupeRows(enrichTransactions(buildTrail())).rows;
+    const rollup = buildAccountRollup(e);
+    const net = moneyFlowNetwork(e, rollup);
+    expect(net.top_edges.length).toBeGreaterThanOrEqual(3);
+    const top = net.aggregators[0];
+    expect(top.account_no).toBe('M1'); // highest fan-in
+    expect(top.in_degree).toBe(2);
+  });
+});
+
+describe('recoveryStatus', () => {
+  test('percentages are taken against the victim-loss base and sum to ~100', () => {
+    const r = recoveryStatus(150000, 40000, 20000, 0);
+    expect(r.base_amount).toBe(150000);
+    expect(r.cashed_out_pct).toBeCloseTo(26.7, 0);
+    expect(r.recoverable).toBe(90000);
+    const total = r.cashed_out_pct + r.on_hold_pct + r.refunded_pct + r.recoverable_pct;
+    expect(total).toBeCloseTo(100, 0);
+  });
+});
+
+describe('analyzeReport (end-to-end shape)', () => {
+  test('summary separates victim loss from trail disputed; modules are present', async () => {
+    const result = await analyzeReport(99, buildTrail(), []);
+    const s = result.summary;
+    expect(s.duplicate_count).toBe(1);
+    expect(s.unique_transactions).toBe(3);          // 3 hops after dedup
+    expect(s.victim_loss_amount).toBe(150000);       // layer-1 disputed
+    expect(s.total_layers).toBe(2);
+    // The full module set is wired into the result.
+    expect(Array.isArray(result.money_flow_network.top_edges)).toBe(true);
+    expect(result.recovery_status.base_amount).toBe(150000);
+    expect(Array.isArray(result.investigation_roadmap)).toBe(true);
+    expect(result.victim_accounts).toHaveLength(2);
+    expect(result.timeline_summary.first_fraud_date).toBe('2024-03-01');
+    // Layer 1 hop count + amount (the headline reconciliation).
+    const layer1 = result.layer_analysis.find((l) => l.layer_no === 1);
+    expect(layer1.txn_count).toBe(2);
+    expect(layer1.total_amount).toBe(150000);
+    expect(result.errors).toHaveLength(0);
   });
 });

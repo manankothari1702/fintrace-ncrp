@@ -152,6 +152,7 @@ export default function Layers() {
                 aria-expanded={isOpen}
               >
                 <Badge color="var(--brand)">Layer {l.layer_no}</Badge>
+                {l.txn_count != null && <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.txn_count)} txns</span>}
                 <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.account_count)} accounts</span>
                 <span style={{ fontWeight: 700 }}>{formatINR(l.total_amount)}</span>
                 <span style={{ color: 'var(--text-muted)' }}>disputed {formatINR(l.disputed_amount)}</span>
@@ -165,15 +166,30 @@ export default function Layers() {
               {isOpen && (
                 <div style={{ padding: '0 20px 18px', borderTop: '1px solid var(--border)' }}>
                   <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', margin: '14px 0' }}>
+                    {l.txn_count != null && <Metric label="Transactions" value={formatNumber(l.txn_count)} />}
                     <Metric label="Accounts" value={formatNumber(l.account_count)} />
+                    <Metric label="Banks" value={formatNumber(l.bank_count ?? l.unique_banks)} />
                     <Metric label="Total Amount" value={formatINR(l.total_amount)} />
                     <Metric label="Disputed" value={formatINR(l.disputed_amount)} />
                     <Metric label="Cashouts" value={formatNumber(l.cashout_count)} />
+                    <Metric
+                      label="Fan-out ratio"
+                      value={l.fan_out_ratio == null ? '— (terminal)' : `${l.fan_out_ratio}×`}
+                    />
                     <Metric
                       label="Avg forward time"
                       value={l.avg_forward_time_hours == null ? '— (terminal)' : formatHours(l.avg_forward_time_hours)}
                     />
                   </div>
+
+                  {Array.isArray(l.top_banks) && l.top_banks.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Top banks:</span>
+                      {l.top_banks.map((b) => (
+                        <span key={b} className="badge" style={{ color: 'var(--brand)', borderColor: 'color-mix(in srgb, var(--brand) 40%, transparent)', background: 'color-mix(in srgb, var(--brand) 10%, transparent)' }}>{b}</span>
+                      ))}
+                    </div>
+                  )}
 
                   <h4 style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
                     Accounts in this layer
