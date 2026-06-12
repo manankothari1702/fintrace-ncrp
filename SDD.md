@@ -4,12 +4,21 @@
 | Field | Value |
 |---|---|
 | Document ID | FINTRACE-SDD-001 |
-| Version | 1.0 |
-| Status | Baseline |
-| Date | 2026-05-26 |
+| Version | 2.0 (as-built) |
+| Status | Updated — reflects code through v0.2.0 work |
+| Date | 2026-06-11 |
 | Owner | Architecture / Engineering |
 | Related | FINTRACE-SRS-001 (v1.0) |
 | Audience | Engineering, QA, Tech Leads |
+
+> **As-built note (v2.0):** This revision reconciles the original forward design (v1.0, 2026-05-26) with the code that actually shipped. Where the implementation diverged from the design, this document now describes **what is built**, and flags any remaining aspirational items inline with **🔭 Planned**. The biggest deltas from v1.0:
+> - **Language is JavaScript (CommonJS), not TypeScript.** Backend files are `.js`; frontend is React `.jsx`. There is no `tsconfig`/`.ts` layer.
+> - **Analysis runs in-process** on the Express side via `setImmediate(...)` after the upload returns `202` — there is **no separate worker thread**. `better-sqlite3` is synchronous, so the pipeline is plain synchronous JS scheduled off the request.
+> - **Express is embedded in the Electron main process** (same process, not a spawned subprocess).
+> - **7 SQLite tables** ship (see §3); the v1.0 `accounts`, `quarantined_rows`, `settings`, `banks`, `findings`, `lien_status_history` tables were not built. Lien uses the **CypherSOL gross-balance formula**; mule scoring uses **11 signals and is uncapped**.
+> - **Frontend has 10 pages** (not 21), uses **HashRouter + React Context** (not BrowserRouter + Zustand), and gained a new **Data Quality** page in v0.2.0.
+> - **Outputs:** a **15-sheet Excel workbook** and a **12-page PDF dossier**, plus per-bank lien-request letters.
+> - **Version lag:** all three `package.json` files still read `0.1.0` even though the feature set is at v0.2.0 (capped cash-out, IFSC-authoritative bank attribution, data-quality flags). Bumping to `0.2.0` is outstanding.
 
 > **Design override note:** Although `FR-01` in the SRS quotes 250 MB as the rejection threshold, this SDD treats **50 MB as the enforced upload size limit** at every system boundary (drag-drop validator, multipart parser, IPC bridge, Express middleware). This is the binding constraint for implementation.
 
@@ -17,70 +26,64 @@
 
 ## 1. Component Architecture
 
-FinTrace NCRP is a single-binary Electron 28 application with four cooperating runtime components and two on-disk stores. All inter-component traffic stays on the local loopback interface (`127.0.0.1`).
+FinTrace NCRP is a single-binary Electron 33 application. The Express backend is **embedded in the Electron main process** (not spawned), and all inter-component traffic stays on the local loopback interface (`127.0.0.1`).
 
 ### 1.1 High-Level Component Diagram (Mermaid)
 
 ```mermaid
 flowchart LR
     subgraph DESKTOP["Windows Desktop (Single Process Tree)"]
-        subgraph MAIN["Electron Main Process (Node.js)"]
-            EM["main.ts<br/>BrowserWindow + lifecycle"]
-            EXP["Express Server<br/>127.0.0.1:3847"]
-            WRK["Worker Thread<br/>(SheetJS parse +<br/>scoring)"]
-            EM -- "spawns" --> EXP
-            EXP -- "postMessage" --> WRK
+        subgraph MAIN["Electron Main Process (Node.js, CommonJS)"]
+            EM["main.js<br/>BrowserWindow + lifecycle"]
+            EXP["Express app (in-process)<br/>127.0.0.1:3847"]
+            ANA["Analysis pipeline<br/>(in-process, scheduled<br/>via setImmediate)"]
+            EM -- "boots in-process" --> EXP
+            EXP -- "setImmediate()" --> ANA
         end
 
         subgraph REND["Renderer Process (Chromium sandbox)"]
-            REACT["React 18 + Vite<br/>UI"]
-            PRELOAD["preload.ts<br/>contextBridge"]
+            REACT["React 18 + Vite<br/>UI (10 pages)"]
+            PRELOAD["preload.js<br/>contextBridge"]
             REACT -- "window.fintrace.*" --> PRELOAD
         end
 
         EM <-- "ipcMain / ipcRenderer<br/>(whitelisted channels)" --> PRELOAD
-        REACT -- "fetch / SSE<br/>(HTTP loopback)" --> EXP
+        REACT -- "axios HTTP<br/>(loopback)" --> EXP
 
-        subgraph FS["File System (%APPDATA%\\FinTraceNCRP)"]
+        subgraph FS["File System (app.getPath('userData'))"]
             DB[("SQLite<br/>fintrace.sqlite<br/>(WAL mode)")]
-            UP["uploads/<br/>(raw .xlsx + SHA-256)"]
-            QU["quarantine/<br/>(rejected rows .csv)"]
-            EXPORTS["exports/<br/>(PDFs, .eml, CSV)"]
-            LOGS["logs/<br/>fintrace-YYYY-MM-DD.log"]
-            BK["backups/<br/>fintrace.backup-*.sqlite"]
+            UP["uploads/<br/>(raw .xlsx)"]
+            EXPORTS["exports/<br/>(PDF, .xlsx)"]
         end
 
         EXP --> DB
-        WRK --> DB
+        ANA --> DB
         EXP --> UP
-        EXP --> QU
         EXP --> EXPORTS
-        EM --> LOGS
-        EM --> BK
     end
 
     USER(["IO / Investigating Officer"]) -- "drag/drop .xlsx" --> REACT
     USER -- "double-click .exe" --> EM
-    REACT -- "Open PDF" --> EM
+    REACT -- "Open PDF / Excel" --> EM
     EM -- "shell.openPath" --> EXPORTS
 
     classDef store fill:#fef3c7,stroke:#92400e
     classDef proc fill:#dbeafe,stroke:#1e40af
-    class DB,UP,QU,EXPORTS,LOGS,BK store
-    class EM,EXP,WRK,REACT,PRELOAD proc
+    class DB,UP,EXPORTS store
+    class EM,EXP,ANA,REACT,PRELOAD proc
 ```
 
 ### 1.2 Component Responsibilities
 
 | Component | Responsibility | Why this boundary |
 |---|---|---|
-| **Electron Main** | App lifecycle, window creation, menu, native dialogs, log rotation, daily backup, spawning Express + worker. | Only the main process has full Node privileges; UI sandbox must not. |
-| **Renderer (React/Vite)** | Presentation, charts, tables, user input. No filesystem, no Node APIs. | Hardened with `contextIsolation: true`, `nodeIntegration: false`. |
-| **Preload (`preload.ts`)** | Narrow typed IPC surface (`window.fintrace.openExternal`, `window.fintrace.savePdfDialog`, `window.fintrace.onProgress`). Whitelisted channels only. | Bridges renderer ↔ main without leaking `ipcRenderer` itself. |
-| **Express Server** | REST + Server-Sent-Events for progress. Owns business logic: parsing, scoring, lien math, PDF/email generation. Bound to `127.0.0.1:3847`. | Renderer talks to it over `fetch` exactly as if it were a remote API — keeps logic process-isolated and unit-testable. |
-| **Worker Thread** | CPU-bound work: SheetJS parsing, mule scoring on 10k+ accounts. | Avoids blocking Express event loop; renderer stays at 60 fps during 50k-row imports (NFR-03). |
-| **SQLite (better-sqlite3)** | All durable case state (WAL mode, `synchronous=NORMAL`). | Single-file, zero-admin, transactionally safe. |
-| **File System** | Raw uploads (kept for re-parse / audit), quarantined-row CSVs, exports, logs, backups. | All under `%APPDATA%\FinTraceNCRP\` — per-user, not world-readable. |
+| **Electron Main (`electron/main.js`)** | App lifecycle, window creation, native dialogs, IPC handlers, and **booting the Express app in-process**. | Only the main process has full Node privileges; UI sandbox must not. |
+| **Renderer (React/Vite)** | Presentation, charts, tables, user input. No filesystem, no Node APIs. | Hardened with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`. |
+| **Preload (`electron/preload.js`)** | Narrow typed IPC surface (`window.fintrace.getVersion/openFile/openPdf/savePdfCopy/openExportsFolder`). Whitelisted channels only. | Bridges renderer ↔ main without leaking `ipcRenderer` itself. |
+| **Express app (`backend/src/server.js` + `routes/ncrp.js`)** | REST API. Owns business logic: parsing, analysis, lien math, PDF/Excel/email generation. Bound to `127.0.0.1:3847`. | Renderer talks to it over `axios` exactly as if it were a remote API — keeps logic testable in isolation (Jest + supertest). |
+| **Analysis pipeline (`analyzers/analyzer.js`)** | CPU-bound work: 8-module forensic analysis on the parsed ledger. Invoked **in-process via `setImmediate`** after the upload responds `202`. | `better-sqlite3` is synchronous; deferring with `setImmediate` keeps the upload response non-blocking without the complexity of a worker thread. |
+| **SQLite (better-sqlite3)** | All durable case state (WAL mode, `synchronous=NORMAL`, `foreign_keys=ON`, `cache_size=-10000`). | Single-file, zero-admin, transactionally safe. |
+| **File System** | Raw uploads (kept for re-parse / audit) and generated exports (PDF, `.xlsx`). | All under `app.getPath('userData')` — per-user, not world-readable. |
 
 ---
 
@@ -88,7 +91,7 @@ flowchart LR
 
 ### 2.1 File Upload Flow (drag-drop → DB insert → analysis trigger)
 
-Highlights the **SHA-256 dedupe step (FR-05)**, the **50 MB enforced limit**, and the **quarantine branch (FR-06)**.
+Highlights the **3-stage upload validation** (size → magic bytes → NCRP content tokens), the **50 MB enforced limit**, and **row deduplication** (the parser collapses identical rows across sheets and returns warnings; there is no separate quarantine table).
 
 ```mermaid
 sequenceDiagram
@@ -97,8 +100,8 @@ sequenceDiagram
     participant R as Renderer (React)
     participant P as Preload (contextBridge)
     participant E as Express :3847
-    participant W as Worker Thread
-    participant FS as FS (%APPDATA%)
+    participant A as Analysis (setImmediate)
+    participant FS as FS (userData)
     participant DB as SQLite
 
     U->>R: Drag .xlsx onto drop zone
@@ -106,116 +109,109 @@ sequenceDiagram
     alt size > 50 MB OR wrong type
         R-->>U: Inline error<br/>("File exceeds 50 MB limit")
     else valid
-        R->>E: POST /api/ncrp/upload<br/>(multipart, max=50 MB)
-        E->>E: multer guard size ≤ 50 MB (defense-in-depth)
-        E->>FS: stream file → uploads/tmp-{uuid}.xlsx
-        E->>E: Compute SHA-256 (streaming hash)<br/>[FR-05]
-        E->>DB: SELECT id FROM uploads<br/>WHERE file_hash_sha256=?
-        alt Duplicate hash exists
-            E-->>R: 200 {status:"duplicate_detected",<br/>existing_upload_id, imported_at}
-            R-->>U: Modal: Cancel / Proceed (skip dupes by Ack+UTR)
-            U->>R: User chooses Proceed
-            R->>E: POST /api/ncrp/upload?force=true
-        end
-        E->>DB: INSERT INTO uploads<br/>(filename, file_hash_sha256,<br/>status='in_progress')
-        E->>W: postMessage {uploadId, path}
-        E-->>R: 202 Accepted {uploadId}<br/>(non-blocking response)
-        R->>E: GET /api/ncrp/upload/:id/progress<br/>(SSE stream)
+        R->>E: POST /api/ncrp/upload (multipart, max=50 MB)
+        E->>E: multer size cap ≤ 50 MB
+        E->>E: Magic-byte check (Excel signature)
+        E->>E: Content scan (NCRP header tokens present?)
+        E->>FS: persist file → uploads/
+        E->>DB: INSERT INTO ncrp_reports<br/>(filename, analysis_status='pending')
+        E->>E: parseNcrpFile() → {rows, warnings}<br/>(multi-sheet, header auto-detect FR-02,<br/>dedup, IFSC resolution)
+        E->>DB: batch INSERT INTO ncrp_transactions
+        E-->>R: 202 Accepted {reportId, status:'pending'}
+        E->>A: setImmediate(runAnalysisInBackground)
+        R->>E: poll GET /api/ncrp/:id (until status='complete')
 
-        loop For each 1000-row batch
-            W->>W: SheetJS read_chunk()
-            W->>W: Header auto-detect<br/>(synonym map FR-02)
-            W->>W: Validate row<br/>(ack_no ∨ utr_ref present?)
-            alt row valid
-                W->>DB: BEGIN TXN<br/>INSERT INTO transactions × 1000<br/>COMMIT
-            else row invalid [FR-06]
-                W->>DB: INSERT INTO quarantined_rows<br/>(reason, raw_json)
-                W->>FS: Append → quarantine/{uploadId}.csv
-            end
-            W-->>E: progress {processed, quarantined}
-            E-->>R: SSE event "progress"
-        end
-
-        W->>W: Trigger analysis pipeline<br/>(layers → mule → lien)
-        W->>DB: Write derived tables
-        W->>DB: UPDATE uploads SET<br/>status='completed', row_count=N,<br/>quarantine_count=Q
-        W-->>E: done
-        E-->>R: SSE event "complete" + summary
-        R-->>U: Import summary card<br/>(imported: N, quarantined: Q,<br/>repeat-account matches: M)
+        A->>DB: UPDATE ncrp_reports SET status='processing'
+        A->>A: analyzeReport() — 8 modules<br/>(layers → cashout → mule → lien →<br/>data-quality → timeline → geography → repeats)
+        A->>DB: INSERT layer_analysis, lien_records,<br/>repeat_accounts; write analysis_json blob
+        A->>DB: UPDATE ncrp_reports SET<br/>status='complete', totals, fraud_start_date
+        A->>DB: INSERT audit_log (analysis complete)
+        R->>E: GET /api/ncrp/:id → analysis_json
+        R-->>U: Dashboard renders
     end
 ```
 
 **Critical guarantees**
 
-- Step 4 (size guard) is enforced in **three places**: HTML5 `<input accept>` hint, renderer JS validator, Express `multer` middleware. Renderer rejection short-circuits the network round-trip; Express rejection is the binding one.
-- SHA-256 is computed **streaming** (Node `crypto.createHash('sha256')`) — never load the whole 50 MB into memory.
-- Quarantined rows go to **both** the DB (`quarantined_rows`) and a sibling CSV in `quarantine/{uploadId}.csv` so the IO can fix them in Excel and re-import.
-- The HTTP response is **202 Accepted** with the `uploadId` — analysis runs async; progress streams over SSE. This satisfies NFR-03 (UI never blocks).
+- The size guard is enforced in **three places**: HTML5 `<input accept>` hint, renderer JS validator, and Express `multer` middleware. Renderer rejection short-circuits the round-trip; the `multer` rejection is the binding one.
+- Upload acceptance is a **3-stage gate**: (1) size ≤ 50 MB, (2) magic-byte/Excel-signature check, (3) NCRP-header content scan — defends against type-spoofed and malformed files.
+- **Deduplication** collapses rows that are identical on `(beneficiary_account, transaction_date, transaction_amount, utr_no)` across the workbook's sheets. Non-fatal parse issues surface as `warnings` on the parse result — there is **no `quarantined_rows` table** (a v1.0 design item that was not built).
+- The HTTP response is **202 Accepted** with `reportId`; analysis runs in-process off `setImmediate`, and the renderer **polls** `GET /api/ncrp/:id` on `analysis_status` until `complete` or `error`. (🔭 Planned: SSE progress stream — see v1.0 §2.1; current build polls.)
 
-### 2.2 Analysis Flow (raw txns → layers → mule scoring → lien)
+### 2.2 Analysis Flow (raw txns → enrich → layers → mule → lien → exports)
+
+The pipeline is `analyzeReport(reportId, txnRows, existingRepeats, { db })`. Each module is wrapped in try/catch; a module failure is recorded on `result.errors` and the pipeline continues (fault isolation).
 
 ```mermaid
 flowchart TD
-    START([Worker: parse complete]) --> LAYER
+    START([Parse complete: txnRows]) --> ENRICH
 
-    subgraph LAYER["Stage 1 — Layer Detection (FR-07)"]
-        L1["Read transactions<br/>WHERE upload_id=?"]
-        L2{"Layer No<br/>column present?"}
-        L3["Use NCRP Layer No"]
-        L4["Infer layers via<br/>date + benef→victim chaining<br/>(BFS from Layer 0)"]
-        L5["UPDATE transactions<br/>SET layer_no=?"]
-        L1 --> L2
-        L2 -- yes --> L3
-        L2 -- no --> L4
-        L3 --> L5
-        L4 --> L5
+    subgraph ENRICH["Stage 0 — Dedup + Enrichment"]
+        D1["Collapse duplicate rows"]
+        D2["classifyCashoutMode:<br/>ATM_WITHDRAWAL / POS_PURCHASE /<br/>UPI_TRANSFER_OUT / ONLINE_PURCHASE"]
+        D3["classifyRowKind:<br/>HOP / EXIT / HOLD / OTHER"]
+        D4["same_day_cashout (FR-12):<br/>ATM exit on same IST day as<br/>first inbound receipt"]
+        D1 --> D2 --> D3 --> D4
     end
 
-    LAYER --> AGG
+    ENRICH --> LAYER
 
-    subgraph AGG["Stage 2 — Per-Layer Aggregates (FR-08)"]
-        A1["GROUP BY layer_no:<br/>count(distinct account),<br/>sum(txn_amount),<br/>median(transfer_interval)"]
-        A2["INSERT INTO layer_aggregates"]
-        A1 --> A2
+    subgraph LAYER["Module 1 — Layer Analysis (FR-07, FR-08)"]
+        L1["GROUP BY layer_no:<br/>txn_count, account_count, bank_count,<br/>total_amount, disputed_amount (HOP),<br/>cashout_count (EXIT)"]
+        L2["avg_forward_time_hours,<br/>fan_out_ratio, top_banks"]
+        L3["INSERT INTO layer_analysis"]
+        L1 --> L2 --> L3
     end
 
-    AGG --> MULE
+    LAYER --> CASH
 
-    subgraph MULE["Stage 3 — Mule Scoring (FR-15, FR-16)"]
-        M1["For each distinct account:"]
-        M2["Compute 6 signals:<br/>pass_through, cashout_speed,<br/>txn_count, cross_case,<br/>geo_spread, kyc_variance"]
-        M3["Load weights from<br/>config/mule_weights.json"]
-        M4["score = Σ(signal × weight)"]
-        M5["UPDATE accounts SET<br/>mule_score=?,<br/>mule_score_components=JSON"]
+    subgraph CASH["Module 2 — Cashout Analysis (FR-11–14)"]
+        C1["EXIT rows only, policy-capped<br/>(CASHOUT_POLICY.CAP_AT_RECEIVED)"]
+        C2["total_cashout, same_day_cashouts,<br/>fastest_cashout_hours,<br/>atm_cashouts, cashout_by_state"]
+        C1 --> C2
+    end
+
+    CASH --> MULE
+
+    subgraph MULE["Module 3 — Mule Detection (FR-15, FR-16)"]
+        M1["For each distinct account"]
+        M2["6 base signals (weights from<br/>config/mule_weights.json):<br/>passThrough, cashoutSpeed, txnCount,<br/>crossCase, geoSpread, kycVariance"]
+        M3["5 bonus signals: bothSheets,<br/>multiChannel, fanIn,<br/>highCashoutRatio, sameDayInOut"]
+        M4["score = Σ(signal × weight)<br/>UNCAPPED (>100 possible)<br/>HIGH≥70 / MEDIUM 40–69 / LOW<40"]
+        M5["+ plain-language suspicion_reasons"]
         M1 --> M2 --> M3 --> M4 --> M5
     end
 
     MULE --> LIEN
 
-    subgraph LIEN["Stage 4 — Lien Calculation (FR-19)"]
-        N1["For each beneficiary account:<br/>complaint_date = MIN(Complaint Date)"]
-        N2["inbound_disputed =<br/>SUM(disputed_amount WHERE<br/>direction=IN)"]
-        N3["outbound_after =<br/>SUM(txn_amount WHERE<br/>direction=OUT AND<br/>txn_date > complaint_date)"]
-        N4["recoverable =<br/>max(0, inbound_disputed -<br/>outbound_after)"]
-        N5["UPDATE accounts SET<br/>recoverable_amount=?"]
-        N1 --> N2 --> N3 --> N4 --> N5
+    subgraph LIEN["Module 4 — Lien (FR-19, CypherSOL parity)"]
+        N1["Per account gross balance =<br/>received − forwarded − on_hold − cashed_out"]
+        N2["lien_eligible =<br/>min(gross_balance, disputed_received)"]
+        N3["INSERT INTO lien_records<br/>+ plain-language breakdown"]
+        N1 --> N2 --> N3
     end
 
-    LIEN --> HOT
+    LIEN --> QUAL
 
-    subgraph HOT["Stage 5 — Hotspot + Findings"]
-        H1["Flag ATM hotspots (FR-14)"]
-        H2["Refresh repeat_accounts<br/>materialized view (FR-23)"]
-        H3["Generate Key Findings<br/>(FR-42)"]
-        H1 --> H2 --> H3
+    subgraph QUAL["Module 5 — Data Quality (v0.2.0)"]
+        Q1["Per account bank-attribution flag:<br/>IFSC_TEXT_MISMATCH / NO_IFSC /<br/>INVALID_IFSC / UNKNOWN_IFSC_PREFIX"]
     end
 
-    HOT --> DONE([SSE 'complete' → renderer])
+    QUAL --> REST
+
+    subgraph REST["Modules 6–8"]
+        R1["Timeline: daily amount + layer breakdown (IST)"]
+        R2["Geography: by_state, by_city, top_atms, top_merchants"]
+        R3["Repeat accounts: cross-case mule registry"]
+        R1 --> R2 --> R3
+    end
+
+    REST --> DONE([Write analysis_json → status='complete'])
 ```
 
-Each stage runs inside its own `db.transaction(...)` to keep partial failures recoverable.
+The analyzer returns one object — `{ summary, layer_analysis, cashout_analysis, mule_detection, lien_calculation, data_quality, timeline, geography, repeat_accounts, recovery_status, errors }` — which is serialized to the `analysis_json` column. `summary.cashed_out + on_hold + refunded + recoverable_residual` reconciles to victim loss (verified by `consistency_test.js`).
 
-### 2.3 PDF Report Flow
+### 2.3 PDF Report Flow (12-page dossier)
 
 ```mermaid
 sequenceDiagram
@@ -224,33 +220,33 @@ sequenceDiagram
     participant R as Renderer
     participant E as Express
     participant DB as SQLite
-    participant CH as Chart Rasterizer<br/>(headless render)
     participant PK as PDFKit
     participant FS as exports/
     participant EM as Electron Main
 
-    U->>R: Click "Generate Report"<br/>(toggles: full annexure?, lien worksheet?)
-    R->>E: GET /api/ncrp/:id/pdf?annexure=true&lien=true
-    E->>DB: Fetch case bundle:<br/>complaint, layers, mule list,<br/>cashout, geo, timeline, findings
-    E->>CH: Render Recharts SVGs → PNG @ 2× DPI (FR-32)
+    U->>R: Click "Export PDF"
+    R->>E: GET /api/ncrp/:id/pdf?mode=file
+    E->>DB: Read ncrp_reports.analysis_json + rows
     E->>PK: doc.pipe(stream)
-    loop For each section
-        PK->>PK: Cover → Exec Summary →<br/>Layers → Mules → Cashout →<br/>Geo → Timeline → Actions →<br/>Annexures
-        PK->>PK: Add header/footer (FR-33)
+    loop For each of 12 sections
+        PK->>PK: Cover → Exec Summary → Roadmap →<br/>Layers → Money Flow → Mules → Lien →<br/>Cashout → Geography → Timeline →<br/>Key Findings → Draft Emails
+        PK->>PK: Footer "Generated by FinTrace NCRP | MINT" + page x/N
     end
-    E->>E: Check final size ≤ 50 MB
-    alt size > 50 MB (FR-34)
-        E-->>R: 200 {needsSplit:true,<br/>mainSize, annexureSize}
-        R-->>U: Modal: split annexure?
-    else within limit
-        E->>FS: Write exports/report-{ackNo}-{ts}.pdf
-        E-->>R: 200 {path, sizeBytes}
-        R->>EM: window.fintrace.openPath(path)<br/>(via preload)
+    alt mode=file (Electron)
+        E->>FS: Write exports/report-{id}-{ts}.pdf
+        E-->>R: 200 {filename}
+        R->>EM: window.fintrace.openPdf(filename)
         EM->>EM: shell.openPath(path)
+    else stream (browser)
+        E-->>R: 200 application/pdf (blob download)
     end
 ```
 
+> Amounts in the PDF use an ASCII `Rs.` prefix (no `₹` glyph) for font/email portability. **🔭 Planned (v1.0 design):** chart rasterization (SVG→PNG) and a size-based annexure split — the current PDFKit build renders tabular sections without embedded chart images.
+
 ### 2.4 Email Generation Flow (Lien Letters)
+
+Per-bank lien-request letters are generated by `utils/emailGenerator.js` (RBI/MHA letter format, plain templates in code — not Handlebars `.hbs`), persisted to the `draft_emails` table on first access, and surfaced for copy-paste. The app **never sends mail**.
 
 ```mermaid
 sequenceDiagram
@@ -259,734 +255,317 @@ sequenceDiagram
     participant R as Renderer
     participant E as Express
     participant DB as SQLite
-    participant TM as Template Engine<br/>(Handlebars)
-    participant FS as exports/lien_emails/
 
-    U->>R: Click "Draft Lien Emails"
+    U->>R: Open "Draft Emails"
     R->>E: GET /api/ncrp/:id/emails
-    E->>DB: SELECT accounts WHERE<br/>lien_flag=true AND complaint_id=?
-    E->>E: GROUP BY ifsc_prefix (4 chars)<br/>→ bank buckets (FR-26)
-    E->>DB: JOIN banks ON ifsc_prefix<br/>(address book FR-30)
-    E->>DB: SELECT officer_profile FROM settings
-    loop For each bank bucket
-        E->>TM: render(lien_request.hbs, {<br/>bank, accounts[], officer,<br/>ackNos[], totalDisputed})
-        TM-->>E: RFC 5322 .eml string
+    alt drafts not yet generated
+        E->>DB: SELECT lien-eligible accounts, GROUP BY bank
+        E->>E: render per-bank lien-request letter
+        E->>DB: INSERT INTO draft_emails (bank_name, subject, body, account_list, status='draft')
     end
-    E-->>R: 200 [{bank, eml, recipientKnown}]
-    R-->>U: Per-bank letter previews<br/>(side-by-side, editable)
-    U->>R: Click "Save to folder"
-    R->>E: POST /api/ncrp/:id/emails/save<br/>(body: {folderPath, edits[]})
-    loop
-        E->>FS: Write {bank}-{ackNo}.eml
-    end
-    E-->>R: 200 {savedCount, folderPath}
-    R-->>U: Toast: "12 drafts saved.<br/>Open folder?"
+    E-->>R: 200 [{bankName, subject, body, accounts[], status}]
+    R-->>U: Accordion of letters (copy to clipboard)
+    U->>R: Click "Mark as Sent"
+    R->>E: POST /api/ncrp/:id/emails/:emailId  {status:'sent'}
+    E->>DB: UPDATE draft_emails SET status='sent'
+    E-->>R: 200 {updated}
 ```
 
 ---
 
-## 3. API Contract
+## 3. Data Model & API Contract
 
-All endpoints are served by Express on `http://127.0.0.1:3847`. Content-Type is `application/json` unless stated. Errors follow a uniform envelope (see §3.16).
+### 3.0 SQLite Schema (7 tables, as built — `backend/src/db/schema.js`)
+
+| Table | Purpose | Notable columns |
+|---|---|---|
+| `ncrp_reports` | One row per uploaded file | `filename`, `original_filename`, `upload_date`, `total_transactions`, `total_disputed_amount`, `total_layers`, `fraud_start_date`, `analysis_status` (`pending`\|`processing`\|`complete`\|`error`), `analysis_json` |
+| `ncrp_transactions` | Parsed ledger rows | `report_id` (FK), `ack_no`, `complaint_date`, `victim_account`, `beneficiary_account`, `beneficiary_bank`, `ifsc_code`, `transaction_date`, `transaction_amount`, `disputed_amount`, `utr_no`, `payment_mode`, `layer_no`, `atm_id`, `city`, `state`, **`raw_beneficiary_bank`, `bank_source`, `bank_flag`** (v0.2.0), `same_day_cashout`, `cashout_mode` |
+| `layer_analysis` | Per-layer aggregates | `report_id` (FK), `layer_no`, `account_count`, `total_amount`, `disputed_amount`, `cashout_count`, `avg_forward_time_hours` — `UNIQUE(report_id, layer_no)` |
+| `lien_records` | Recoverable accounts + freeze status | `report_id` (FK), `account_no`, `bank_name`, `ifsc_code`, `available_balance`, `lien_amount`, `lien_status` (`pending`\|`applied`\|`success`\|`rejected`), `applied_date`, `remarks` |
+| `repeat_accounts` | Cross-case repeat mule registry | `account_no` (UNIQUE), `bank_name`, `first_seen_report_id`, `appearance_count`, `total_amount_passed`, `mule_score`, `last_updated` |
+| `draft_emails` | Per-bank lien letters | `report_id` (FK), `bank_name`, `subject`, `body`, `account_list` (JSON), `status` (`draft`\|`sent`) |
+| `audit_log` | Action trail | `report_id` (nullable — outlives report), `action`, `details` (JSON), `timestamp` |
+
+**Pragmas:** `journal_mode=WAL`, `foreign_keys=ON`, `synchronous=NORMAL`, `cache_size=-10000`. **v0.2.0 migration:** `raw_beneficiary_bank`, `bank_source`, `bank_flag` columns are added idempotently (`ALTER TABLE … IF NOT EXISTS`-style guard) — there is no `migrations/` directory or version table; `schema.js` is the single source of DDL.
+
+> Data quality is a **computed module + `/data-quality` endpoint** over the `bank_flag` column, not a SQL view. (Memory note "data_quality view" refers to this endpoint, not a DB view.)
+
+All endpoints are served by Express on `http://127.0.0.1:3847` under the `/api` prefix. `:id` is a **`reportId`**. Content-Type is `application/json` unless stated. Errors follow the uniform envelope (§3.18).
 
 ### 3.1 `POST /api/ncrp/upload`
 
-Upload an NCRP Excel file. Triggers async parse + analysis; returns immediately with an upload id.
+Upload an NCRP Excel file. Validates (size → magic bytes → content), parses + inserts rows synchronously, then schedules analysis via `setImmediate` and returns immediately.
 
-**Request (multipart/form-data):**
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `file` | `File` | Yes | `.xlsx` or `.xls`, **≤ 50 MB** (enforced) |
-| `force` | `boolean` (query) | No | If `true`, bypasses duplicate-hash check. |
+**Request (multipart/form-data):** `file` — `.xlsx`/`.xls`, **≤ 50 MB** (enforced).
 
 **Success — 202 Accepted:**
 
-```ts
-{
-  uploadId: number;
-  status: "in_progress";
-  fileHashSha256: string;     // 64 hex chars
-  filename: string;
-  sizeBytes: number;
-  progressStreamUrl: string;  // e.g. "/api/ncrp/upload/42/progress"
-}
+```js
+{ reportId: number, status: "pending", filename: string, totalTransactions: number }
 ```
 
-**Duplicate detected — 200 OK:**
+**Errors:** `400 INVALID_FILE_TYPE`, `400 INVALID_NCRP_CONTENT`, `413 FILE_TOO_LARGE`, `500 STORAGE_FAILED`, `500 PARSE_FAILED`.
 
-```ts
-{
-  status: "duplicate_detected";
-  existingUploadId: number;
-  importedAt: string;         // ISO-8601
-  fileHashSha256: string;
-}
+### 3.2 `GET /api/ncrp/reports`
+
+List all reports, newest first (drives the Upload page history list).
+
+```js
+{ items: Array<{ id, filename, originalFilename, uploadDate, totalTransactions,
+                 totalDisputedAmount, totalLayers, analysisStatus }> }
 ```
 
-**Errors:**
-- `400 INVALID_FILE_TYPE` — extension not `.xlsx`/`.xls`.
-- `413 FILE_TOO_LARGE` — size > 50 MB.
-- `500 STORAGE_FAILED` — disk write failed.
+### 3.3 `GET /api/ncrp/:id`
 
-### 3.2 `GET /api/ncrp/upload/:id/progress`
+Full report including the parsed `analysis_json` (summary, layers, mules, lien, data-quality, timeline, geography, repeats, recovery status). The renderer polls this on `analysisStatus` after upload.
 
-Server-Sent-Events stream of import progress.
+**Errors:** `404 REPORT_NOT_FOUND`.
 
-**Path params:** `id: number` (uploadId).
-**Response:** `text/event-stream`. Events:
+### 3.4 `GET /api/ncrp/:id/transactions`
 
-```
-event: progress
-data: {"processed": 12000, "total": 53210, "quarantined": 14}
+Paginated, filterable ledger.
 
-event: complete
-data: {"imported": 52890, "quarantined": 320, "repeatMatches": 7,
-       "complaintIds": [101, 102]}
+**Query params:** `layer`, `bank` (substring), `paymentMode`, `dateFrom`/`dateTo`, `amountMin`/`amountMax`, `search` (account/UTR/IFSC), `limit` (100 default, **max 500**), `offset`.
 
-event: error
-data: {"code": "PARSE_FAILED", "message": "..."}
+```js
+{ items: Array<{ txnId, ackNo, transactionDate, layerNo, beneficiaryAccount,
+                 beneficiaryBank, ifscCode, transactionAmount, disputedAmount,
+                 paymentMode, city, state, sameDayCashout, cashoutMode }>,
+  total: number, page: { limit, offset } }
 ```
 
-### 3.3 `GET /api/ncrp/reports`
+### 3.5 `GET /api/ncrp/:id/layers`
 
-List all uploads (a.k.a. "reports") with summary stats. Used by S-04 Upload History.
+Per-layer aggregates.
 
-**Query params:**
-
-| Param | Type | Default | Notes |
-|---|---|---|---|
-| `status` | `"completed" \| "failed" \| "in_progress"` | (all) | |
-| `from` | `string` (ISO date) | — | |
-| `to` | `string` (ISO date) | — | |
-| `limit` | `number` | 50 | Max 200 |
-| `offset` | `number` | 0 | |
-
-**Success — 200 OK:**
-
-```ts
-{
-  items: Array<{
-    uploadId: number;
-    filename: string;
-    fileHashSha256: string;
-    rowCount: number;
-    quarantineCount: number;
-    complaintCount: number;
-    status: "completed" | "failed" | "in_progress";
-    errorMessage: string | null;
-    uploadedAt: string;       // ISO-8601
-  }>;
-  total: number;
-}
+```js
+{ layers: Array<{ layerNo, accountCount, bankCount, txnCount, totalAmount,
+                  disputedAmount, cashoutCount, avgForwardTimeHours,
+                  fanOutRatio, topBanks: string[] }> }
 ```
 
-### 3.4 `GET /api/ncrp/:id`
+### 3.6 `GET /api/ncrp/:id/mules`
 
-Per-complaint dashboard payload (S-05).
+Suspect accounts with the **uncapped 11-signal** score.
 
-**Path params:** `id: number` (complaintId).
-
-**Success — 200 OK:**
-
-```ts
-{
-  complaint: {
-    id: number;
-    ackNo: string;
-    complaintDate: string;       // ISO-8601 IST
-    victim: { accountNo: string | null; bank: string | null };
-    totals: {
-      txnCount: number;
-      totalAmount: number;       // INR
-      disputedAmount: number;
-      distinctAccounts: number;
-      distinctBanks: number;
-    };
-  };
-  keyFindings: Array<{
-    id: number;
-    severity: "INFO" | "WATCH" | "ACTION";
-    message: string;
-    linkedScreen: string | null; // e.g. "mules", "lien"
-    state: "new" | "acknowledged" | "acted_on" | "dismissed";
-  }>;
-}
+```js
+{ items: Array<{
+    accountNo, bankName, muleScore /* may exceed 100 */, riskLabel: "HIGH"|"MEDIUM"|"LOW",
+    passThroughRatio, totalReceived, totalForwarded, totalCashout, forwardSpeedHours,
+    appearsInCases: string[], layerNo, txnCount, channels: string[], sameDayInOut: boolean,
+    firstDate, lastDate, suspicionReasons: string[]
+  }> }
 ```
 
-**Errors:** `404 COMPLAINT_NOT_FOUND`.
+### 3.7 `GET /api/ncrp/:id/data-quality` *(v0.2.0)*
 
-### 3.5 `GET /api/ncrp/:id/transactions`
+Accounts whose bank attribution needs IO review.
 
-Paginated, filterable transaction list (S-13).
-
-**Query params:**
-
-| Param | Type | Notes |
-|---|---|---|
-| `layer` | `number` | exact match |
-| `bank` | `string` | substring, case-insensitive |
-| `dateFrom` / `dateTo` | `string` (ISO date) | |
-| `amountMin` / `amountMax` | `number` | INR |
-| `paymentMode` | `string` | UPI/IMPS/etc. |
-| `city` / `state` | `string` | |
-| `muleScoreMin` | `number` | 0–100 |
-| `cashoutFlag` | `boolean` | |
-| `sortBy` | `"txn_date" \| "amount" \| "mule_score"` | |
-| `sortDir` | `"asc" \| "desc"` | default `desc` |
-| `limit` | `number` | default 100, **max 500** |
-| `offset` | `number` | default 0 |
-
-**Success — 200 OK:**
-
-```ts
-{
-  items: Array<{
-    txnId: number;
-    ackNo: string;
-    txnDate: string;
-    layerNo: number | null;
-    beneficiaryAccountNo: string;
-    beneficiaryBank: string | null;
-    ifscCode: string | null;
-    txnAmount: number;
-    disputedAmount: number | null;
-    paymentMode: string | null;
-    city: string | null;
-    state: string | null;
-    sameDayCashout: boolean;
-    cashoutMode: string | null;
-    muleScore: number | null;
-  }>;
-  total: number;
-  page: { limit: number; offset: number };
-}
+```js
+{ items: Array<{ accountNo, rawBank, resolvedBank, ifscCode, bankSource,
+                 bankFlag: "IFSC_TEXT_MISMATCH"|"NO_IFSC"|"INVALID_IFSC"|"UNKNOWN_IFSC_PREFIX",
+                 message: string }> }
 ```
 
-### 3.6 `GET /api/ncrp/:id/layers`
+### 3.8 `GET /api/ncrp/:id/lien` · `POST /api/ncrp/:id/lien`
 
-Layer aggregates + edges for Sankey rendering (S-06).
+`GET` returns the lien worksheet (recoverable accounts + balances, sorted by amount). `POST` creates/updates one lien record by account and writes an `audit_log` entry.
 
-**Success — 200 OK:**
-
-```ts
-{
-  layers: Array<{
-    layerNo: number;
-    distinctAccounts: number;
-    totalAmount: number;
-    disputedShare: number;       // 0..1
-    medianIntervalMinutes: number | null;
-  }>;
-  edges: Array<{
-    fromLayer: number;
-    toLayer: number;
-    amount: number;
-    txnCount: number;
-  }>;
-}
+```js
+// GET
+{ items: Array<{ accountNo, bankName, ifscCode, availableBalance, lienAmount,
+                 lienStatus, appliedDate, remarks, breakdown: string }>,
+  totals: { accountCount, totalRecoverable, pendingCount } }
+// POST body
+{ accountNo, lienStatus, lienAmount?, remarks? }
 ```
 
-### 3.7 `GET /api/ncrp/:id/mules`
+**Errors:** `400 INVALID_STATUS`, `404 REPORT_NOT_FOUND`.
 
-Suspect accounts list (S-08).
+### 3.9 `GET /api/ncrp/:id/emails` · `POST /api/ncrp/:id/emails/:emailId`
 
-**Query params:** `threshold: number` (default 60), `limit: number` (default 50).
+`GET` returns per-bank lien letters (auto-generated and persisted on first access). `POST` updates one draft's status (`draft` → `sent`).
 
-**Success — 200 OK:**
-
-```ts
-{
-  items: Array<{
-    accountId: number;
-    accountNo: string;
-    bank: string | null;
-    ifscCode: string | null;
-    muleScore: number;
-    components: {
-      passThrough: { value: number; max: number };
-      cashoutSpeed: { value: number; max: number };
-      txnCount: { value: number; max: number };
-      crossCase: { value: number; max: number };
-      geoSpread: { value: number; max: number };
-      kycVariance: { value: number; max: number };
-    };
-    linkedComplaintAckNos: string[];
-    tag: "confirmed_mule" | "cleared" | "under_review" | null;
-  }>;
-  threshold: number;
-  total: number;
-}
+```js
+// GET
+{ items: Array<{ emailId, bankName, subject, body, accounts: string[], status }> }
+// POST body
+{ status: "sent" }
 ```
 
-### 3.8 `GET /api/ncrp/:id/lien`
+### 3.10 `GET /api/ncrp/:id/timeline`
 
-Lien worksheet for a complaint (S-09).
+Daily money movement (IST calendar day).
 
-**Success — 200 OK:**
-
-```ts
-{
-  items: Array<{
-    accountId: number;
-    accountNo: string;
-    bank: string | null;
-    ifscCode: string | null;
-    disputedAmount: number;
-    recoverableAmount: number;
-    lienStatus: "not_requested" | "pending" | "applied" | "success" | "failed";
-    statusAgedDays: number | null;
-    complaintAckNos: string[];
-    lastUpdated: string | null;
-  }>;
-  totals: {
-    accountCount: number;
-    totalRecoverable: number;
-    pendingCount: number;
-  };
-}
+```js
+{ buckets: Array<{ date, totalAmount, transactionCount, layerBreakdown: Record<number, number> }> }
 ```
 
-### 3.9 `POST /api/ncrp/:id/lien`
+### 3.11 `GET /api/ncrp/:id/geography`
 
-Update lien status for one or more accounts. All changes are logged in `lien_status_history`.
-
-**Request body:**
-
-```ts
-{
-  updates: Array<{
-    accountId: number;
-    newStatus: "not_requested" | "pending" | "applied" | "success" | "failed";
-    note?: string;
-  }>;
-}
+```js
+{ byState: Array<{ state, amount, count, cashoutCount, pct }>,
+  byCity:  Array<{ city, state, amount, count, pct }>,
+  topAtms: Array<{ atmId, location, txnCount, amount, accountCount }>,
+  topMerchants: Array<{ name, type, amount, txnCount }> }
 ```
-
-**Success — 200 OK:**
-
-```ts
-{
-  updated: number;
-  historyIds: number[];
-}
-```
-
-**Errors:** `400 INVALID_STATUS`, `404 ACCOUNT_NOT_FOUND`.
-
-### 3.10 `GET /api/ncrp/:id/emails`
-
-Generate per-bank lien letters in memory (no disk write).
-
-**Query params:** `force: boolean` (regenerate ignoring cache).
-
-**Success — 200 OK:**
-
-```ts
-{
-  letters: Array<{
-    bankCode: string;            // first 4 chars of IFSC
-    bankName: string;
-    recipientEmail: string | null;
-    recipientKnown: boolean;
-    accountCount: number;
-    totalDisputed: number;
-    emlPreview: string;          // RFC 5322 .eml content
-    subject: string;
-  }>;
-  officerProfile: {
-    name: string;
-    rank: string;
-    posting: string;
-  };
-}
-```
-
-**Errors:** `409 OFFICER_PROFILE_MISSING` — first-run wizard not completed.
-
-### 3.11 `POST /api/ncrp/:id/emails/save`
-
-Persist edited letters as `.eml` files to disk.
-
-**Request body:**
-
-```ts
-{
-  folderPath: string;            // absolute path on local FS
-  letters: Array<{
-    bankCode: string;
-    emlContent: string;          // may be user-edited
-  }>;
-}
-```
-
-**Success — 200 OK:**
-
-```ts
-{ savedCount: number; folderPath: string; files: string[]; }
-```
-
-**Errors:** `400 INVALID_FOLDER`, `403 FOLDER_NOT_WRITABLE`.
 
 ### 3.12 `GET /api/ncrp/:id/pdf`
 
-Generate and persist the investigation PDF (S-12).
+Generate the 12-page PDF dossier. `?mode=file` writes to `exports/` and returns `{ filename }` (for Electron `openPdf`); otherwise streams `application/pdf`.
 
-**Query params:**
+**Errors:** `500 PDF_GENERATION_FAILED`.
 
-| Param | Type | Default | Notes |
-|---|---|---|---|
-| `annexure` | `boolean` | `false` | Include full transaction annexure. |
-| `lien` | `boolean` | `true` | Include lien worksheet. |
-| `caseNotes` | `string` | `""` | Free-text appended to cover. |
+### 3.13 `GET /api/ncrp/:id/excel` *(v0.2.0)*
 
-**Success — 200 OK:**
+Generate the 15-sheet workbook. `?mode=file` writes to `exports/` and returns `{ filename }`; otherwise streams the `.xlsx`.
 
-```ts
-{
-  path: string;                  // absolute path inside exports/
-  sizeBytes: number;
-  pageCount: number;
-  splitRequired: false;
-}
-```
+### 3.14 `GET /api/ncrp/:id/audit`
 
-**Split required — 200 OK (FR-34):**
+Recent audit-log entries (newest first, `limit` default 200).
 
-```ts
-{
-  splitRequired: true;
-  estimatedSizeBytes: number;
-  suggestion: "Split annexure into separate file?";
-}
-```
-
-**Errors:** `409 OFFICER_PROFILE_MISSING`, `500 PDF_GENERATION_FAILED`.
-
-### 3.13 `GET /api/ncrp/:id/timeline`
-
-Daily money movement for S-14.
-
-**Query params:** `from?: string`, `to?: string` (ISO date).
-
-**Success — 200 OK:**
-
-```ts
-{
-  buckets: Array<{
-    date: string;                // YYYY-MM-DD IST
-    inboundAmount: number;
-    outboundAmount: number;
-    txnCount: number;
-  }>;
-  annotations: Array<{
-    date: string;
-    kind: "complaint_registered" | "first_cashout" | "hotspot_event";
-    label: string;
-  }>;
-}
-```
-
-### 3.14 `GET /api/ncrp/:id/geography`
-
-Geographic distribution for S-15.
-
-**Success — 200 OK:**
-
-```ts
-{
-  states: Array<{
-    stateCode: string;
-    stateName: string;
-    txnCount: number;
-    totalAmount: number;
-    distinctAtms: number;
-  }>;
-  cities: Array<{
-    stateCode: string;
-    city: string;
-    txnCount: number;
-    totalAmount: number;
-  }>;
-  hotspotAtms: Array<{
-    atmId: string;
-    location: string | null;
-    city: string | null;
-    state: string | null;
-    txnCount: number;
-    complaintCount: number;
-  }>;
-}
+```js
+{ items: Array<{ action, details, timestamp }> }
 ```
 
 ### 3.15 `DELETE /api/ncrp/:id`
 
-Delete a complaint and **cascade** its transactions, accounts, derived tables, and quarantined rows. Audit row is left in `uploads` with `status='deleted'`.
+Cascade-delete a report and all owned rows (transactions, layers, liens, emails). An `audit_log` row records the deletion.
 
-**Path params:** `id: number`.
-
-**Success — 200 OK:**
-
-```ts
-{
-  deleted: {
-    complaintId: number;
-    transactions: number;
-    accounts: number;
-    quarantinedRows: number;
-  };
-}
+```js
+{ deleted: { reportId, transactions, liens, emails } }
 ```
 
-**Errors:** `404 COMPLAINT_NOT_FOUND`, `409 IN_USE_BY_REPORT` if a PDF generation is currently running for this complaint.
+**Errors:** `404 REPORT_NOT_FOUND`.
 
 ### 3.16 `GET /api/health`
 
-Liveness probe used by the renderer at startup to confirm the backend is up.
+Liveness probe used by the renderer at startup. Deliberately **does not leak the SQLite path**.
 
-**Success — 200 OK:**
-
-```ts
-{
-  status: "ok";
-  version: string;               // semver
-  uptimeSeconds: number;
-  dbPath: string;
-  dbWritable: boolean;
-  schemaVersion: number;
-}
+```js
+{ status: "ok", version: string, uptimeSeconds: number }
 ```
 
-### 3.17 Uniform Error Envelope
+### 3.17 The 15-sheet Excel workbook (`utils/excelGenerator.js`)
 
-Every non-2xx response:
+`Summary` · `Layer Breakdown` · `Lien Calculation` · `Suspected Mules` · `Transactions` · `Money Flow Network` · `Victim Accounts (Layer 0)` · `ATM Exit Details` · `POS Exit Details` · `Daily Volume` · `Hourly Pattern` · `Bank Rankings` · `Data Quality` · `Geographic Hotspots` · `Glossary`.
 
-```ts
-{
-  error: {
-    code: string;                // e.g. "FILE_TOO_LARGE"
-    message: string;             // human-readable, EN-IN
-    details?: Record<string, unknown>;
-    requestId: string;           // for log correlation
-  };
-}
+### 3.18 Uniform Error Envelope
+
+```js
+{ error: { code: string, message: string, details?: Record<string, unknown> } }
 ```
+
+Production suppresses `details`/stacks; development includes them.
 
 | HTTP | Code (selection) |
 |---|---|
-| 400 | `INVALID_FILE_TYPE`, `INVALID_STATUS`, `INVALID_FOLDER`, `VALIDATION_FAILED` |
-| 403 | `FOLDER_NOT_WRITABLE` |
-| 404 | `COMPLAINT_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `UPLOAD_NOT_FOUND` |
-| 409 | `OFFICER_PROFILE_MISSING`, `IN_USE_BY_REPORT` |
+| 400 | `INVALID_FILE_TYPE`, `INVALID_NCRP_CONTENT`, `INVALID_STATUS`, `VALIDATION_FAILED` |
+| 404 | `REPORT_NOT_FOUND` |
 | 413 | `FILE_TOO_LARGE` (>50 MB) |
+| 429 | `RATE_LIMITED` (100 req/min general, 5/min upload) |
 | 500 | `STORAGE_FAILED`, `PARSE_FAILED`, `PDF_GENERATION_FAILED`, `DB_ERROR` |
 
 ---
 
-## 4. Folder Structure
+## 4. Folder Structure (as built)
 
 ```
-fintrace-ncrp/
-├── package.json                       # root workspace, electron-builder config
-├── electron-builder.yml               # NSIS, code-signing, per-user install
-├── tsconfig.base.json                 # shared TS settings (strict)
-├── .eslintrc.cjs
+NCRP Project/
+├── package.json                       # root: electron + electron-builder (main: electron/main.js)
+├── electron-builder config            # NSIS, per-user install, asarUnpack better-sqlite3
 │
 ├── electron/                          # === ELECTRON MAIN PROCESS ===
-│   ├── main.ts                        # App entry: BrowserWindow, lifecycle, single-instance lock
-│   ├── preload.ts                     # contextBridge — exposes window.fintrace.* (whitelisted only)
-│   ├── ipc/
-│   │   ├── channels.ts                # CONST whitelist of IPC channel names (typed)
-│   │   ├── dialogs.ts                 # ipcMain handlers: save-dialog, open-dialog, open-path
-│   │   └── progress.ts                # Forward SSE → renderer for parse progress
-│   ├── server-bootstrap.ts            # Spawns Express, waits for /api/health
-│   ├── backup.ts                      # Daily DB backup (NFR-09)
-│   ├── log-rotator.ts                 # Rolling logs, 14-day retention (NFR-28)
-│   ├── menu.ts                        # Application menu (File, View, Help)
-│   ├── security/
-│   │   ├── csp.ts                     # Session-level CSP header injection
-│   │   └── network-guard.ts           # webRequest.onBeforeRequest — block non-loopback (NFR-10)
-│   └── types/
-│       └── ipc.d.ts                   # Shared IPC payload types
+│   ├── main.js                        # BrowserWindow, lifecycle, single-instance lock, boots Express in-process
+│   └── preload.js                     # contextBridge — window.fintrace.* (whitelisted)
 │
-├── backend/                           # === EXPRESS BACKEND ===
-│   └── src/
-│       ├── server.ts                  # Express app factory, binds 127.0.0.1:3847 only
-│       ├── routes/
-│       │   ├── upload.ts              # POST /api/ncrp/upload + SSE progress
-│       │   ├── reports.ts             # GET /api/ncrp/reports
-│       │   ├── complaint.ts           # GET /api/ncrp/:id
-│       │   ├── transactions.ts        # GET /api/ncrp/:id/transactions
-│       │   ├── layers.ts              # GET /api/ncrp/:id/layers
-│       │   ├── mules.ts               # GET /api/ncrp/:id/mules
-│       │   ├── lien.ts                # GET + POST /api/ncrp/:id/lien
-│       │   ├── emails.ts              # GET /api/ncrp/:id/emails + POST .../emails/save
-│       │   ├── pdf.ts                 # GET /api/ncrp/:id/pdf
-│       │   ├── timeline.ts            # GET /api/ncrp/:id/timeline
-│       │   ├── geography.ts           # GET /api/ncrp/:id/geography
-│       │   ├── deleteComplaint.ts     # DELETE /api/ncrp/:id
-│       │   └── health.ts              # GET /api/health
-│       ├── middleware/
-│       │   ├── multerConfig.ts        # 50 MB cap, allowed extensions
-│       │   ├── errorHandler.ts        # Global error → uniform envelope
-│       │   ├── requestId.ts           # crypto.randomUUID per request
-│       │   └── logger.ts              # pino, redacts file contents from logs
-│       ├── db/
-│       │   ├── connection.ts          # better-sqlite3 singleton, WAL pragma
-│       │   ├── migrations/
-│       │   │   ├── 001_initial.sql
-│       │   │   ├── 002_findings.sql
-│       │   │   └── runner.ts          # idempotent migrator
-│       │   ├── schema.ts              # TS types per table
-│       │   └── repositories/
-│       │       ├── uploads.repo.ts
-│       │       ├── complaints.repo.ts
-│       │       ├── transactions.repo.ts
-│       │       ├── accounts.repo.ts
-│       │       ├── lien.repo.ts
-│       │       ├── findings.repo.ts
-│       │       └── settings.repo.ts
-│       ├── ingest/
-│       │   ├── worker.ts              # Worker-thread entry — orchestrates parse+analysis
-│       │   ├── sheetParser.ts         # SheetJS streaming reader
-│       │   ├── headerMap.ts           # Loads + applies header synonyms (FR-02)
-│       │   ├── hash.ts                # streaming SHA-256 (FR-05)
-│       │   ├── rowValidator.ts        # Quarantine decisions (FR-06)
-│       │   └── batchInserter.ts       # 1000-row transactional batches
-│       ├── analysis/
-│       │   ├── layers.ts              # FR-07, FR-08
-│       │   ├── cashout.ts             # FR-11–14
-│       │   ├── muleScoring.ts         # FR-15, FR-16
-│       │   ├── muleWeights.ts         # Loads config/mule_weights.json
-│       │   ├── lien.ts                # FR-19
-│       │   ├── findings.ts            # FR-42
-│       │   ├── repeatAccounts.ts      # FR-23 materialized view refresh
-│       │   └── geography.ts           # FR-45
-│       ├── reports/
-│       │   ├── pdfBuilder.ts          # PDFKit assembler
-│       │   ├── pdfSections/
-│       │   │   ├── cover.ts
-│       │   │   ├── executiveSummary.ts
-│       │   │   ├── layerSection.ts
-│       │   │   ├── muleSection.ts
-│       │   │   ├── cashoutSection.ts
-│       │   │   ├── geographySection.ts
-│       │   │   ├── timelineSection.ts
-│       │   │   ├── actionsSection.ts
-│       │   │   └── annexure.ts
-│       │   ├── chartRasterizer.ts     # SVG → PNG @ 2× (FR-32)
-│       │   └── pageDecorator.ts       # Header/footer/page numbers (FR-33)
-│       ├── emails/
-│       │   ├── builder.ts             # Group by bank (FR-26), render Handlebars
-│       │   ├── emlWriter.ts           # RFC 5322 serializer
-│       │   └── templates/
-│       │       └── lien_request.hbs   # Default template (FR-27)
-│       ├── config/
-│       │   ├── mule_weights.json      # Tunable scoring weights
-│       │   ├── header_synonyms.json   # NCRP column variant map
-│       │   ├── banks.json             # IFSC prefix → nodal officer
-│       │   └── app.ts                 # Port, paths, env
-│       ├── utils/
-│       │   ├── inrFormat.ts           # 1,23,45,678 formatter (NFR-19)
-│       │   ├── dateFormat.ts          # DD-MMM-YYYY HH:mm IST (NFR-20)
-│       │   ├── paths.ts               # Resolve %APPDATA%\FinTraceNCRP\
-│       │   └── crypto.ts              # SHA-256 helpers
-│       └── tests/
-│           ├── parser.spec.ts
-│           ├── muleScoring.spec.ts
-│           └── lien.spec.ts
+├── backend/                           # === EXPRESS BACKEND (CommonJS) ===
+│   ├── package.json                   # express, better-sqlite3, multer, xlsx, pdfkit, dayjs, electron-log
+│   ├── jest.config.js
+│   ├── sample_ncrp.xlsx
+│   ├── src/
+│   │   ├── server.js                  # Express app factory + CORS, binds 127.0.0.1:3847
+│   │   ├── routes/
+│   │   │   └── ncrp.js                # ALL endpoints (createNcrpRouter(db)) + /health
+│   │   ├── parsers/
+│   │   │   └── ncrpParser.js          # multi-sheet .xlsx parser, header auto-detect, IFSC resolution
+│   │   ├── analyzers/
+│   │   │   └── analyzer.js            # 8-module pipeline (entry: analyzeReport)
+│   │   ├── db/
+│   │   │   ├── schema.js              # DDL + WAL pragmas + v0.2.0 column migration
+│   │   │   ├── queries.js             # prepared-statement helpers
+│   │   │   └── seed.js
+│   │   ├── lib/
+│   │   │   ├── cashoutPolicy.js       # CASHOUT_POLICY.CAP_AT_RECEIVED
+│   │   │   └── ifscBankResolver.js    # IFSC_BANK_MAP (100+ prefixes) + resolveBank()
+│   │   ├── utils/
+│   │   │   ├── excelGenerator.js      # 15-sheet workbook
+│   │   │   ├── pdfGenerator.js        # 12-page dossier (PDFKit)
+│   │   │   └── emailGenerator.js      # per-bank RBI/MHA lien letters
+│   │   ├── config/
+│   │   │   ├── mule_weights.json      # 11 signal weights
+│   │   │   └── header_synonyms.json   # NCRP column variant map (20+ fields)
+│   │   └── __tests__/
+│   │       ├── analyzer.test.js · ncrpParser.test.js · queries.test.js · security.test.js
+│   │       ├── cashoutPolicy.test.js · ifscBankResolver.test.js · emailGenerator.test.js
+│   │       ├── api/reports.api.test.js
+│   │       └── helpers/xlsx.js
+│   ├── scripts/
+│   │   ├── accuracy_test.js           # vs CypherSOL gold standard (28/28)
+│   │   ├── consistency_test.js        # cross-consumer figure reconciliation
+│   │   ├── validate_v020.js (+ .report.md)  # v0.2.0 cross-artifact proof
+│   │   ├── security_audit.js          # 10-vector HTTP attack gate (10/10)
+│   │   ├── e2e_validate.js            # full pipeline integration
+│   │   └── benchmark.js               # performance regression
+│   ├── uploads/                       # persisted uploads
+│   └── exports/                       # generated PDF/Excel
 │
-├── frontend/                          # === REACT RENDERER ===
-│   ├── vite.config.ts                 # Vite, base="./", build → dist/
-│   ├── index.html
-│   └── src/
-│       ├── main.tsx                   # React root, BrowserRouter
-│       ├── App.tsx                    # Top-level routes, ErrorBoundary
-│       ├── api/
-│       │   ├── client.ts              # fetch wrapper, baseUrl http://127.0.0.1:3847
-│       │   ├── upload.ts              # multipart + SSE consumer
-│       │   ├── complaints.ts
-│       │   ├── transactions.ts
-│       │   ├── mules.ts
-│       │   ├── lien.ts
-│       │   ├── emails.ts
-│       │   ├── pdf.ts
-│       │   ├── timeline.ts
-│       │   └── geography.ts
-│       ├── components/
-│       │   ├── ErrorBoundary.tsx
-│       │   ├── DropZone.tsx           # Drag/drop with size validation
-│       │   ├── ProgressBar.tsx
-│       │   ├── ConfirmModal.tsx
-│       │   ├── VirtualTable.tsx       # TanStack Table v8 + virtualization
-│       │   ├── SankeyChart.tsx
-│       │   ├── IndiaMap.tsx           # Bundled SVG choropleth
-│       │   ├── ScoreBreakdown.tsx     # Mule explainability panel
-│       │   └── ...
-│       ├── screens/
-│       │   ├── SetupWizard.tsx        # S-01
-│       │   ├── Dashboard.tsx          # S-02
-│       │   ├── Upload.tsx             # S-03
-│       │   ├── UploadHistory.tsx      # S-04
-│       │   ├── ComplaintDashboard.tsx # S-05
-│       │   ├── LayerAnalysis.tsx      # S-06
-│       │   ├── Cashout.tsx            # S-07
-│       │   ├── SuspectAccounts.tsx    # S-08
-│       │   ├── LienTracker.tsx        # S-09
-│       │   ├── RepeatAccounts.tsx     # S-10
-│       │   ├── DraftEmails.tsx        # S-11
-│       │   ├── PdfPreview.tsx         # S-12
-│       │   ├── TransactionBrowser.tsx # S-13
-│       │   ├── TimelineView.tsx       # S-14
-│       │   ├── GeographyView.tsx      # S-15
-│       │   ├── KeyFindings.tsx        # S-16
-│       │   ├── TemplatesEditor.tsx    # S-17
-│       │   ├── BankAddressBook.tsx    # S-18
-│       │   ├── OfficerProfile.tsx     # S-19
-│       │   ├── Settings.tsx           # S-20
-│       │   └── About.tsx              # S-21
-│       ├── state/
-│       │   ├── store.ts               # Zustand (lightweight)
-│       │   ├── crossFilter.ts         # FR-40 brush propagation
-│       │   └── savedViews.ts          # FR-37
-│       ├── hooks/
-│       │   ├── useSSE.ts              # Progress stream consumer
-│       │   ├── useDebounced.ts
-│       │   └── usePagination.ts
-│       ├── i18n/
-│       │   └── en-IN.json
-│       ├── theme/
-│       │   ├── tokens.ts              # WCAG-AA palette
-│       │   └── global.css
-│       └── types/
-│           ├── api.d.ts               # Mirrors §3 response shapes
-│           └── fintrace.d.ts          # window.fintrace IPC surface
-│
-└── docs/
-    ├── SRS.md
-    ├── SDD.md                          # ← this document
-    └── architecture-diagrams/
+└── frontend/                          # === REACT RENDERER (JavaScript) ===
+    ├── package.json                   # react 18, react-router 6, vite 5, axios, recharts, @tanstack/*
+    ├── vite.config.js                 # base="./", proxy /api→127.0.0.1:3847, 3-chunk split (charts/table/vendor)
+    ├── index.html
+    └── src/
+        ├── main.jsx                   # React root
+        ├── App.jsx                    # HashRouter, lazy routes, ErrorBoundary
+        ├── index.css
+        ├── context/
+        │   └── ReportContext.jsx      # active reportId (sessionStorage)
+        ├── utils/
+        │   ├── api.js                 # axios client, baseURL http://127.0.0.1:3847, Electron IPC detection
+        │   └── format.js              # INR / date / percent / risk-color helpers
+        ├── components/
+        │   ├── Sidebar.jsx · DataTable.jsx (TanStack + virtual) · StatCard.jsx
+        │   ├── Badge.jsx · ErrorAlert.jsx · LoadingSpinner.jsx · Skeleton.jsx
+        └── pages/
+            ├── Upload.jsx             # ingest + history
+            ├── Dashboard.jsx          # overview, recovery, charts, findings, export buttons
+            ├── Layers.jsx             # layer walkthrough
+            ├── MoneyFlow.jsx          # account→account graph
+            ├── Mules.jsx              # scored suspects + per-account drill
+            ├── Lien.jsx               # recovery worksheet
+            ├── DataQuality.jsx        # bank-attribution QA (v0.2.0)
+            ├── Transactions.jsx       # server-paginated ledger
+            ├── Emails.jsx             # draft lien letters
+            └── Timeline.jsx           # daily + cumulative movement
 ```
 
 ---
 
 ## 5. Electron Security Design
 
-The threat model treats the renderer as the **least-trusted** component: it parses HTML, runs `<svg>`, displays user-controlled strings, and renders Excel-derived data. Every privileged operation must be brokered.
+The threat model treats the renderer as the **least-trusted** component: it parses HTML, displays user-controlled strings, and renders Excel-derived data. Every privileged operation is brokered through the preload bridge.
 
 ### 5.1 BrowserWindow Hardening
 
-```ts
-// electron/main.ts (excerpt)
+```js
+// electron/main.js (excerpt)
 const win = new BrowserWindow({
-  width: 1400,
-  height: 900,
+  width: 1400, height: 900,
   webPreferences: {
     contextIsolation: true,          // [NFR-12] hard isolation
     nodeIntegration: false,          // [NFR-12] no require() in renderer
-    nodeIntegrationInWorker: false,
-    nodeIntegrationInSubFrames: false,
-    sandbox: true,                   // V8 sandbox + OS sandbox
+    sandbox: true,
     webSecurity: true,
     allowRunningInsecureContent: false,
     preload: path.join(__dirname, 'preload.js'),
@@ -995,48 +574,24 @@ const win = new BrowserWindow({
 });
 win.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); // no new windows
 win.webContents.on('will-navigate', (e, url) => {
-  if (!url.startsWith('http://127.0.0.1:3847/')) e.preventDefault();
+  if (!url.startsWith('http://127.0.0.1:3847/') && !url.startsWith('file:')) e.preventDefault();
 });
 ```
 
 ### 5.2 Preload — Whitelisted IPC Surface
 
-The preload exposes **only** these channels — anything else is unreachable from the renderer.
-
-```ts
-// electron/preload.ts
-import { contextBridge, ipcRenderer } from 'electron';
-
-const ALLOWED_INVOKE = [
-  'dialog:saveFile',        // returns user-picked path
-  'dialog:chooseFolder',
-  'shell:openPath',         // opens PDF/folder in OS handler
-  'app:getVersion',
-] as const;
-
-const ALLOWED_ON = [
-  'parse:progress',         // streamed from main → renderer
-  'backup:complete',
-] as const;
-
+```js
+// electron/preload.js
 contextBridge.exposeInMainWorld('fintrace', {
-  saveFileDialog: (opts: SaveDialogOpts) =>
-    ipcRenderer.invoke('dialog:saveFile', opts),
-  chooseFolder: () =>
-    ipcRenderer.invoke('dialog:chooseFolder'),
-  openPath: (absPath: string) =>
-    ipcRenderer.invoke('shell:openPath', absPath),
-  getVersion: () =>
-    ipcRenderer.invoke('app:getVersion'),
-  onParseProgress: (cb: (p: ProgressPayload) => void) => {
-    const handler = (_e: unknown, p: ProgressPayload) => cb(p);
-    ipcRenderer.on('parse:progress', handler);
-    return () => ipcRenderer.removeListener('parse:progress', handler);
-  },
+  getVersion:        () => ipcRenderer.invoke('app:get-version'),
+  openFile:          (p) => ipcRenderer.invoke('shell:open-file', p),
+  openPdf:           (f) => ipcRenderer.invoke('shell:open-pdf', f),
+  savePdfCopy:       (f) => ipcRenderer.invoke('dialog:save-pdf', f),
+  openExportsFolder: () => ipcRenderer.invoke('shell:open-exports'),
 });
 ```
 
-`ipcMain.handle` is registered **only** for the channels above; unknown channels throw.
+`ipcMain.handle` is registered **only** for those channels; unknown channels throw. `window.fintrace` presence is also how the renderer (`utils/api.js → isElectron()`) decides whether exports round-trip via IPC (file://) or as browser blob downloads.
 
 ### 5.3 Content Security Policy
 
@@ -1046,7 +601,7 @@ CSP is set as an HTTP header by the main process via `session.webRequest.onHeade
 Content-Security-Policy:
   default-src 'self' http://127.0.0.1:3847;
   script-src  'self';
-  style-src   'self' 'unsafe-inline';   /* required for emotion/CSS-in-JS */
+  style-src   'self' 'unsafe-inline';
   img-src     'self' data: blob:;
   font-src    'self' data:;
   connect-src 'self' http://127.0.0.1:3847;
@@ -1058,25 +613,14 @@ Content-Security-Policy:
 
 ### 5.4 Network Egress Block (NFR-10)
 
-```ts
-// electron/security/network-guard.ts
-session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
-  const url = new URL(details.url);
-  const allowed = url.hostname === '127.0.0.1' || url.hostname === 'localhost'
-                  || url.protocol === 'file:' || url.protocol === 'data:';
-  cb({ cancel: !allowed });
-});
-```
-
-Express also binds explicitly: `app.listen(3847, '127.0.0.1')` — never `0.0.0.0`.
+The `webRequest.onBeforeRequest` guard cancels any request that is not loopback / `file:` / `data:`. Express also binds explicitly to `127.0.0.1:3847` — never `0.0.0.0`. `express-rate-limit` adds a lenient loopback rate cap (100 req/min general, 5/min upload).
 
 ### 5.5 Additional Safeguards
 
 - **Single-instance lock** (`app.requestSingleInstanceLock`) — prevents two processes racing on the same SQLite file.
-- **`app.enableSandbox()`** — applies OS sandbox to all renderers.
-- **Disable remote module** — `enableRemoteModule` defaults off in Electron 28; we never re-enable it.
 - **Auto-updater disabled** (C-08) — `autoUpdater` is never instantiated.
-- **DevTools** — disabled in packaged builds (`win.webContents.openDevTools` only called when `process.env.NODE_ENV === 'development'`).
+- **DevTools** — only opened when `process.env.NODE_ENV === 'development'`.
+- **Upload defense** — 3-stage validation (size, magic bytes, NCRP content tokens) plus parameterized SQL throughout (`security_audit.js` exercises 10 attack vectors: SQLi, XSS, path traversal, malformed/oversized uploads, type spoofing, rate limiting, arbitrary DB access, export smuggling, input sanitization).
 
 ---
 
@@ -1084,73 +628,45 @@ Express also binds explicitly: `app.listen(3847, '127.0.0.1')` — never `0.0.0.
 
 ### 6.1 Handling 50,000-Row Excel Without UI Freeze
 
-| Concern | Mechanism |
+| Concern | Mechanism (as built) |
 |---|---|
-| **Where the work runs** | A dedicated **Node worker thread** (`backend/src/ingest/worker.ts`) — not the Express event loop, not the renderer. The Express handler returns `202 Accepted` immediately after `worker.postMessage({uploadId, path})`. |
-| **Streaming parse** | SheetJS in `dense` mode with `read` configured to iterate sheet rows lazily; we never `JSON.stringify` the whole workbook. |
-| **Renderer feedback** | Progress events at ≥ 10 Hz via SSE → state update batched with `requestAnimationFrame`. |
-| **Memory ceiling** | Working set capped: each 1000-row batch is parsed → inserted → released before reading the next. Peak heap during a 50k import stays under 200 MB (well within C-03's 1 GB target). |
-| **CPU yielding** | Between batches, `setImmediate(() => continueParsing())` to keep the libuv loop responsive for SSE flushes. |
+| **Where the work runs** | Analysis is scheduled with **`setImmediate(runAnalysisInBackground)`** after the upload route returns `202`. It runs in the Express/main process (no worker thread). |
+| **Streaming parse** | `ncrpParser.js` reads the workbook sheet-by-sheet; rows are deduplicated and batch-inserted rather than held as one giant array. |
+| **Renderer feedback** | The renderer **polls** `GET /api/ncrp/:id` on `analysis_status` until `complete`/`error`. (🔭 Planned: SSE progress stream.) |
+| **Synchronous DB** | `better-sqlite3` is synchronous, so batched prepared-statement transactions are the throughput lever (§6.2). |
 
 ### 6.2 Batch Insert Strategy for SQLite
 
-`better-sqlite3` is synchronous, so the perf trick is **prepared statements inside a single transaction**, batched in 1000-row windows.
+`better-sqlite3` is synchronous, so the perf trick is **prepared statements inside a single transaction**, batched in row windows.
 
-```ts
-const insert = db.prepare(`
-  INSERT INTO transactions (
-    complaint_id, ack_no, txn_date, beneficiary_account_no,
-    beneficiary_bank, ifsc_code, txn_amount, disputed_amount,
-    payment_mode, layer_no, atm_id, city, state, remarks,
-    source_upload_id
-  ) VALUES (
-    @complaint_id, @ack_no, @txn_date, @beneficiary_account_no,
-    @beneficiary_bank, @ifsc_code, @txn_amount, @disputed_amount,
-    @payment_mode, @layer_no, @atm_id, @city, @state, @remarks,
-    @source_upload_id
-  )
-`);
-
-const insertMany = db.transaction((rows: TxnRow[]) => {
-  for (const row of rows) insert.run(row);
-});
-
-// caller:
+```js
+const insert = db.prepare(`INSERT INTO ncrp_transactions (...) VALUES (...)`);
+const insertMany = db.transaction((rows) => { for (const r of rows) insert.run(r); });
 for (const batch of chunks(parsedRows, 1000)) insertMany(batch);
 ```
 
-**Why 1000:** below ~200, the per-transaction WAL fsync dominates; above ~5000, a parse error or memory spike rolls back too much work. 1000 is the empirical sweet spot for the target hardware. WAL mode + `PRAGMA synchronous=NORMAL` (NFR-07) gives ~10× throughput over the default `FULL` while keeping crash safety acceptable for a single-user tool.
+WAL mode + `PRAGMA synchronous=NORMAL` (NFR-07) gives roughly an order of magnitude more throughput than the default `FULL` while keeping crash safety acceptable for a single-user tool.
 
-### 6.3 Why Analysis Runs Async
+### 6.3 Why Analysis Runs Off `setImmediate`
 
-`POST /api/ncrp/upload` returns `202 Accepted` *before* layer/mule/lien analysis runs. Two reasons:
-
-1. **Bounded HTTP latency:** A 50k-row file plus full analysis can take 30–60s on i3/HDD. Holding the HTTP socket that long invites browser/proxy timeouts and gives the renderer no opportunity to display progress.
-2. **Independent cancellation surface:** SSE progress stream is a separate connection — the renderer can navigate away, the parse keeps going, and the user comes back to a completed import.
-
-The renderer keys analysis state off the upload row's `status` column; the SSE `complete` event causes the UI to refetch the dashboard.
+`POST /api/ncrp/upload` returns `202 Accepted` *before* the 8-module analysis runs. A 50k-row file plus full analysis can take tens of seconds; holding the HTTP socket that long invites timeouts and gives the renderer no chance to show progress. Deferring with `setImmediate` keeps the response immediate without the complexity of a worker thread. The renderer keys analysis state off `analysis_status`.
 
 ### 6.4 Pagination Strategy for Transaction Table
 
-The 50k-row Transaction Browser uses **two layers of laziness**:
-
-- **Server side — keyset pagination** with `limit`/`offset` capped at 500 rows per request. The endpoint accepts filters and a `sortBy`/`sortDir` so the server pushes filtering into SQLite indexes:
+- **Server side** — `limit`/`offset` pagination capped at 500 rows/request, with filters pushed into SQLite indexes:
 
   ```sql
-  CREATE INDEX idx_txn_complaint_date ON transactions(complaint_id, txn_date DESC);
-  CREATE INDEX idx_txn_layer        ON transactions(complaint_id, layer_no);
-  CREATE INDEX idx_txn_account      ON transactions(beneficiary_account_no, ifsc_code);
-  CREATE INDEX idx_txn_amount       ON transactions(complaint_id, txn_amount);
+  CREATE INDEX idx_txn_report_id    ON ncrp_transactions(report_id);
+  CREATE INDEX idx_txn_layer_no     ON ncrp_transactions(layer_no);
+  CREATE INDEX idx_txn_beneficiary  ON ncrp_transactions(beneficiary_account);
+  CREATE INDEX idx_txn_report_date  ON ncrp_transactions(report_id, transaction_date DESC, id DESC);
   ```
 
-- **Client side — windowed rendering** via TanStack Table + `@tanstack/react-virtual`. Only ~30 DOM rows exist at any time; scrolling fetches the next 500-row window with a 200 ms debounce. This is what makes FR-36's 60 fps achievable.
+- **Client side** — windowed rendering via TanStack Table + `@tanstack/react-virtual` (~30 DOM rows at a time). Filter mutations reset offset to 0 and discard previous windows.
 
-Filter mutations reset the offset to 0 and discard previous windows — predictable memory profile, no zombie pages.
+### 6.5 Frontend Bundle Strategy
 
-### 6.5 Other Notable Choices
-
-- **PDF chart rasterization** runs on the same worker thread as analysis, then is handed to PDFKit in the main Express handler — keeps the long-running PDF generation off the SQLite write path.
-- **Repeat-account view** is a real `accounts_repeat` table refreshed on each successful upload (write amplification is fine; reads are vastly more frequent). Avoids a recursive cross-complaint join on every Dashboard load.
+Vite splits the renderer into three chunks (`vite.config.js`): **charts** (Recharts, lazy — only Dashboard/Timeline reach it), **table** (TanStack stack), and **vendor** (React/router/axios). All routes except Upload are `React.lazy`-loaded.
 
 ---
 
@@ -1158,124 +674,48 @@ Filter mutations reset the offset to 0 and discard previous windows — predicta
 
 ### 7.1 Express Global Error Handler
 
-A single error-handling middleware terminates every route. Async handlers are wrapped in an `asyncHandler` utility so thrown exceptions reach it.
+A single error-handling middleware terminates every route; async handlers are wrapped so thrown exceptions reach it. Known errors carry `{ status, code, details }`; unknown errors degrade to `500 INTERNAL_ERROR`. Production responses omit `details`/stacks.
 
-```ts
-// backend/src/middleware/errorHandler.ts
-export function errorHandler(
-  err: AppError | Error,
-  req: Request, res: Response, _next: NextFunction
-) {
-  const requestId = req.requestId;
-  const isKnown = err instanceof AppError;
-  const status = isKnown ? err.status : 500;
-  const code   = isKnown ? err.code   : 'INTERNAL_ERROR';
+### 7.2 Analyzer Fault Isolation
 
-  logger.error({ requestId, code, err }, 'Request failed');
+Each of the 8 analyzer modules is wrapped in try/catch. A module failure is appended to `result.errors` (`{ module, message }`) and the pipeline **continues** — a single bad module never aborts the whole analysis. If the pipeline throws fatally, the report row is marked `analysis_status='error'`.
 
-  res.status(status).json({
-    error: {
-      code,
-      message: isKnown ? err.message : 'An unexpected error occurred.',
-      details: isKnown ? err.details : undefined,
-      requestId,
-    },
-  });
-}
-```
+### 7.3 Frontend Error Boundaries
 
-`AppError` is a typed throwable with `status`, `code`, `details`. Routes throw `new AppError(413, 'FILE_TOO_LARGE', '...')` instead of writing to `res` directly.
+The React tree is wrapped by `ErrorBoundary` / `ErrorAlert.jsx` with a recovery action. API failures don't throw into render — `utils/api.js` normalizes them into an `ApiError` (`{ code, status, message, details }`) with friendly mappings (`NETWORK_ERROR` → "backend down", `404` → "report missing", `5xx` → "contact support"); screens render an inline error state with retry rather than unmounting.
 
-A process-level safety net catches anything that escapes Express:
+### 7.4 SQLite Transactions
 
-```ts
-process.on('unhandledRejection', (reason) =>
-  logger.fatal({ reason }, 'unhandledRejection'));
-process.on('uncaughtException', (err) => {
-  logger.fatal({ err }, 'uncaughtException');
-  // Do NOT exit — Electron main supervises us; let it decide.
-});
-```
-
-### 7.2 Frontend Error Boundaries
-
-The React tree is wrapped at two levels:
-
-1. **Top-level** boundary in `App.tsx` — full-app fallback ("Something went wrong. Restart FinTrace.") with a button that triggers `window.location.reload()`.
-2. **Per-screen** boundaries around heavy screens (Layer Sankey, Timeline brush, India choropleth) — a screen-local fallback keeps the rest of the app navigable.
-
-```tsx
-// frontend/src/components/ErrorBoundary.tsx
-class ErrorBoundary extends React.Component<Props, State> {
-  state = { error: null as Error | null };
-  static getDerivedStateFromError(error: Error) { return { error }; }
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // No network log — write to local Electron log via preload.
-    window.fintrace.logError?.({ error: error.message, stack: error.stack, info });
-  }
-  render() {
-    if (this.state.error) return this.props.fallback(this.state.error);
-    return this.props.children;
-  }
-}
-```
-
-API failures don't throw into render — `api/client.ts` returns a discriminated `Result<T, ApiError>`. Screens render an inline error state with a Retry button rather than unmounting.
-
-### 7.3 SQLite Transaction Rollback
-
-Every multi-step DB operation uses `db.transaction(...)` from `better-sqlite3`, which:
-
-- Begins a deferred transaction,
-- Re-throws any error from the inner function **after** issuing `ROLLBACK`,
-- Commits only on clean return.
-
-Specifically, **a single batch's failure rolls back that batch only**, not the whole upload. The worker catches the error, marks those 1000 rows as quarantined (with reason `INSERT_FAILED`), and continues. This is what makes a 50k-row import resilient to one malformed row.
-
-For the upload as a whole — if the worker crashes mid-run — UC-11's recovery path applies: on next launch, `connection.ts` runs:
-
-```sql
-UPDATE uploads
-   SET status = 'failed', error_message = 'Aborted before completion'
- WHERE status = 'in_progress';
-
-DELETE FROM transactions
- WHERE source_upload_id IN (
-   SELECT id FROM uploads WHERE status = 'failed'
-                            AND completed_at IS NULL
- );
-```
-
-…inside a single transaction, satisfying NFR-08 (all-or-nothing per upload).
-
-### 7.4 Electron Crash Recovery
-
-Three failure modes, three responses:
-
-| Failure | Detection | Response |
-|---|---|---|
-| **Renderer crash** (`render-process-gone`) | `webContents.on('render-process-gone', ...)` | Log reason; if `reason !== 'clean-exit'`, reload the renderer once; if it crashes again within 30 s, show native dialog with "Restart / Quit". |
-| **Express subprocess exit** | Express runs in-process, but the worker thread can die; main listens for `worker.on('exit', code)` | Mark in-progress uploads as failed (see §7.3 recovery SQL); show toast in UI "Background task ended unexpectedly". |
-| **GPU/Window crash** | `app.on('gpu-process-crashed', ...)` | Single auto-restart with `app.relaunch(); app.exit(0);`. |
-
-**Boot self-check** runs every launch:
-
-1. Open SQLite — if `SQLITE_CORRUPT`, copy `fintrace.sqlite` → `fintrace.corrupt-<ts>.sqlite`, restore from newest backup in `backups/` (NFR-09), surface a non-dismissible notice.
-2. Run the orphaned-upload recovery SQL from §7.3.
-3. Verify schema version against the migration runner; apply pending migrations forward-only (C-09).
-4. `GET /api/health` from the renderer before showing the Dashboard — fail-stop with retry if backend hasn't bound `127.0.0.1:3847` within 5 s.
+Multi-row writes use `db.transaction(...)`, which rolls back on any thrown error and commits only on clean return. A failed batch rolls back **that batch only**.
 
 ### 7.5 User-Visible Error Surfaces
 
 | Layer | Surface |
 |---|---|
-| Drag-drop validation | Inline red banner on DropZone (no modal). |
-| Upload size / type | `413` from server → toast + DropZone error. |
-| Parse partial failure | Import summary card lists `<imported>/<quarantined>` with link to export quarantined CSV (FR-06). |
-| Analysis failure | Banner on per-complaint dashboard; "Re-run analysis" button (calls a `POST /api/ncrp/:id/reanalyze` — out of scope for v1 but reserved in the API namespace). |
-| PDF size > 50 MB | Modal (FR-34) — split annexure or cancel. |
-| Officer profile missing on lien/PDF | `409 OFFICER_PROFILE_MISSING` → modal that opens S-19 Officer Profile inline. |
+| Drag-drop validation | Inline error on DropZone (no modal). |
+| Upload size / type / content | `400`/`413` → toast + DropZone error. |
+| Analysis failure | `analysis_status='error'` → banner on Dashboard. |
+| Export failure | `500 PDF_GENERATION_FAILED` → toast with retry. |
+| Backend unreachable | `NETWORK_ERROR` → full-screen "backend down" with retry. |
 
 ---
 
-*End of SDD v1.0 — FinTrace NCRP*
+## 8. Validation & Verification
+
+The build is gated by a suite of scripts in `backend/scripts/` and Jest tests in `backend/src/__tests__/`:
+
+| Check | What it proves | Status |
+|---|---|---|
+| `accuracy_test.js` | Derived metrics vs CypherSOL gold standard (file …145), 8 edge cases; ±1% rupees, exact counts. | **28/28** |
+| `security_audit.js` | 10-vector HTTP attack gate against a real Express server on a throwaway DB. | **10/10** |
+| `consistency_test.js` | `cashed_out` is identical across summary / cashout / recovery / PDF / Excel, and the recovery split sums to 100% of victim loss (cases …145, …170). | pass |
+| `validate_v020.js` | The three v0.2.0 fixes (capped cash-out, IFSC bank attribution, data-quality flags) hold in **generated PDF text and Excel cells**, not just in memory. Writes `validate_v020.report.md`. | pass |
+| `e2e_validate.js` | Full pipeline: parse → analyze → PDF/Excel → verify artifacts. | pass |
+| `benchmark.js` | Parse / analysis / PDF / Excel timings vs baselines on verified files. | pass |
+| Jest (`__tests__/`) | Unit + API coverage: parser, analyzer, queries, security, cashout policy, IFSC resolver, email generator, reports API (supertest). | pass |
+
+> **Outstanding:** version bump to `0.2.0` across the three `package.json` files; SSE progress stream (currently polling); PDF chart rasterization + annexure split (currently tabular-only). These are tracked as 🔭 Planned items above.
+
+---
+
+*End of SDD v2.0 (as-built) — FinTrace NCRP*

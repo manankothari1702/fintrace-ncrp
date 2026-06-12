@@ -5,11 +5,16 @@
     "Ack No",
     "Acknowledgement Number",
     "Complaint Number",
-    "NCRP No"
+    "NCRP No",
+    "NCRP Complaint No",
+    "Acknowledgment No",
+    "Acknowledgment Number",
+    "Ack Number"
   ],
   "complaint_date": [
     "Complaint Date",
-    "Complaint Dt"
+    "Complaint Dt",
+    "Date of Complaint"
   ],
   "victim_account": [
     "Victim Account No",
@@ -17,38 +22,74 @@
     "Victim Account",
     "Account No./ (Wallet /PG/PA) Id",
     "Account No./(Wallet /PG/PA) Id",
-    "Account No./ (Wallet/PG/PA) Id"
+    "Account No./ (Wallet/PG/PA) Id",
+    "Account No. / (Wallet /PG/PA) Id",
+    "Account No / (Wallet/PG/PA) Id",
+    "Account No./(Wallet/PG/PA) ID",
+    "Account No (Wallet/PG/PA) Id",
+    "Account Number/ (Wallet /PG/PA) Id",
+    "A/c No./ (Wallet /PG/PA) Id",
+    "Wallet/PG/PA Id",
+    "Wallet Id",
+    "Victim A/c No",
+    "Victim A/c No.",
+    "Victim Acct No",
+    "Victim Account Number",
+    "Complainant Account No",
+    "Complainant A/c No",
+    "Khata Sankhya",
+    "खाता संख्या"
   ],
   "victim_bank": [
     "Victim Bank",
     "Victim Bank Name",
     "Bank/FIs",
     "Bank/FI",
-    "Bank / FIs"
+    "Bank / FIs",
+    "Victim Bank/FI"
   ],
   "beneficiary_account": [
     "Beneficiary A/C",
     "Beneficiary Account",
     "Bene Account",
     "Recipient A/C",
-    "Account No"
+    "Account No",
+    "Account No.",
+    "Beneficiary Account No",
+    "Beneficiary Account Number",
+    "Bene A/c No",
+    "Beneficiary A/c No",
+    "लाभार्थी खाता"
   ],
   "beneficiary_bank": [
     "Beneficiary Bank",
     "Beneficiary Bank Name",
     "Bene Bank",
     "Action Taken By bank",
-    "Action Taken By Bank"
+    "Action Taken By Bank",
+    "Action Taken By Bank/FI",
+    "Action Taken By Bank/FIs",
+    "Action Taken Bank",
+    "Action taken by bank/ FI",
+    "Beneficiary Bank/FI",
+    "Bene Bank Name",
+    "Recipient Bank",
+    "लाभार्थी बैंक"
   ],
   "beneficiary_name": [
     "Beneficiary Name",
-    "Bene Name"
+    "Bene Name",
+    "Beneficiary A/c Name",
+    "Account Holder Name"
   ],
   "ifsc_code": [
     "IFSC Code",
     "Ifsc Code",
     "IFSC",
-    "Bene IFSC"
+    "Bene IFSC",
+    "IFSC Code.",
+    "Beneficiary IFSC",
+    "IFSC No"
   ],
   "transaction_date": [
     "Transaction Date",
@@ -57,7 +98,10 @@
     "Withdrawal Date & Time",
     "Withdrawal Date",
     "Put on hold Date",
-    "Date"
+    "Date",
+    "Transaction Date & Time",
+    "Txn Date & Time",
+    "Date of Transaction"
   ],
   "transaction_amount": [
     "Transaction Amount",
@@ -65,11 +109,40 @@
     "Amount",
     "Amount (INR)",
     "Withdrawal Amount",
-    "Put on hold Amount"
+    "Put on hold Amount",
+    "Transaction Amt",
+    "Txn Amt",
+    "Trans Amount",
+    "Trans Amt",
+    "Transaction Amount (INR)",
+    "Transaction Amount (Rs.)",
+    "Transaction Amount in Rs",
+    "Amount (Rs.)",
+    "Amount in INR",
+    "Amount INR",
+    "Transfer Amount",
+    "Transferred Amount",
+    "Debit Amount",
+    "Withdrawal Amt",
+    "Withdrawal Amount (INR)",
+    "Amt",
+    "Lenden Rashi",
+    "लेनदेन राशि",
+    "राशि"
   ],
   "disputed_amount": [
     "Disputed Amount",
-    "Dispute Amount"
+    "Dispute Amount",
+    "Disputed Amt",
+    "Dispute Amt",
+    "Disputed Amount (INR)",
+    "Disputed Amount (Rs.)",
+    "Disputed Amount Rs",
+    "Disputed/Fraud Amount",
+    "Fraud Amount",
+    "Fraudulent Amount",
+    "Vivadit Rashi",
+    "विवादित राशि"
   ],
   "utr_no": [
     "UTR/Reference No",
@@ -79,23 +152,37 @@
     "RRN",
     "Transaction Ref No",
     "Transaction Id / UTR Number",
-    "Transaction ID / UTR Number"
+    "Transaction ID / UTR Number",
+    "UTR Number",
+    "UTR/Ref No"
   ],
   "payment_mode": [
     "Payment Mode",
     "Mode of Payment",
-    "Mode"
+    "Mode",
+    "Payment Method",
+    "Txn Mode",
+    "Transaction Mode"
   ],
   "layer_no": [
     "Layer No",
     "Layer",
-    "Layer Number"
+    "Layer Number",
+    "Layer No.",
+    "Layer #",
+    "Layer Num",
+    "Layer Level",
+    "Transaction Layer",
+    "Txn Layer",
+    "लेयर"
   ],
   "atm_id": [
     "ATM ID",
     "ATM Id",
     "TID",
-    "Terminal ID"
+    "Terminal ID",
+    "Terminal Id",
+    "ATM Terminal ID"
   ],
   "atm_location": [
     "ATM Location",
@@ -103,16 +190,22 @@
     "Place/Location of ATM",
     "Place of ATM",
     "Place/Location Of ATM",
-    "Merchant Name"
+    "Merchant Name",
+    "ATM Address",
+    "ATM Place"
   ],
   "city": [
-    "City"
+    "City",
+    "City Name"
   ],
   "state": [
-    "State"
+    "State",
+    "State Name"
   ],
   "remarks": [
     "Remarks",
-    "Remark"
+    "Remark",
+    "Comments",
+    "Narration"
   ]
 }

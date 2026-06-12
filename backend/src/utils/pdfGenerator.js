@@ -58,6 +58,19 @@ function num(v) {
 }
 
 /**
+ * The confirmed cash-out figure the dossier prints. Reads the single source of
+ * truth (`summary.cashed_out`, the capped policy figure), falling back to the
+ * cash-out view for analyses produced before that field existed.
+ *
+ * @param {Record<string, unknown>} summary
+ * @param {Record<string, unknown>} cashout
+ * @returns {number}
+ */
+function cashedOutForDisplay(summary = {}, cashout = {}) {
+  return summary.cashed_out != null ? num(summary.cashed_out) : num(cashout.total_cashout_amount);
+}
+
+/**
  * Rupee amount with Indian digit grouping and an ASCII "Rs." prefix.
  * @param {unknown} value
  * @returns {string}
@@ -109,9 +122,10 @@ function asciiSafe(v) {
     .replace(/≥/g, '>=')                // ≥
     .replace(/≤/g, '<=')                // ≤
     .replace(/→/g, '->')                // →
-    .replace(/[‘’‚]/g, "'")   // ‘ ’ ‚
-    .replace(/[“”„]/g, '"')   // “ ” „
-    .replace(/[–—]/g, '-');        // – —
+    .replace(/[‘’‚]/g, "'")   // ‘ ’ ‚  → '
+    .replace(/[“”„]/g, '"')   // “ ” „  → "
+    .replace(/…/g, '...')               // … (horizontal ellipsis)
+    .replace(/[–—−]/g, '-');       // – (en) — (em) − (U+2212 minus) → ASCII hyphen-minus
 }
 
 // ─── Low-level drawing helpers ───────────────────────────────────────
@@ -315,9 +329,14 @@ function renderExecutiveSummary(doc, a, liens) {
   const cashout = a.cashout_analysis || {};
   const mules = a.mule_detection || [];
   const highMules = mules.filter((m) => m.risk_label === 'HIGH').length;
-  const recoverable = (liens || []).reduce(
+  // Two distinct figures — never conflate (see analyzer summary):
+  //   • recoverableResidual: victim loss not yet cashed out / frozen / refunded.
+  //   • lienTableTotal: Σ per-account lien-eligible balances (can exceed the loss).
+  const recoverableResidual = num(summary.recoverable_residual);
+  const lienTableTotal = num(summary.lien_table_total) || (liens || []).reduce(
     (s, l) => s + num(l.lien_amount ?? l.lien_eligible_amount), 0);
   const banks = new Set((liens || []).map((l) => l.bank_name).filter(Boolean)).size;
+  const cashedOut = cashedOutForDisplay(summary, cashout);
 
   drawTable(doc, {
     fontSize: 10,
@@ -332,14 +351,21 @@ function renderExecutiveSummary(doc, a, liens) {
       ['Layers in the money trail', formatCount(summary.total_layers)],
       ['Distinct beneficiary accounts', formatCount(summary.total_accounts)],
       ['Fraud trail start date', formatDate(summary.fraud_start_date)],
-      ['Total confirmed cashed out (ATM/POS)', formatMoney(cashout.total_cashout_amount)],
+      ['Total confirmed cashed out (ATM/POS)', formatMoney(cashedOut)],
+      ['Recoverable residual (loss - cashed out - on hold - refunded)', formatMoney(recoverableResidual)],
       ['Same-day ATM cashouts', formatCount(cashout.same_day_cashouts)],
       ['High-risk mule accounts', formatCount(highMules)],
-      ['Accounts with recoverable funds', formatCount((liens || []).length)],
-      ['Total lien-eligible (recoverable) amount', formatMoney(recoverable)],
+      ['Accounts with lien-eligible balance', formatCount((liens || []).length)],
+      ['Total lien-eligible balance across flagged accounts', formatMoney(lienTableTotal)],
       ['Banks to be contacted for lien', formatCount(banks)],
     ],
   });
+
+  para(doc,
+    'Recoverable residual is the share of the victim loss not yet cashed out, frozen, or refunded — ' +
+    'it sums with those to 100% of the loss. The total lien-eligible balance is the per-account freezable ' +
+    'sum and may exceed the victim loss because funds are re-counted as they traverse multiple layers.',
+    { gap: 0.6, size: 8.5, color: MUTED });
 
   para(doc, 'Note: visual charts are available on the FinTrace dashboard. This ' +
     'PDF presents the complete underlying data as tables.',
@@ -448,8 +474,9 @@ function renderMoneyFlow(doc, network) {
 function renderMules(doc, mules) {
   sectionHeading(doc, '6. Top Mule Accounts');
   para(doc,
-    'Accounts ranked by mule score (0-100). HIGH-risk accounts are the priority ' +
-    'targets for lien and KYC requests. Account numbers are masked for the report.',
+    'Accounts ranked by mule risk score (higher = stronger mule indicators). ' +
+    'HIGH-risk accounts are the priority targets for lien and KYC requests. ' +
+    'Account numbers are masked for the report.',
     { gap: 0.8 });
 
   const top = (mules || []).slice(0, 10);
@@ -486,7 +513,7 @@ function renderMules(doc, mules) {
 function renderLien(doc, liens) {
   sectionHeading(doc, '7. Lien-Eligible Amounts');
   para(doc,
-    'Recoverable funds per account — disputed inflow not yet confirmed withdrawn ' +
+    'Lien-eligible balance per account — disputed inflow not yet confirmed withdrawn ' +
     'as cash. Subject to the actual available balance confirmed by the bank.',
     { gap: 0.8 });
 
@@ -516,8 +543,12 @@ function renderLien(doc, liens) {
     ]),
   });
 
-  para(doc, `Total recoverable across ${formatCount(liens.length)} account(s): ` +
-    `${formatMoney(total)}.`, { bold: true, gap: 0 });
+  para(doc, `Total lien-eligible balance across ${formatCount(liens.length)} flagged account(s): ` +
+    `${formatMoney(total)}.`, { bold: true, gap: 0.4 });
+  para(doc,
+    '(May exceed the victim loss as funds traverse multiple layers — this is the freezable ' +
+    'per-account balance, not the recoverable residual reported in the Executive Summary.)',
+    { gap: 0, size: 8, color: MUTED });
 }
 
 /** @param {PDFKit.PDFDocument} doc @param {object} cashout */
@@ -676,11 +707,80 @@ function renderFindings(doc, findings) {
   });
 }
 
-/** @param {PDFKit.PDFDocument} doc @param {Array<object>} emails */
-function renderEmails(doc, emails) {
-  const list = Array.isArray(emails) ? emails : [];
+/**
+ * Short, human label for a bank-attribution flag (used in the table column).
+ * @param {string} flag
+ */
+function flagLabel(flag) {
+  switch (flag) {
+    case 'IFSC_TEXT_MISMATCH': return 'IFSC vs text';
+    case 'NO_IFSC': return 'No IFSC';
+    case 'INVALID_IFSC': return 'Invalid IFSC';
+    case 'UNKNOWN_IFSC_PREFIX': return 'Unknown prefix';
+    default: return flag || '—';
+  }
+}
+
+/** @param {PDFKit.PDFDocument} doc @param {Array<object>} dataQuality */
+function renderDataQuality(doc, dataQuality) {
+  const list = Array.isArray(dataQuality) ? dataQuality : [];
   doc.addPage();
-  sectionHeading(doc, '12. Draft Lien-Request Emails');
+  sectionHeading(doc, '12. Bank Attribution — Data Quality Review');
+
+  if (list.length === 0) {
+    para(doc,
+      'Every account resolved cleanly: the bank name on each lien letter was ' +
+      'derived from a valid IFSC that agreed with the source file. No accounts ' +
+      'require manual bank verification.', { color: MUTED });
+    return;
+  }
+
+  para(doc,
+    `${formatCount(list.length)} account(s) below need the investigating officer to ` +
+    'confirm the freeze target. The bank printed on each lien letter is taken from ' +
+    "the account's IFSC (authoritative); where the source file's text disagreed or " +
+    'no usable IFSC was present, it is listed here for review. The financial amounts ' +
+    'are unaffected — only the bank attribution is flagged.', { gap: 0.8 });
+
+  drawTable(doc, {
+    fontSize: 8,
+    columns: [
+      { label: '#', width: 22, align: 'center' },
+      { label: 'Account (masked)', width: 96 },
+      { label: 'Resolved bank (letter)', width: 120 },
+      { label: 'IFSC', width: 76 },
+      { label: 'Flag', width: 64 },
+      { label: 'Source-file text', width: contentWidth(doc) - 378 },
+    ],
+    rows: list.map((d, i) => [
+      i + 1,
+      maskAccount(d.account_no),
+      d.bank || '—',
+      d.ifsc_code || '—',
+      flagLabel(d.bank_flag),
+      d.raw_bank || '(blank)',
+    ]),
+  });
+
+  para(doc,
+    'Action: for "IFSC vs text" rows the letter already uses the IFSC-derived bank — ' +
+    'verify and dispatch. For "No IFSC" / "Invalid IFSC" rows (wallets / PA / PG ids) ' +
+    'confirm the correct nodal entity. For "Unknown prefix" rows the IFSC bank map ' +
+    'should be extended.', { gap: 0, size: 8, color: MUTED });
+}
+
+/**
+ * @param {PDFKit.PDFDocument} doc
+ * @param {Array<object>} emails
+ * @param {Array<object>} [dataQuality] - flagged accounts, for per-letter notes
+ */
+function renderEmails(doc, emails, dataQuality) {
+  const list = Array.isArray(emails) ? emails : [];
+  // account_no -> flag, so each letter can footnote its flagged accounts.
+  const flagByAccount = new Map(
+    (Array.isArray(dataQuality) ? dataQuality : []).map((d) => [String(d.account_no), d.bank_flag]));
+  doc.addPage();
+  sectionHeading(doc, '13. Draft Lien-Request Emails');
 
   if (list.length === 0) {
     para(doc, 'No draft emails were generated (no lien-eligible accounts).',
@@ -715,6 +815,23 @@ function renderEmails(doc, emails) {
     doc.font('Courier').fontSize(8.5).fillColor(INK)
       .text(email.body || '', left, doc.y, { width: contentWidth(doc), align: 'left' });
     doc.x = left;
+
+    // Reviewer note (NOT part of the dispatched letter): flag any account in
+    // this letter whose bank was derived from the IFSC over a differing source
+    // text, so the officer verifies before sending.
+    const flagged = (Array.isArray(email.account_list) ? email.account_list : [])
+      .filter((acc) => flagByAccount.has(String(acc)));
+    if (flagged.length) {
+      doc.moveDown(0.6);
+      doc.x = left;
+      doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(MUTED)
+        .text(
+          'Reviewer note (not part of the dispatched letter): bank derived from IFSC; ' +
+          `source file text differed or carried no IFSC for account(s): ${flagged.map(maskAccount).join(', ')}. ` +
+          'See section 12 (Data Quality).',
+          left, doc.y, { width: contentWidth(doc) });
+      doc.x = left;
+    }
   });
 }
 
@@ -822,6 +939,17 @@ function generateReportPdf(data, outputPath) {
 
     doc.pipe(stream);
 
+    // Global glyph sanitizer: PDFKit's built-in WinAnsi Helvetica has no glyph
+    // for U+2212, en/em dashes, smart quotes, ellipsis, ₹, ≥, etc. — they render
+    // as blank boxes (a "−" shows as a stray double-quote). Route EVERY drawn
+    // string and its layout measurement through asciiSafe so both agree, catching
+    // table cells, headings, paragraphs, cover, footers, and the '—' fallbacks
+    // that bypass the per-field asciiSafe() calls.
+    const drawText = doc.text.bind(doc);
+    doc.text = (str, ...rest) => drawText(asciiSafe(str), ...rest);
+    const measureHeight = doc.heightOfString.bind(doc);
+    doc.heightOfString = (str, ...rest) => measureHeight(asciiSafe(str), ...rest);
+
     try {
       // 1. Cover (current first page). Headline money figure is the Layer-1
       // victim loss (the actual amount stolen); the all-layers trail-disputed
@@ -850,8 +978,12 @@ function generateReportPdf(data, outputPath) {
       doc.addPage(); renderTimeline(doc, analysis.timeline || []);
       doc.addPage(); renderFindings(doc, analysis.key_findings || []);
 
-      // 12. Draft emails (adds its own pages).
-      renderEmails(doc, emails);
+      // 12. Bank-attribution data-quality review (adds its own page).
+      renderDataQuality(doc, analysis.data_quality || []);
+
+      // 13. Draft emails (adds its own pages). Pass the flagged accounts so each
+      // letter can carry a reviewer note where its bank was IFSC-corrected.
+      renderEmails(doc, emails, analysis.data_quality || []);
 
       // Footer + page numbers across every buffered page.
       stampFooters(doc);
@@ -874,5 +1006,6 @@ module.exports = {
     formatCount,
     formatDate,
     maskAccount,
+    cashedOutForDisplay,
   }),
 };

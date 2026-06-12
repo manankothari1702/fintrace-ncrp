@@ -23,6 +23,7 @@ const {
   recoveryStatus,
   victimAccounts,
   keyFindings,
+  dataQuality,
   _internals,
 } = require('../analyzers/analyzer');
 
@@ -432,5 +433,87 @@ describe('analyzeReport (end-to-end shape)', () => {
     expect(layer1.txn_count).toBe(2);
     expect(layer1.total_amount).toBe(150000);
     expect(result.errors).toHaveLength(0);
+  });
+});
+
+// ─── v0.2.0 — bank attribution + cash-out policy ────────────────────────
+
+/**
+ * Fixture exercising the v0.2.0 fields the parser now emits: a resolved
+ * `beneficiary_bank`, the original text in `raw_beneficiary_bank`, and a
+ * `bank_flag`. M1 also withdraws MORE than its disputed inflow so the
+ * CAP_AT_RECEIVED policy must bite.
+ */
+function buildAttributionTrail() {
+  return [
+    // V → M1: IFSC resolved to HDFC, but the source text wrongly said IndusInd.
+    { ack_no: 'C1', victim_account: 'V1', beneficiary_account: 'M1',
+      beneficiary_bank: 'HDFC Bank', raw_beneficiary_bank: 'IndusInd Bank',
+      bank_source: 'IFSC', bank_flag: 'IFSC_TEXT_MISMATCH', ifsc_code: 'HDFC0001475',
+      transaction_date: '2024-03-01T10:00:00.000Z', transaction_amount: 100000,
+      disputed_amount: 100000, utr_no: 'U-1', payment_mode: 'IMPS', layer_no: 1, state: 'Delhi' },
+    // M1 cashes out 120k — exceeds the 100k disputed it received.
+    { ack_no: 'C1', victim_account: 'M1', beneficiary_account: 'M1',
+      beneficiary_bank: 'HDFC Bank', raw_beneficiary_bank: 'IndusInd Bank',
+      bank_source: 'IFSC', bank_flag: 'IFSC_TEXT_MISMATCH', ifsc_code: 'HDFC0001475',
+      transaction_date: '2024-03-01T16:00:00.000Z', transaction_amount: 120000,
+      disputed_amount: 120000, utr_no: 'U-2', payment_mode: 'ATM', layer_no: 1,
+      atm_id: 'ATMX', state: 'Delhi' },
+    // V → W1: a wallet with no IFSC (name taken from text).
+    { ack_no: 'C1', victim_account: 'V1', beneficiary_account: 'W1',
+      beneficiary_bank: 'Mobikwik', raw_beneficiary_bank: 'Mobikwik',
+      bank_source: 'TEXT', bank_flag: 'NO_IFSC', ifsc_code: null,
+      transaction_date: '2024-03-01T11:00:00.000Z', transaction_amount: 30000,
+      disputed_amount: 30000, utr_no: 'U-3', payment_mode: 'UPI', layer_no: 1, state: 'Delhi' },
+  ];
+}
+
+describe('dataQuality (v0.2.0 bank attribution)', () => {
+  test('lists each flagged account once, mismatches first, with a message', () => {
+    const dq = dataQuality(buildAttributionTrail());
+    expect(dq.map((d) => d.account_no)).toEqual(['M1', 'W1']); // mismatch before no-ifsc
+    const m1 = dq.find((d) => d.account_no === 'M1');
+    expect(m1.bank).toBe('HDFC Bank');
+    expect(m1.raw_bank).toBe('IndusInd Bank');
+    expect(m1.bank_flag).toBe('IFSC_TEXT_MISMATCH');
+    expect(m1.message).toMatch(/HDFC Bank/);
+    const w1 = dq.find((d) => d.account_no === 'W1');
+    expect(w1.bank_flag).toBe('NO_IFSC');
+  });
+
+  test('clean rows (no flag) produce no data-quality entries', () => {
+    const dq = dataQuality(buildStandardTransactions());
+    expect(dq).toEqual([]);
+  });
+});
+
+describe('analyzeReport cash-out policy + data_quality wiring', () => {
+  test('CAP_AT_RECEIVED caps the headline cash-out and keeps the uncapped audit figure', async () => {
+    const result = await analyzeReport(7, buildAttributionTrail(), []);
+    const c = result.cashout_analysis;
+    expect(c.cashout_policy).toBe('CAP_AT_RECEIVED');
+    expect(c.total_cashout_amount_uncapped).toBe(120000); // raw ATM withdrawal
+    expect(c.total_cashout_amount).toBe(100000);          // capped at M1's 100k disputed inflow
+    // data_quality surfaces in the result + the summary badge count.
+    expect(result.data_quality.map((d) => d.account_no).sort()).toEqual(['M1', 'W1']);
+    expect(result.summary.bank_flags_count).toBe(2);
+  });
+
+  test('cashed_out is one value across summary, cashout view, and recovery status', async () => {
+    const result = await analyzeReport(7, buildAttributionTrail(), []);
+    const s = result.summary;
+    expect(s.cashed_out).toBe(100000);                              // single source of truth
+    expect(result.cashout_analysis.total_cashout_amount).toBe(s.cashed_out);
+    expect(result.recovery_status.cashed_out).toBe(s.cashed_out);
+  });
+
+  test('recoverable_residual derives and the split reconciles to the victim loss', async () => {
+    const result = await analyzeReport(7, buildAttributionTrail(), []);
+    const s = result.summary;
+    // victim loss 130k (100k + 30k at layer 1); capped cash-out 100k; nothing held/refunded.
+    expect(s.victim_loss_amount).toBe(130000);
+    expect(s.recoverable_residual).toBe(30000);                    // 130k - 100k - 0 - 0
+    const sum = s.cashed_out + s.on_hold + s.refunded + s.recoverable_residual;
+    expect(sum).toBe(s.victim_loss_amount);
   });
 });

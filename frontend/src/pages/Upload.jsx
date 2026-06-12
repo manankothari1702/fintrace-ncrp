@@ -335,7 +335,14 @@ export default function Upload() {
 
           {error && (
             <div style={{ marginTop: 16 }}>
-              <ErrorAlert error={error} title="Upload could not start" message={friendlyErrorMessage(error)} />
+              <ErrorAlert
+                error={error}
+                title={error.code === 'PARSE_BLOCKED' ? 'Upload blocked — file could not be read safely' : 'Upload could not start'}
+                message={friendlyErrorMessage(error)}
+              />
+              {Array.isArray(error.details?.parseErrors) && error.details.parseErrors.length > 0 && (
+                <ParseErrorDetails errors={error.details.parseErrors} />
+              )}
             </div>
           )}
 
@@ -410,6 +417,61 @@ function StatusBadge({ status }) {
     error: 'var(--danger)',
   };
   return <Badge color={map[status] || 'var(--text-muted)'}>{status}</Badge>;
+}
+
+/**
+ * Structured parse errors returned by a PARSE_BLOCKED upload (422). Each entry
+ * names the sheet, the required column that could not be identified, and the
+ * headers actually found — so the officer can fix the file (or re-export it)
+ * instead of being shown wrong figures.
+ */
+function ParseErrorDetails({ errors }) {
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        background: '#fdf0f0',
+        border: '1px solid #ecc8c8',
+        borderLeft: '4px solid var(--danger)',
+        borderRadius: 'var(--radius)',
+        padding: '12px 16px',
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 6, color: '#8a1f1f' }}>
+        ⛔ No figures were computed — fix these sheets and upload again
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a2424' }}>
+        {errors.map((e, i) => (
+          <li key={i} style={{ marginBottom: 6 }}>
+            {e.code === 'UNKNOWN_CHANNEL_WITH_TRANSACTIONS' ? (
+              <>
+                <strong>{e.sheet}</strong>: unrecognised sheet that appears to contain
+                {' '}{e.dataRows} transaction row(s) — the disbursement channel could not
+                be determined. Processing was refused to avoid understating cashed-out
+                funds and overstating the lien. Rename the sheet to its NCRP channel
+                (e.g. &lsquo;AEPS&rsquo;, &lsquo;Withdrawal through ATM&rsquo;) and retry.
+              </>
+            ) : (
+              <>
+                <strong>{e.sheet}</strong>: required column &lsquo;{e.expectedColumn}&rsquo; not found
+                {e.dataRows ? ` (${e.dataRows} data rows affected)` : ''}.
+              </>
+            )}
+            {Array.isArray(e.foundHeaders) && e.foundHeaders.length > 0 && (
+              <div style={{ opacity: 0.8, marginTop: 2 }}>
+                Columns found: {e.foundHeaders.join(', ')}
+              </div>
+            )}
+            {Array.isArray(e.acceptedHeaders) && e.acceptedHeaders.length > 0 && (
+              <div style={{ opacity: 0.8, marginTop: 2 }}>
+                Accepted header names include: {e.acceptedHeaders.slice(0, 6).join(', ')}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function ParserWarnings({ warnings }) {

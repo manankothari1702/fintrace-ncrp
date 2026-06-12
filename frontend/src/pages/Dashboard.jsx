@@ -340,6 +340,31 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Bank-attribution data-quality banner (v0.2.0). Each flagged account's
+          lien letter uses the IFSC-derived bank; the IO should verify the
+          freeze target. Only shown when the analyzer flagged at least one. */}
+      {(summary?.bank_flags_count > 0) && (
+        <div
+          className="card card-pad"
+          style={{
+            marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12,
+            borderLeft: '4px solid var(--accent-orange)',
+          }}
+        >
+          <span style={{ fontSize: 22 }} aria-hidden="true">🔎</span>
+          <div style={{ flex: 1 }}>
+            <strong>{formatNumber(summary.bank_flags_count)} account(s) need bank verification.</strong>
+            <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+              Their lien letters use the IFSC-derived bank, which differed from the source-file text
+              (or had no usable IFSC). Confirm the freeze target before dispatch.
+            </span>
+          </div>
+          <Link className="btn btn-sm btn-primary" to={`/data-quality${reportId ? `?reportId=${reportId}` : ''}`}>
+            Review →
+          </Link>
+        </div>
+      )}
+
       {/* Row 1 — headline metrics (Victim Loss is the actual loss; Trail Disputed re-counts the same money across hops). */}
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         <StatCard

@@ -5,9 +5,9 @@
  * and wraps the whole tree in a global error boundary so a render failure in
  * one page shows a recoverable fallback instead of a blank screen.
  *
- * Routes (9 pages, mirroring the sidebar):
- *   /upload  /dashboard  /layers  /money-flow  /mules  /lien  /transactions
- *   /emails  /timeline
+ * Routes (10 pages, mirroring the sidebar):
+ *   /upload  /dashboard  /layers  /money-flow  /mules  /lien  /data-quality
+ *   /transactions  /emails  /timeline
  * `/` redirects to /upload — the natural entry point of the workflow.
  */
 
@@ -35,6 +35,7 @@ const LayersPage = lazy(() => import('./pages/Layers.jsx'));
 const MoneyFlowPage = lazy(() => import('./pages/MoneyFlow.jsx'));
 const MulesPage = lazy(() => import('./pages/Mules.jsx'));
 const LienPage = lazy(() => import('./pages/Lien.jsx'));
+const DataQualityPage = lazy(() => import('./pages/DataQuality.jsx'));
 const TransactionsPage = lazy(() => import('./pages/Transactions.jsx'));
 const EmailsPage = lazy(() => import('./pages/Emails.jsx'));
 const TimelinePage = lazy(() => import('./pages/Timeline.jsx'));
@@ -106,6 +107,7 @@ export default function App() {
                   <Route path="/money-flow" element={<MoneyFlowPage />} />
                   <Route path="/mules" element={<MulesPage />} />
                   <Route path="/lien" element={<LienPage />} />
+                  <Route path="/data-quality" element={<DataQualityPage />} />
                   <Route path="/transactions" element={<TransactionsPage />} />
                   <Route path="/emails" element={<EmailsPage />} />
                   <Route path="/timeline" element={<TimelinePage />} />

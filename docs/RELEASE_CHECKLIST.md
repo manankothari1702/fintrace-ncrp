@@ -1,5 +1,21 @@
 # FinTrace NCRP — Release Checklist
 
+## 0.2.0 (current release)
+
+**Release:** v0.2.0
+**Product:** FinTrace NCRP — Cyber Crime Financial Trail Analyzer
+**Owner:** M Intergraph Systems Pvt. Ltd. (MINT)
+
+| # | Item | Status | Result / Notes |
+|---|------|--------|----------------|
+| 1 | Version bumped across root/backend/frontend `package.json` | **[x] PASS** | Bumped root `package.json`, `backend/package.json`, and `frontend/package.json` from `0.1.0` → **0.2.0**; sidebar UI footer reads `v0.2.0`; `app.getVersion()` (IPC `app:get-version`) returns 0.2.0. |
+| 2 | Code signing | **[~] IN PROGRESS** | Authenticode signing of the installer and binaries is being set up for this release. |
+| 3 | Offline auto-updater | **[~] IN PROGRESS** | Offline / air-gapped update flow is under development for this release. |
+
+---
+
+## 0.1.0 (Beta) — historical
+
 **Release:** v0.1.0 (Beta)
 **Product:** FinTrace NCRP — Cyber Crime Financial Trail Analyzer
 **Owner:** M Intergraph Systems Pvt. Ltd. (MINT)

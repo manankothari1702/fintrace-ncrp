@@ -35,6 +35,17 @@ dayjs.extend(utc);
 
 const MULE_WEIGHTS = require('../config/mule_weights.json');
 const { updateTransactionCashout } = require('../db/queries');
+const { computeCashedOut, POLICIES: CASHOUT_POLICIES } = require('../lib/cashoutPolicy');
+
+/**
+ * Cash-out counting policy (FinTrace v0.2.0). Fraud proceeds cashed out cannot
+ * exceed what an account received as disputed funds, so the headline
+ * `total_cashout_amount` is capped per account at its disputed inflow
+ * (CAP_AT_RECEIVED). This is a single, named definition so the figure stops
+ * drifting; see lib/cashoutPolicy.js. Flip to CASHOUT_POLICIES.RAW to restore
+ * the uncapped legacy sum.
+ */
+const CASHOUT_POLICY = CASHOUT_POLICIES.CAP_AT_RECEIVED;
 
 // ─── Constants ───────────────────────────────────────────────────────
 
@@ -618,6 +629,9 @@ function buildAccountRollup(txns) {
         account_no: acct,
         bank_name: null,
         ifsc_code: null,
+        bank_source: null,
+        bank_flag: null,
+        raw_bank: null,
         names: new Set(),
         banks: new Set(),
         ifscs: new Set(),
@@ -643,6 +657,12 @@ function buildAccountRollup(txns) {
     const a = accounts.get(acct);
     if (!a.bank_name && seed.bank) a.bank_name = seed.bank;
     if (!a.ifsc_code && seed.ifsc) a.ifsc_code = seed.ifsc;
+    // Bank-attribution provenance (v0.2.0): captured from the first row that
+    // carried a resolved beneficiary bank, so lien letters and the data-quality
+    // view can footnote how the name was derived and what the source said.
+    if (!a.bank_source && seed.bankSource) a.bank_source = seed.bankSource;
+    if (!a.bank_flag && seed.bankFlag) a.bank_flag = seed.bankFlag;
+    if (!a.raw_bank && seed.rawBank) a.raw_bank = seed.rawBank;
     return a;
   };
   const touchLast = (a, ms) => {
@@ -658,7 +678,10 @@ function buildAccountRollup(txns) {
     if (t.row_kind === ROW_KIND.HOP) {
       const benef = str(t.beneficiary_account);
       if (!benef) continue;
-      const a = ensure(benef, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      const a = ensure(benef, {
+        bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code),
+        bankSource: str(t.bank_source), bankFlag: str(t.bank_flag), rawBank: str(t.raw_beneficiary_bank),
+      });
       const layer = layerOf(t.layer_no);
       a.txn_count += 1;
       a.total_received += amt;
@@ -676,7 +699,10 @@ function buildAccountRollup(txns) {
     } else if (t.row_kind === ROW_KIND.EXIT) {
       const acct = str(t.beneficiary_account) || str(t.victim_account);
       if (!acct) continue;
-      const a = ensure(acct, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      const a = ensure(acct, {
+        bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code),
+        bankSource: str(t.bank_source), bankFlag: str(t.bank_flag), rawBank: str(t.raw_beneficiary_bank),
+      });
       a.total_cashed_out += amt;
       a.disputed_cashed_out += disp;
       a.channels.add(t.cashout_mode === CASHOUT_MODE.POS ? 'POS' : 'ATM');
@@ -688,7 +714,10 @@ function buildAccountRollup(txns) {
     } else if (t.row_kind === ROW_KIND.HOLD) {
       const acct = str(t.beneficiary_account) || str(t.victim_account);
       if (!acct) continue;
-      const a = ensure(acct, { bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code) });
+      const a = ensure(acct, {
+        bank: str(t.beneficiary_bank), ifsc: str(t.ifsc_code),
+        bankSource: str(t.bank_source), bankFlag: str(t.bank_flag), rawBank: str(t.raw_beneficiary_bank),
+      });
       a.total_on_hold += amt;
       if (str(t.ack_no)) a.acks.add(str(t.ack_no));
       touchLast(a, ms);
@@ -941,6 +970,9 @@ function lienCalculation(rollup) {
       account_no: a.account_no,
       bank_name: a.bank_name,
       ifsc_code: a.ifsc_code,
+      bank_source: a.bank_source,
+      bank_flag: a.bank_flag,
+      raw_bank: a.raw_bank,
       layer_no: Number.isFinite(a.minLayer) ? a.minLayer : null,
       total_received: received,
       total_forwarded: num(a.total_forwarded),
@@ -956,6 +988,72 @@ function lienCalculation(rollup) {
     });
   }
   return rows.sort((a, b) => b.lien_eligible_amount - a.lien_eligible_amount);
+}
+
+// ─── Data-quality review (v0.2.0 — bank attribution) ────────────────────
+
+/**
+ * Human-readable explanation for a bank-attribution data-quality flag.
+ *
+ * @param {string} flag    one of the ifscBankResolver FLAGS
+ * @param {string} bank    resolved (printed) bank name
+ * @param {string|null} raw raw source-file text
+ * @returns {string}
+ */
+function bankFlagMessage(flag, bank, raw) {
+  const said = raw ? `"${raw}"` : 'a different value';
+  switch (flag) {
+    case 'IFSC_TEXT_MISMATCH':
+      return `IFSC resolves to ${bank}; source file text said ${said} — letter uses ${bank} (verify).`;
+    case 'NO_IFSC':
+      return `No IFSC present (wallet / PA / PG account). Name "${bank}" taken from text — confirm the correct nodal entity.`;
+    case 'INVALID_IFSC':
+      return `IFSC was unparseable. Name "${bank}" taken from text — confirm the correct nodal entity.`;
+    case 'UNKNOWN_IFSC_PREFIX':
+      return `IFSC prefix not in the bank map; kept text "${bank}". Extend IFSC_BANK_MAP with this prefix.`;
+    default:
+      return `Bank attribution flagged for review: ${flag}.`;
+  }
+}
+
+/**
+ * List every beneficiary account whose resolved bank carries a data-quality
+ * flag (IFSC↔text mismatch, missing/invalid IFSC, or unknown prefix), one row
+ * per distinct account. Drives the "Data Quality" panel / sheet so the IO can
+ * verify freeze targets the IFSC could not silently confirm.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} txns - Canonical transaction rows.
+ * @returns {Array<{
+ *   account_no: string, ifsc_code: string|null, bank: string,
+ *   raw_bank: string|null, bank_source: string|null, bank_flag: string,
+ *   message: string,
+ * }>}
+ */
+function dataQuality(txns) {
+  /** @type {Map<string, any>} */
+  const byAccount = new Map();
+  for (const t of txns) {
+    const flag = str(t.bank_flag);
+    if (!flag) continue;
+    const acct = str(t.beneficiary_account) || str(t.victim_account);
+    if (!acct || byAccount.has(acct)) continue;
+    const bank = str(t.beneficiary_bank) || 'Unknown';
+    const raw = str(t.raw_beneficiary_bank);
+    byAccount.set(acct, {
+      account_no: acct,
+      ifsc_code: str(t.ifsc_code),
+      bank,
+      raw_bank: raw,
+      bank_source: str(t.bank_source),
+      bank_flag: flag,
+      message: bankFlagMessage(flag, bank, raw),
+    });
+  }
+  // Mismatches first (most actionable), then by account for stable ordering.
+  const order = { IFSC_TEXT_MISMATCH: 0, UNKNOWN_IFSC_PREFIX: 1, INVALID_IFSC: 2, NO_IFSC: 3 };
+  return [...byAccount.values()].sort((a, b) =>
+    (order[a.bank_flag] ?? 9) - (order[b.bank_flag] ?? 9) ||
+    String(a.account_no).localeCompare(String(b.account_no)));
 }
 
 // ─── Module 5 — repeat-account detection ───────────────────────────────
@@ -1424,8 +1522,11 @@ function keyFindings(results) {
   // 0. Headline victim loss (money that entered the network at the first layer).
   if (results.victim_loss && results.victim_loss > 0) {
     const recov = results.recovery;
+    // Percentages are computed live from recovery_status (which reads the single
+    // capped cash-out figure), so the split always reconciles to 100% of the loss.
     const tail = recov
       ? ` — ${formatINR(recov.cashed_out)} (${recov.cashed_out_pct}%) already cashed out, ` +
+        `${formatINR(recov.on_hold)} (${recov.on_hold_pct}%) on hold, ` +
         `${formatINR(recov.recoverable)} (${recov.recoverable_pct}%) still recoverable.`
       : '.';
     findings.push(`Victim loss of ${formatINR(results.victim_loss)} entered the laundering network${tail}`);
@@ -1480,11 +1581,14 @@ function keyFindings(results) {
     );
   }
 
-  // 5. Total recoverable.
+  // 5. Total lien-eligible balance (NOT "recoverable" — this per-account sum can
+  // exceed the victim loss as funds traverse layers; the recoverable residual is
+  // reported in finding #0 instead).
   if (liens.length > 0) {
     const total = liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0);
     findings.push(
-      `Total recoverable amount across ${liens.length} account(s): ${formatINR(total)}.`
+      `Total lien-eligible balance across ${liens.length} flagged account(s): ${formatINR(total)} ` +
+      '(may exceed victim loss as funds traverse multiple layers).'
     );
   }
 
@@ -1512,7 +1616,7 @@ function keyFindings(results) {
     const m = mules[0];
     findings.push(
       `Top suspect account ${m.account_no}${m.bank_name ? ` (${m.bank_name})` : ''} — ` +
-      `mule score ${m.mule_score}/100, ${formatINR(m.total_received)} routed through it.`
+      `mule risk score ${m.mule_score}, ${formatINR(m.total_received)} routed through it.`
     );
   }
 
@@ -1545,6 +1649,7 @@ function keyFindings(results) {
  *   summary: {
  *     total_transactions: number, total_disputed_amount: number,
  *     total_layers: number, total_accounts: number,
+ *     recoverable_residual: number, lien_table_total: number,
  *     fraud_start_date: string|null,
  *   },
  *   layer_analysis: Array<any>,
@@ -1640,6 +1745,34 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     []
   );
   const liens = runModule('lienCalculation', () => lienCalculation(rollup), []);
+  const data_quality = runModule('dataQuality', () => dataQuality(rows), []);
+
+  // Cash-out figure — single, explicit policy (lib/cashoutPolicy.js). Cap each
+  // account's cashed-out at its disputed inflow so fraud proceeds withdrawn can
+  // never exceed what the account received as disputed funds; the excess is the
+  // account's own/clean money. Replaces the legacy uncapped sum and stops the
+  // figure from drifting vs the gold standard.
+  const cashoutPolicyResult = runModule('cashoutPolicy', () => {
+    const receivedByAccount = new Map();
+    const cashedByAccount = new Map();
+    for (const [acct, a] of rollup.entries()) {
+      receivedByAccount.set(acct, num(a.disputed_received));
+      const c = num(a.total_cashed_out);
+      if (c > 0) cashedByAccount.set(acct, c);
+    }
+    return computeCashedOut(receivedByAccount, cashedByAccount, CASHOUT_POLICY);
+  }, { total: round(cashout.total_cashout_amount), perAccount: new Map() });
+
+  // Apply the policy to the headline figure, preserving the uncapped sum for
+  // audit. atm_cashouts / cashout_by_state remain the raw operational legs.
+  // `cappedCashedOut` is the SINGLE SOURCE OF TRUTH for "confirmed cashed out":
+  // every consumer (cashout view, recovery status, recoverable residual,
+  // summary, PDF, Excel, key findings) reads this one value, so the figure can
+  // never disagree between views.
+  const cappedCashedOut = round(cashoutPolicyResult.total);
+  cashout.total_cashout_amount_uncapped = cashout.total_cashout_amount;
+  cashout.total_cashout_amount = cappedCashedOut;
+  cashout.cashout_policy = CASHOUT_POLICY;
   const repeats = runModule(
     'repeatAccountDetection',
     () => repeatAccountDetection(rows, existingRepeatAccounts),
@@ -1670,7 +1803,10 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     const victimLoss = minHopLayer === null ? 0 : hops
       .filter((t) => layerOf(t.layer_no) === minHopLayer)
       .reduce((s, t) => s + num(t.disputed_amount), 0);
-    const cashedOut = rows
+    // Raw cash-exit sum (every ATM/POS/AEPS leg) — kept for audit only. The
+    // figure every consumer reads is the policy-capped `cappedCashedOut`
+    // (CAP_AT_RECEIVED), so recovery math can't exceed disputed inflow.
+    const cashedOutRaw = rows
       .filter((t) => t.row_kind === ROW_KIND.EXIT)
       .reduce((s, t) => s + num(t.transaction_amount), 0);
     const onHold = rows
@@ -1681,11 +1817,15 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
       hopCount: hops.length,
       benefAccounts: new Set(hops.map((t) => str(t.beneficiary_account)).filter(Boolean)).size,
       victimLoss: round(victimLoss),
-      cashedOut: round(cashedOut),
+      cashedOut: cappedCashedOut,          // single source of truth (capped)
+      cashedOutRaw: round(cashedOutRaw),   // uncapped, audit only
       onHold: round(onHold),
       trailDisputed: round(trailDisputed),
     };
-  }, { hopCount: 0, benefAccounts: 0, victimLoss: 0, cashedOut: 0, onHold: 0, trailDisputed: 0 });
+  }, {
+    hopCount: 0, benefAccounts: 0, victimLoss: 0,
+    cashedOut: cappedCashedOut, cashedOutRaw: 0, onHold: 0, trailDisputed: 0,
+  });
 
   const recovery_status = runModule(
     'recoveryStatus',
@@ -1723,6 +1863,26 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
       total_trail_disputed: money.trailDisputed,
       total_layers: layers.length,
       total_accounts: money.benefAccounts,
+      // cashed_out: THE single source of truth for confirmed cash-out (capped
+      // per the CAP_AT_RECEIVED policy). Every consumer — recovery math, PDF,
+      // Excel, key findings — reads this exact value.
+      cashed_out: money.cashedOut,
+      on_hold: money.onHold,
+      refunded: num(recovery_status.refunded),
+      // ── Two DISTINCT "recovery" figures — never conflate them ──
+      // recoverable_residual: the share of the victim loss not yet cashed out,
+      //   frozen, or refunded. DERIVED (never pinned) as
+      //   max(0, loss − cashed_out − on_hold − refunded), so it sums with those
+      //   three to exactly 100% of the loss (file1 ₹3.81L with the capped figure).
+      recoverable_residual: round(Math.max(0,
+        money.victimLoss - money.cashedOut - money.onHold - num(recovery_status.refunded))),
+      // lien_table_total: Σ per-account lien-eligible balances. CAN exceed the
+      //   victim loss because the same rupees are re-counted as they traverse
+      //   layers; it drives the Lien worksheet only, never the recovery headline
+      //   (file1 ₹4.34L).
+      lien_table_total: round(liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0)),
+      // Accounts whose bank attribution needs IO review (see data_quality).
+      bank_flags_count: data_quality.length,
       fraud_start_date: earliest === null
         ? null
         : dayjs.utc(earliest).add(IST_OFFSET_MINUTES, 'minute').format('YYYY-MM-DD'),
@@ -1730,7 +1890,13 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
   }, {
     total_transactions: enriched.length, unique_transactions: 0, duplicate_count: duplicateCount,
     victim_loss_amount: 0, total_disputed_amount: 0, total_trail_disputed: 0,
-    total_layers: layers.length, total_accounts: 0, fraud_start_date: null,
+    total_layers: layers.length, total_accounts: 0,
+    cashed_out: money.cashedOut, on_hold: money.onHold, refunded: num(recovery_status.refunded),
+    recoverable_residual: round(Math.max(0,
+      money.victimLoss - money.cashedOut - money.onHold - num(recovery_status.refunded))),
+    lien_table_total: round(liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0)),
+    bank_flags_count: data_quality.length,
+    fraud_start_date: null,
   });
 
   return {
@@ -1741,6 +1907,7 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     cashout_analysis: cashout,
     mule_detection: mules,
     lien_calculation: liens,
+    data_quality,
     repeat_accounts: repeats,
     timeline,
     timeline_summary,
@@ -1773,6 +1940,7 @@ module.exports = {
   victimAccounts,
   investigationRoadmap,
   keyFindings,
+  dataQuality,
   // Helpers exposed for testing; not part of the stable contract.
   _internals: Object.freeze({
     classifyCashoutMode,

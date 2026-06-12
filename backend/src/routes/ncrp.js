@@ -604,6 +604,25 @@ function createNcrpRouter(db) {
         return sendError(res, 400, 'PARSE_FAILED', 'Could not parse the Excel file.');
       }
 
+      // FAIL LOUD: a sheet with data whose required columns could not be
+      // confidently mapped produces structured parse errors. Refuse the whole
+      // upload — ingesting the remaining sheets would silently drop a channel
+      // and put wrong figures in front of the officer. The structured details
+      // are publicDetails so the renderer can show sheet / expected / found.
+      const parseErrors = parsed.errors || [];
+      if (parseErrors.length > 0) {
+        try { fs.unlinkSync(req.file.path); } catch (_e) { /* best effort */ }
+        const summary = parseErrors
+          .map((e) => (e.code === 'UNKNOWN_CHANNEL_WITH_TRANSACTIONS'
+            ? `[${e.sheet}] unrecognised sheet with ${e.dataRows} transaction row(s) — channel could not be determined`
+            : `[${e.sheet}] missing '${e.expectedColumn}'`))
+          .join('; ');
+        return sendError(res, 422, 'PARSE_BLOCKED',
+          `Upload blocked — the file could not be read safely: ${summary}. ` +
+          'No figures were computed. Correct the file or re-export it from NCRP, then retry.',
+          { publicDetails: true, parseErrors });
+      }
+
       const rows = parsed.rows || [];
       const warnings = parsed.warnings || [];
 
@@ -765,6 +784,16 @@ function createNcrpRouter(db) {
     if (!report) return;
     const analysis = parseAnalysis(report);
     res.json(analysis && analysis.mule_detection ? analysis.mule_detection : []);
+  });
+
+  // GET /api/ncrp/:id/data-quality — accounts whose bank attribution needs IO
+  // review (IFSC↔text mismatch, missing/invalid IFSC, unknown prefix). Served
+  // from the analysis snapshot.
+  router.get('/ncrp/:id/data-quality', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    res.json(analysis && Array.isArray(analysis.data_quality) ? analysis.data_quality : []);
   });
 
   // GET /api/ncrp/:id/lien — lien worksheet rows.

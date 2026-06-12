@@ -19,8 +19,9 @@
  *   10. Daily Volume             — transfers vs cash-outs per day.
  *   11. Hourly Pattern           — transaction activity by hour of day.
  *   12. Bank Rankings            — per-bank received / sent / on-hold / lien.
- *   13. Geographic Hotspots      — cash-out by state + top merchants.
- *   14. Glossary                 — plain-language definitions of every term.
+ *   13. Data Quality             — accounts whose bank attribution needs review.
+ *   14. Geographic Hotspots      — cash-out by state + top merchants.
+ *   15. Glossary                 — plain-language definitions of every term.
  *
  * Returns a Buffer the route streams as an attachment. Amounts are written as
  * real numbers (not pre-formatted strings) so the recipient can sort/sum in
@@ -113,11 +114,16 @@ function generateReportExcel(bundle = {}) {
     ['Layers in trail', num(summary.total_layers)],
     ['Distinct beneficiary accounts', num(summary.total_accounts)],
     [],
+    // Recovery breakdown — these four sum to 100% of the victim loss. The
+    // "Recoverable (residual)" row is the victim loss minus the other three; it
+    // is NOT the per-account lien sum (that lives on the Lien Calculation sheet).
+    // Amounts read the single source of truth on the summary (capped cash-out);
+    // percentages come from recovery_status, which is derived from the same value.
     ['Recovery status', 'Amount [Rs.]', '% of victim loss'],
-    ['Cashed out (ATM/POS)', num(recovery.cashed_out), num(recovery.cashed_out_pct)],
-    ['On hold (frozen)', num(recovery.on_hold), num(recovery.on_hold_pct)],
-    ['Refunded', num(recovery.refunded), num(recovery.refunded_pct)],
-    ['Recoverable (lien-eligible)', num(recovery.recoverable), num(recovery.recoverable_pct)],
+    ['Cashed out (ATM/POS)', num(summary.cashed_out ?? recovery.cashed_out), num(recovery.cashed_out_pct)],
+    ['On hold (frozen)', num(summary.on_hold ?? recovery.on_hold), num(recovery.on_hold_pct)],
+    ['Refunded', num(summary.refunded ?? recovery.refunded), num(recovery.refunded_pct)],
+    ['Recoverable (residual)', num(summary.recoverable_residual ?? recovery.recoverable), num(recovery.recoverable_pct)],
     [],
     ['Key dates', ''],
     ['First fraud', tl.first_fraud_date || ''],
@@ -141,6 +147,8 @@ function generateReportExcel(bundle = {}) {
 
   // ── 3. Lien Calculation ──────────────────────────────────────────────────
   const lienRows = (liens && liens.length) ? liens : (analysis.lien_calculation || []);
+  const lienTableTotal = num(summary.lien_table_total)
+    || lienRows.reduce((s, l) => s + num(l.lien_eligible_amount ?? l.lien_amount), 0);
   addSheet(wb, 'Lien Calculation', [
     ['Account No.', 'Bank', 'IFSC', 'Layer', 'Received [Rs.]', 'Forwarded [Rs.]', 'On Hold [Rs.]', 'Cashed Out [Rs.]', 'Lien Eligible [Rs.]', 'Status'],
     ...lienRows.map((l) => [
@@ -150,6 +158,10 @@ function generateReportExcel(bundle = {}) {
       num(l.total_on_hold), num(l.total_cashed_out),
       num(l.lien_eligible_amount ?? l.lien_amount), l.lien_status || 'pending',
     ]),
+    [],
+    // Lien-eligible total (NOT the recovery residual on the Summary sheet).
+    ['Total lien-eligible balance across flagged accounts', '', '', '', '', '', '', '', lienTableTotal, ''],
+    ['(may exceed victim loss as funds traverse multiple layers)'],
   ]);
 
   // ── 4. Suspected Mules ───────────────────────────────────────────────────
@@ -315,7 +327,28 @@ function generateReportExcel(bundle = {}) {
     ]),
   ]);
 
-  // ── 13. Geographic Hotspots ───────────────────────────────────────────────
+  // ── 13. Data Quality (bank attribution) ───────────────────────────────────
+  // Every account whose bank could not be silently confirmed from a clean IFSC:
+  // the letter uses the IFSC-derived name; the source-file text is shown for the
+  // IO to verify. Amounts are unaffected — only the bank attribution is flagged.
+  const dq = Array.isArray(analysis.data_quality) ? analysis.data_quality : [];
+  addSheet(wb, 'Data Quality', [
+    ['BANK ATTRIBUTION — ACCOUNTS NEEDING REVIEW'],
+    [`${dq.length} account(s) flagged. The bank on each lien letter is IFSC-authoritative.`],
+    [],
+    ['Account No.', 'Resolved Bank (on letter)', 'IFSC', 'Source', 'Flag', 'Source-file Text', 'Reviewer Note'],
+    ...dq.map((d) => [
+      d.account_no || '',
+      d.bank || '',
+      d.ifsc_code || '',
+      d.bank_source || '',
+      d.bank_flag || '',
+      d.raw_bank || '(blank)',
+      d.message || '',
+    ]),
+  ]);
+
+  // ── 14. Geographic Hotspots ───────────────────────────────────────────────
   const byState = Array.isArray(geo.by_state) ? geo.by_state : [];
   const merchants = Array.isArray(geo.top_merchants) ? geo.top_merchants : [];
   addSheet(wb, 'Geographic Hotspots', [
@@ -338,8 +371,8 @@ function generateReportExcel(bundle = {}) {
     ['Lien Amount', 'Funds still recoverable in an account: money received but not yet forwarded onward, withdrawn as cash, or already on hold. Subject to the actual balance confirmed by the bank.'],
     ['On Hold', 'Amount a bank has already frozen / marked under hold for an account.'],
     ['Cashed Out', 'Disputed funds withdrawn from the network as cash via ATM or POS — generally unrecoverable.'],
-    ['Mule Score', 'A 0–100 risk score for a beneficiary account. Higher means stronger indicators of being a money-mule (high velocity, many senders, same-day in/out, fast forwarding).'],
-    ['Risk Label', 'Banded mule score: HIGH (>= 70), MEDIUM, or LOW. HIGH accounts are priority targets for lien and KYC requests.'],
+    ['Mule Score', 'Mule Risk Score — an additive weighted indicator (layer position, fan-in, velocity, same-day cashout, amount routed) used to rank and prioritise accounts within this case. Not a percentage or probability; it has no fixed maximum and a textbook mule can exceed 100. Bands: >=70 HIGH, 40-69 MEDIUM, <40 LOW.'],
+    ['Risk Label', 'Band derived from the mule risk score: HIGH (>= 70), MEDIUM (40-69), or LOW (< 40). HIGH accounts are priority targets for lien and KYC requests.'],
     ['Fan-out Ratio', 'How widely funds spread at a layer — distinct destination accounts relative to source accounts. High fan-out signals deliberate layering.'],
     ['Aggregator / Collector', 'An account that gathers funds from many senders (high in-degree) before forwarding — a hub in the money-flow network.'],
     ['Same-day In/Out', 'An account that received and forwarded funds on the same calendar day — a classic pass-through mule behaviour.'],

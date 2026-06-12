@@ -80,6 +80,9 @@ const CREATE_TABLES = Object.freeze([
     city                 TEXT,
     state                TEXT,
     remarks              TEXT,
+    raw_beneficiary_bank TEXT,
+    bank_source          TEXT,
+    bank_flag            TEXT,
     same_day_cashout     INTEGER DEFAULT 0,
     cashout_mode         TEXT,
     FOREIGN KEY (report_id) REFERENCES ncrp_reports(id) ON DELETE CASCADE
@@ -189,6 +192,49 @@ const CREATE_INDEXES = Object.freeze([
 ]);
 
 /**
+ * Additive, idempotent column migrations for tables that already exist in a
+ * user's database from an earlier version. `CREATE TABLE IF NOT EXISTS` never
+ * alters an existing table, so new columns introduced after first install must
+ * be added here. Each entry is applied only when the column is absent (checked
+ * via PRAGMA table_info), so re-running on every launch is safe.
+ *
+ * @type {ReadonlyArray<{ table: string, column: string, ddl: string }>}
+ */
+const COLUMN_MIGRATIONS = Object.freeze([
+  // v0.2.0 — IFSC-authoritative bank attribution. `beneficiary_bank` now holds
+  // the resolved (IFSC-derived) name; these preserve the original text and how
+  // the name was resolved (see lib/ifscBankResolver).
+  { table: 'ncrp_transactions', column: 'raw_beneficiary_bank',
+    ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN raw_beneficiary_bank TEXT' },
+  { table: 'ncrp_transactions', column: 'bank_source',
+    ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN bank_source TEXT' },
+  { table: 'ncrp_transactions', column: 'bank_flag',
+    ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN bank_flag TEXT' },
+]);
+
+/**
+ * Apply COLUMN_MIGRATIONS, skipping any column that already exists.
+ *
+ * @param {Database.Database} db - Open connection.
+ */
+function applyColumnMigrations(db) {
+  const columnsOf = new Map();
+  const existing = (table) => {
+    if (!columnsOf.has(table)) {
+      const cols = new Set(db.pragma(`table_info(${table})`).map((c) => c.name));
+      columnsOf.set(table, cols);
+    }
+    return columnsOf.get(table);
+  };
+  for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
+    if (!existing(table).has(column)) {
+      db.exec(ddl);
+      existing(table).add(column);
+    }
+  }
+}
+
+/**
  * Open the SQLite database at `dbPath`, ensuring its parent directory
  * exists, applying connection pragmas, and creating the schema + indexes
  * if not already present. Safe to call on every app launch.
@@ -248,6 +294,7 @@ function initializeDatabase(dbPath) {
     const initTxn = db.transaction(() => {
       for (const ddl of CREATE_TABLES) db.exec(ddl);
       for (const ddl of CREATE_INDEXES) db.exec(ddl);
+      applyColumnMigrations(db);
     });
     initTxn();
 
@@ -265,4 +312,5 @@ module.exports = {
   PRAGMAS,
   CREATE_TABLES,
   CREATE_INDEXES,
+  COLUMN_MIGRATIONS,
 };

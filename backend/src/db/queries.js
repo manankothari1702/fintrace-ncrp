@@ -53,6 +53,7 @@ const SQL_INSERT_TRANSACTION = `
     transaction_date, transaction_amount, disputed_amount, utr_no,
     payment_mode, layer_no,
     atm_id, atm_location, city, state, remarks,
+    raw_beneficiary_bank, bank_source, bank_flag,
     same_day_cashout, cashout_mode
   ) VALUES (
     @report_id, @ack_no, @complaint_date,
@@ -61,6 +62,7 @@ const SQL_INSERT_TRANSACTION = `
     @transaction_date, @transaction_amount, @disputed_amount, @utr_no,
     @payment_mode, @layer_no,
     @atm_id, @atm_location, @city, @state, @remarks,
+    @raw_beneficiary_bank, @bank_source, @bank_flag,
     @same_day_cashout, @cashout_mode
   )
 `;
@@ -245,6 +247,9 @@ function normalizeTransaction(data) {
     city:                nz(data.city),
     state:               nz(data.state),
     remarks:             nz(data.remarks),
+    raw_beneficiary_bank: nz(data.raw_beneficiary_bank),
+    bank_source:         nz(data.bank_source),
+    bank_flag:           nz(data.bank_flag),
     same_day_cashout:    data.same_day_cashout ? 1 : 0,
     cashout_mode:        nz(data.cashout_mode),
   };
