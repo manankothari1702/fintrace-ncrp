@@ -54,6 +54,7 @@ const CREATE_TABLES = Object.freeze([
     analysis_status        TEXT    DEFAULT 'pending'
       CHECK (analysis_status IN ('pending','processing','complete','error')),
     analysis_json          TEXT,
+    source_sha256          TEXT,
     created_at             TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
 
@@ -210,6 +211,12 @@ const COLUMN_MIGRATIONS = Object.freeze([
     ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN bank_source TEXT' },
   { table: 'ncrp_transactions', column: 'bank_flag',
     ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN bank_flag TEXT' },
+
+  // v0.3.0 — evidentiary provenance. SHA-256 of the raw uploaded NCRP file,
+  // computed before parsing, so every report is cryptographically traceable to
+  // its exact source (stamped into the PDF dossier + audit_log).
+  { table: 'ncrp_reports', column: 'source_sha256',
+    ddl: 'ALTER TABLE ncrp_reports ADD COLUMN source_sha256 TEXT' },
 ]);
 
 /**

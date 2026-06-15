@@ -955,8 +955,12 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
  *   account_no: string, bank_name: string|null, ifsc_code: string|null,
  *   layer_no: number|null, total_received: number, total_forwarded: number,
  *   onward_forwarded: number, total_on_hold: number, total_cashed_out: number,
+ *   gross_balance: number, disputed_received: number,
  *   lien_eligible_amount: number, note: string,
  * }>} Only accounts with lien_eligible_amount > 0, sorted by amount desc.
+ *   gross_balance and disputed_received are surfaced for the export worksheet so
+ *   it can show lien_eligible_amount = min(gross_balance, disputed_received);
+ *   both are read straight from the rollup (no recomputation).
  */
 function lienCalculation(rollup) {
   const rows = [];
@@ -979,6 +983,15 @@ function lienCalculation(rollup) {
       onward_forwarded: onward,
       total_on_hold: hold,
       total_cashed_out: exits,
+      // Derivation columns surfaced for the worksheet (PRESENTATION ONLY — both
+      // values are already computed in buildAccountRollup; nothing is recomputed
+      // or altered here). gross_balance is the pre-cap residue and
+      // disputed_received is the cap, so the export can show exactly why
+      // lien_eligible_amount = min(gross_balance, disputed_received), floored at 0.
+      gross_balance: a.gross_balance != null
+        ? num(a.gross_balance)
+        : Math.max(0, received - onward - hold - exits),
+      disputed_received: num(a.disputed_received),
       lien_eligible_amount: a.lien_eligible_amount,
       note:
         `Received ${formatINR(received)}; forwarded ${formatINR(onward)} onward, ` +
@@ -1054,6 +1067,154 @@ function dataQuality(txns) {
   return [...byAccount.values()].sort((a, b) =>
     (order[a.bank_flag] ?? 9) - (order[b.bank_flag] ?? 9) ||
     String(a.account_no).localeCompare(String(b.account_no)));
+}
+
+/**
+ * Wallet / payment-gateway / payment-aggregator names. A NO_IFSC row whose
+ * bank text matches is structurally IFSC-less (the text IS the entity to
+ * serve notice on, per lib/ifscBankResolver). Curated, deterministic list —
+ * anything not on it fails toward caution (ACTIONABLE).
+ */
+const WALLET_PG_PA_RE = new RegExp(
+  [
+    'paytm', 'phonepe', 'phone pe', 'mobikwik', 'amazon ?pay', 'google ?pay', 'gpay',
+    'cred\\b', 'razorpay', 'razor pay', 'cashfree', 'payu', 'pine ?labs', 'bharatpe',
+    'freecharge', 'airtel money', 'ola money', 'jio ?money', 'easebuzz', 'ease buzz',
+    'whatsapp pay', '\\bwallet\\b', '\\bpg\\b', 'payment gateway', 'payment aggregator',
+    // 'slice' was removed 2026-06-12: it false-matched "Slice Small Finance
+    // Bank" (a real RBI-licensed bank present in gold case ...170), wrongly
+    // downgrading a bank account's NO_IFSC to informational. A false positive
+    // here HIDES a freeze-target uncertainty, so the list errs narrow — every
+    // pattern is pinned against the gold cases' real bank texts in
+    // dataQuality.test.js ("wallet regex matches no real bank text").
+  ].join('|'),
+  'i'
+);
+
+/**
+ * Per-case data-quality summary over the {@link dataQuality} rows, with a
+ * two-tier severity model and a freeze-target dimension. Also annotates each
+ * dqRow in place with `severity` ('informational'|'actionable') and
+ * `freeze_target` (boolean) for the drill-in view.
+ *
+ * ADVISORY ONLY: flags never alter a financial figure — they tell the IO which
+ * accounts' bank attribution needs eyes before a lien letter is dispatched.
+ *
+ * SEVERITY TIERS (flag names are DB-persisted and unchanged — this re-tiers
+ * how they are WEIGHTED):
+ *   INFORMATIONAL — never drives amber/red:
+ *     • IFSC_TEXT_MISMATCH — the IFSC is authoritative, so the inconsistency
+ *       is already RESOLVED: the letter carries the IFSC-derived bank and the
+ *       source text is preserved for audit ("auto-corrected").
+ *     • NO_IFSC where the row is structurally IFSC-less: the account's bank
+ *       is already IFSC-confirmed on another row, OR all its flagged rows are
+ *       cash-exit/hold channel rows (those sheets carry no IFSC column), OR
+ *       the bank text is a known wallet/PG/PA ("expected").
+ *   ACTIONABLE — drives severity:
+ *     • INVALID_IFSC (malformed), UNKNOWN_IFSC_PREFIX (bank not in map), and
+ *     • NO_IFSC on a bank-account-type row — or any NO_IFSC row whose type
+ *       cannot be determined (fail toward caution).
+ *
+ * STATUS (freeze-target scoped — the only red is "about to send a lien letter
+ * to a bank that couldn't be confirmed"):
+ *   • green — zero actionable flags.
+ *   • amber — actionable flags exist, but none on a freeze-target account.
+ *   • red   — one or more actionable flags fall on a freeze-target account
+ *             (an account in the lien table, i.e. a Section 102 letter target).
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
+ * @param {Array<Record<string, unknown>>} dqRows - Output of dataQuality() (annotated in place).
+ * @param {ReadonlyArray<{ account_no: string }>} liens - lienCalculation() output (freeze-target set).
+ * @returns {{
+ *   total_accounts: number, flagged_accounts: number, pct_affected: number,
+ *   counts: Record<string, number>,
+ *   actionable_accounts: number,
+ *   actionable_counts: { INVALID_IFSC: number, UNKNOWN_IFSC_PREFIX: number, NO_IFSC: number },
+ *   informational: { auto_corrected: number, expected_no_ifsc: number },
+ *   freeze_target_total: number, freeze_target_flags: number,
+ *   freeze_target_accounts: string[],
+ *   status: 'green'|'amber'|'red',
+ * }}
+ */
+function dataQualitySummary(txns, dqRows, liens = []) {
+  // Denominator + per-account row context, keyed exactly the way dataQuality()
+  // attributes flags (beneficiary first, victim fallback).
+  const allAccounts = new Set();
+  /** @type {Map<string, Array<Record<string, unknown>>>} */
+  const rowsByAccount = new Map();
+  for (const t of txns) {
+    const acct = str(t.beneficiary_account) || str(t.victim_account);
+    if (!acct) continue;
+    allAccounts.add(acct);
+    if (!rowsByAccount.has(acct)) rowsByAccount.set(acct, []);
+    rowsByAccount.get(acct).push(t);
+  }
+
+  const lienSet = new Set(liens.map((l) => str(l.account_no)).filter(Boolean));
+
+  const counts = { IFSC_TEXT_MISMATCH: 0, UNKNOWN_IFSC_PREFIX: 0, INVALID_IFSC: 0, NO_IFSC: 0 };
+  const actionable_counts = { INVALID_IFSC: 0, UNKNOWN_IFSC_PREFIX: 0, NO_IFSC: 0 };
+  let autoCorrected = 0;
+  let expectedNoIfsc = 0;
+  let actionableAccounts = 0;
+  const freezeTargetAccounts = [];
+
+  for (const r of dqRows) {
+    if (counts[r.bank_flag] !== undefined) counts[r.bank_flag] += 1;
+
+    let severity = 'actionable';
+    if (r.bank_flag === 'IFSC_TEXT_MISMATCH') {
+      // The IFSC already won; the letter bank is correct. Resolved, not open.
+      severity = 'informational';
+      autoCorrected += 1;
+    } else if (r.bank_flag === 'NO_IFSC') {
+      const acctRows = rowsByAccount.get(str(r.account_no)) || [];
+      const ifscConfirmedElsewhere = acctRows.some((t) => str(t.bank_source) === 'IFSC');
+      const flagRows = acctRows.filter((t) => str(t.bank_flag) === 'NO_IFSC');
+      const allCashOrHold = flagRows.length > 0 &&
+        flagRows.every((t) => t.row_kind === ROW_KIND.EXIT || t.row_kind === ROW_KIND.HOLD);
+      const walletText = WALLET_PG_PA_RE.test(str(r.raw_bank) || str(r.bank) || '');
+      if (ifscConfirmedElsewhere || allCashOrHold || walletText) {
+        severity = 'informational';
+        expectedNoIfsc += 1;
+      }
+      // else: a bank-account-type row missing its IFSC, or indeterminate →
+      // stays actionable (fail toward caution).
+    }
+    // INVALID_IFSC / UNKNOWN_IFSC_PREFIX (and any future flag) stay actionable.
+
+    const isFreezeTarget = lienSet.has(str(r.account_no));
+    r.severity = severity;
+    r.freeze_target = isFreezeTarget;
+
+    if (severity === 'actionable') {
+      actionableAccounts += 1;
+      if (actionable_counts[r.bank_flag] !== undefined) actionable_counts[r.bank_flag] += 1;
+      if (isFreezeTarget) freezeTargetAccounts.push(str(r.account_no));
+    }
+  }
+
+  const flagged = dqRows.length;
+  const total = allAccounts.size;
+  const pct = total > 0 ? round((flagged / total) * 100, 1) : 0;
+
+  const status = actionableAccounts === 0
+    ? 'green'
+    : (freezeTargetAccounts.length > 0 ? 'red' : 'amber');
+
+  return {
+    total_accounts: total,
+    flagged_accounts: flagged,
+    pct_affected: pct,
+    counts,
+    actionable_accounts: actionableAccounts,
+    actionable_counts,
+    informational: { auto_corrected: autoCorrected, expected_no_ifsc: expectedNoIfsc },
+    freeze_target_total: lienSet.size,
+    freeze_target_flags: freezeTargetAccounts.length,
+    freeze_target_accounts: freezeTargetAccounts,
+    status,
+  };
 }
 
 // ─── Module 5 — repeat-account detection ───────────────────────────────
@@ -1746,6 +1907,19 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
   );
   const liens = runModule('lienCalculation', () => lienCalculation(rollup), []);
   const data_quality = runModule('dataQuality', () => dataQuality(rows), []);
+  const data_quality_summary = runModule(
+    'dataQualitySummary',
+    () => dataQualitySummary(rows, data_quality, liens),
+    {
+      total_accounts: 0, flagged_accounts: 0, pct_affected: 0,
+      counts: { IFSC_TEXT_MISMATCH: 0, UNKNOWN_IFSC_PREFIX: 0, INVALID_IFSC: 0, NO_IFSC: 0 },
+      actionable_accounts: 0,
+      actionable_counts: { INVALID_IFSC: 0, UNKNOWN_IFSC_PREFIX: 0, NO_IFSC: 0 },
+      informational: { auto_corrected: 0, expected_no_ifsc: 0 },
+      freeze_target_total: 0, freeze_target_flags: 0, freeze_target_accounts: [],
+      status: 'green',
+    }
+  );
 
   // Cash-out figure — single, explicit policy (lib/cashoutPolicy.js). Cap each
   // account's cashed-out at its disputed inflow so fraud proceeds withdrawn can
@@ -1908,6 +2082,7 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     mule_detection: mules,
     lien_calculation: liens,
     data_quality,
+    data_quality_summary,
     repeat_accounts: repeats,
     timeline,
     timeline_summary,
@@ -1941,6 +2116,7 @@ module.exports = {
   investigationRoadmap,
   keyFindings,
   dataQuality,
+  dataQualitySummary,
   // Helpers exposed for testing; not part of the stable contract.
   _internals: Object.freeze({
     classifyCashoutMode,
@@ -1954,5 +2130,6 @@ module.exports = {
     CASHOUT_MODE,
     ROW_KIND,
     MULE_WEIGHTS,
+    WALLET_PG_PA_RE,
   }),
 };

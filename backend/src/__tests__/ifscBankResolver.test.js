@@ -6,6 +6,7 @@ const {
   sameBank,
   cleanIfsc,
   FLAGS,
+  IFSC_BANK_MAP,
 } = require('../lib/ifscBankResolver');
 
 describe('ifscBankResolver — IFSC is authoritative', () => {
@@ -83,6 +84,106 @@ describe('unknown but valid-looking IFSC prefix is flagged, not guessed', () => 
     const r = resolveBank({ ifsc: 'ZZZZ0000001', rawBank: 'Some Co-op Bank' });
     expect(r.bank).toBe('Some Co-op Bank');
     expect(r.flag).toBe(FLAGS.UNKNOWN_IFSC_PREFIX);
+  });
+});
+
+describe('IFSC_BANK_MAP regression snapshot', () => {
+  // The map fails SILENTLY if an entry is wrong: a confident wrong bank name
+  // lands on a Section 102 lien letter with no flag. This snapshot pins EVERY
+  // prefix to its expected bank so any accidental edit — a flipped prefix, a
+  // pasted-over name, a deleted group entry — fails loudly here. Editing the
+  // map is allowed ONLY together with a deliberate update to this snapshot,
+  // verified against the RBI IFSC directory (the authoritative source for the
+  // 4-letter bank code; see provenance comments in lib/ifscBankResolver.js).
+  const EXPECTED_MAP = {
+    // ---- Public sector banks (post-2020 consolidation) ----
+    SBIN: 'State Bank of India',
+    CBIN: 'Central Bank of India',
+    BKID: 'Bank of India',
+    UCBA: 'UCO Bank',
+    MAHB: 'Bank of Maharashtra',
+    IOBA: 'Indian Overseas Bank',
+    PSIB: 'Punjab & Sind Bank',
+    BARB: 'Bank of Baroda (including Vijaya Bank and Dena Bank)',
+    VIJB: 'Bank of Baroda (including Vijaya Bank and Dena Bank)',
+    DENA: 'Bank of Baroda (including Vijaya Bank and Dena Bank)',
+    PUNB: 'Punjab National Bank (including Oriental Bank of Commerce and United Bank of India)',
+    ORBC: 'Punjab National Bank (including Oriental Bank of Commerce and United Bank of India)',
+    UTBI: 'Punjab National Bank (including Oriental Bank of Commerce and United Bank of India)',
+    UBIN: 'Union Bank of India (including Andhra Bank and Corporation Bank)',
+    ANDB: 'Union Bank of India (including Andhra Bank and Corporation Bank)',
+    CORP: 'Union Bank of India (including Andhra Bank and Corporation Bank)',
+    CNRB: 'Canara Bank',
+    SYNB: 'Canara Bank',
+    IDIB: 'Indian Bank',
+    ALLA: 'Indian Bank',
+    // ---- Private sector banks ----
+    HDFC: 'HDFC Bank',
+    ICIC: 'ICICI Bank',
+    UTIB: 'Axis Bank',
+    KKBK: 'Kotak Mahindra Bank',
+    INDB: 'IndusInd Bank',
+    YESB: 'Yes Bank',
+    IBKL: 'IDBI Bank',
+    FDRL: 'Federal Bank',
+    SIBL: 'South Indian Bank',
+    KVBL: 'Karur Vysya Bank',
+    CIUB: 'City Union Bank',
+    TMBL: 'Tamilnad Mercantile Bank',
+    DLXB: 'Dhanlaxmi Bank',
+    KARB: 'Karnataka Bank',
+    RATN: 'RBL Bank',
+    BDBL: 'Bandhan Bank',
+    CSBK: 'CSB Bank',
+    NKGS: 'NKGSB Co-operative Bank',
+    JSBP: 'Janata Sahakari Bank',
+    // ---- Small finance banks ----
+    SURY: 'Suryoday Small Finance Bank',
+    ESFB: 'Equitas Small Finance Bank',
+    UJVN: 'Ujjivan Small Finance Bank',
+    AUBL: 'AU Small Finance Bank',
+    JSFB: 'Jana Small Finance Bank',
+    FINF: 'Fincare Small Finance Bank',
+    UTKS: 'Utkarsh Small Finance Bank',
+    ESMF: 'ESAF Small Finance Bank',
+    NESF: 'North East Small Finance Bank',
+    // ---- Payments banks ----
+    PYTM: 'Paytm Payments Bank',
+    AIRP: 'Airtel Payments Bank',
+    FINO: 'Fino Payments Bank',
+    IPOS: 'India Post Payments Bank',
+    NSPB: 'NSDL Payments Bank',
+    JIOP: 'Jio Payments Bank',
+    // ---- Foreign banks ----
+    SCBL: 'Standard Chartered Bank',
+    CITI: 'Citibank',
+    HSBC: 'HSBC Bank',
+    DEUT: 'Deutsche Bank',
+    DBSS: 'DBS Bank India',
+    // ---- Verified 2026-06-12 against the RBI-derived IFSC dataset ----
+    JAKA: 'Jammu and Kashmir Bank',
+    IDFB: 'IDFC FIRST Bank',
+    NTBL: 'Nainital Bank',
+    ABHY: 'Abhyudaya Co-operative Bank',
+    TJSB: 'TJSB Sahakari Bank',
+    BCBM: 'Bharat Co-operative Bank (Mumbai)',
+    GSCB: 'Gujarat State Co-operative Bank',
+    TSAB: 'Telangana State Co-operative Apex Bank',
+    KSBK: 'Kerala State Co-operative Bank',
+    RMGB: 'Rajasthan Marudhara Gramin Bank',
+    MAHG: 'Maharashtra Gramin Bank',
+    PKGB: 'Karnataka Gramin Bank',
+    KLGB: 'Kerala Gramin Bank',
+  };
+
+  test('every prefix maps to exactly its expected bank (no additions, removals, or flips)', () => {
+    expect(IFSC_BANK_MAP).toEqual(EXPECTED_MAP);
+  });
+
+  test('every prefix is a valid 4-letter RBI bank code in uppercase', () => {
+    for (const prefix of Object.keys(IFSC_BANK_MAP)) {
+      expect(prefix).toMatch(/^[A-Z]{4}$/);
+    }
   });
 });
 

@@ -3,7 +3,7 @@
 **Cyber Crime Financial Trail Analyzer**
 For Investigating Officers, Cyber Crime Cells (India)
 
-Version 0.2.0 · Developed by M Intergraph Systems Pvt. Ltd. (MINT)
+Version 0.3.0 · Developed by M Intergraph Systems Pvt. Ltd. (MINT)
 
 ---
 
@@ -40,7 +40,7 @@ contact MINT support — details are in [Section J](#j-contact--mint-support).
 
 Installation is three steps.
 
-1. **Download.** Copy the installer file — **`FinTrace NCRP Setup 0.2.0.exe`** —
+1. **Download.** Copy the installer file — **`FinTrace NCRP Setup 0.3.0.exe`** —
    onto the computer you will use for investigations. You can receive it on a
    pen-drive or from your unit's software share. No internet connection is
    required at any point.
@@ -389,11 +389,11 @@ For installation help, questions, or to report a problem:
 FinTrace NCRP Support
 
 - **Email:** support@mintergraph.com
-- **Software:** FinTrace NCRP, Version 0.2.0
+- **Software:** FinTrace NCRP, Version 0.3.0
 
 When you contact support, please include:
 
-- the **version** shown at the bottom of the left menu (v0.2.0),
+- the **version** shown at the bottom of the left menu (v0.3.0),
 - a short description of what you were doing and what happened,
 - the **case / acknowledgement number** if relevant (never email the actual NCRP
   file or victim data — describe the problem instead), and

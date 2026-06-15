@@ -573,16 +573,17 @@ async function validateCase(caseId, filePath, sink) {
     r.assert(semFails === 0, 'every data-quality row is semantically consistent with its flag',
       semFails ? `${semFails} inconsistent` : 'all consistent');
 
-    // Multi-source-bank letters carry the reviewer footnote referencing section 12.
+    // Multi-source-bank letters carry the reviewer footnote referencing the
+    // data-quality annexure (Annexure H since the v0.3 dossier reorganisation).
     const flaggedAccts = new Set(dq.map((d) => String(d.account_no)));
     const lettersWithFlag = emails.filter((e) =>
       (e.account_list || []).some((a) => flaggedAccts.has(String(a)))).length;
     if (!pdfReliable) {
       r.manual('PDF reviewer footnote on flagged letters', 'PDF text extraction unreliable — verify by eye');
     } else {
-      const notes = (pdfText.match(/See section 12/gi) || []).length;
+      const notes = (pdfText.match(/See Annexure H/gi) || []).length;
       r.assert(notes === lettersWithFlag,
-        `every letter with a flagged account carries the section-12 reviewer note`,
+        `every letter with a flagged account carries the Annexure-H reviewer note`,
         `notes=${notes} vs letters-with-flag=${lettersWithFlag}`);
     }
   }

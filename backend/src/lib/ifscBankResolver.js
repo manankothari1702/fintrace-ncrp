@@ -30,9 +30,19 @@
 
 // -----------------------------------------------------------------------------
 // IFSC 4-letter prefix -> canonical bank name.
-// Names use the post-merger consolidated naming that NCRP/RBI use today, so the
-// label on the lien letter matches the institution that actually holds the
-// account. Extend freely; unknown prefixes are flagged, never silently wrong.
+//
+// PROVENANCE: every entry derives from the RBI IFSC directory — the first four
+// characters of an IFSC are the RBI-assigned bank code, the single
+// authoritative basis for this map. Names use the post-merger consolidated
+// naming that NCRP/RBI use today, so the label on the lien letter matches the
+// institution that actually holds the account.
+//
+// THIS MAP FAILS SILENTLY if an entry is wrong (a confident wrong bank name on
+// a lien letter, with no flag), so it is pinned entry-for-entry by a
+// regression test (ifscBankResolver.test.js "IFSC_BANK_MAP regression
+// snapshot"). ANY edit here must update that snapshot deliberately — and only
+// with the RBI directory in hand. Unknown prefixes are flagged
+// (UNKNOWN_IFSC_PREFIX), never guessed.
 // -----------------------------------------------------------------------------
 const IFSC_BANK_MAP = {
   // ---- Public sector banks (post-2020 consolidation) ----
@@ -109,11 +119,39 @@ const IFSC_BANK_MAP = {
   DEUT: 'Deutsche Bank',
   DBSS: 'DBS Bank India',
 
+  // ---- Private / old-generation banks observed in real NCRP trails ----
+  // Each entry below verified 2026-06-12 against the RBI IFSC directory (via
+  // the RBI-derived dataset at ifsc.razorpay.com) using a real IFSC observed
+  // in a gold case; the sample IFSC is recorded per entry.
+  JAKA: 'Jammu and Kashmir Bank',             // verified: JAKA0HIDYAL
+  IDFB: 'IDFC FIRST Bank',                    // verified: IDFB0040101
+  NTBL: 'Nainital Bank',                      // verified: NTBL0AFZ162
+
+  // ---- Co-operative banks ----
+  ABHY: 'Abhyudaya Co-operative Bank',        // verified: ABHY0065016
+  TJSB: 'TJSB Sahakari Bank',                 // verified: TJSB0000073
+  // RBI directory lists "Bharat Co-operative Bank"; "(Mumbai)" is part of the
+  // registered name (Bharat Co-operative Bank (Mumbai) Ltd) and kept for
+  // letter clarity. sameBank() strips parentheticals, so comparisons agree.
+  BCBM: 'Bharat Co-operative Bank (Mumbai)',  // verified: BCBM0000041
+  GSCB: 'Gujarat State Co-operative Bank',    // verified: GSCB0PDC019 (DCCBs route on the apex bank's prefix)
+  TSAB: 'Telangana State Co-operative Apex Bank', // verified: TSAB0020040
+  KSBK: 'Kerala State Co-operative Bank',     // verified: KSBK0001328
+
   // ---- Regional rural banks (common in Rajasthan NCRP cases) ----
   // Note: RRBs frequently route on sponsor-bank IFSC prefixes (e.g. INDB/BARB).
   // Where a dedicated RRB prefix exists, add it here. Otherwise the sponsor
   // prefix resolves to the sponsor bank, which is still the correct freeze
   // target operationally.
+  RMGB: 'Rajasthan Marudhara Gramin Bank',    // verified: RMGB0000253
+  MAHG: 'Maharashtra Gramin Bank',            // verified: MAHG0004307
+  PKGB: 'Karnataka Gramin Bank',              // verified: PKGB0010536 (ex Pragathi Krishna Gramin Bank)
+  KLGB: 'Kerala Gramin Bank',                 // verified: KLGB0040683
+
+  // Deliberately NOT mapped: PPIW (prepaid-instrument/wallet pseudo-IFSC) and
+  // prefixes whose institution could not be verified with certainty (SMNB,
+  // UNBA, STCB) — those stay flagged UNKNOWN_IFSC_PREFIX for IO review rather
+  // than risking a confidently-wrong name on a lien letter.
 };
 
 // Aliases / known-bad text labels that some PA/PG exports emit. Used ONLY for

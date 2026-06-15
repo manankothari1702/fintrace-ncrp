@@ -1,6 +1,6 @@
 # FinTrace v0.2.0 — Cross-Artifact Validation Report
 
-Generated: 2026-06-12T05:50:56.355Z
+Generated: 2026-06-15T11:19:41.966Z
 
 Read-only verification: the analyzer + exporters were run on the two available case files and every figure was extracted from THREE sources — the summary JSON, the generated PDF (text), and the generated Excel (cells) — and asserted to agree.
 
@@ -66,7 +66,7 @@ PDF text extraction: reliable ✅
 | ✅ PASS | PDF Data Quality count == data_quality rows | pdf=45 vs 45 |
 | ✅ PASS | every flag is one of the 4 known flag values | all valid |
 | ✅ PASS | every data-quality row is semantically consistent with its flag | all consistent |
-| ✅ PASS | every letter with a flagged account carries the section-12 reviewer note | notes=14 vs letters-with-flag=14 |
+| ✅ PASS | every letter with a flagged account carries the Annexure-H reviewer note | notes=14 vs letters-with-flag=14 |
 
 ### D. Duplicate-row dedup
 
@@ -117,13 +117,13 @@ PDF text extraction: reliable ✅
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | summary.bank_flags_count > 0 | 1143 |
-| ✅ PASS | bank_flags_count == data_quality rows | 1143 vs 1143 |
-| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 1143 vs 1143 |
-| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=1143 vs 1143 |
+| ✅ PASS | summary.bank_flags_count > 0 | 1141 |
+| ✅ PASS | bank_flags_count == data_quality rows | 1141 vs 1141 |
+| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 1141 vs 1141 |
+| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=1141 vs 1141 |
 | ✅ PASS | every flag is one of the 4 known flag values | all valid |
 | ✅ PASS | every data-quality row is semantically consistent with its flag | all consistent |
-| ✅ PASS | every letter with a flagged account carries the section-12 reviewer note | notes=47 vs letters-with-flag=47 |
+| ✅ PASS | every letter with a flagged account carries the Annexure-H reviewer note | notes=51 vs letters-with-flag=51 |
 
 ### Letter → Bank → IFSC (for human review)
 
@@ -131,6 +131,7 @@ PDF text extraction: reliable ✅
 |---|---|---|
 | AU Small Finance Bank | 2251253339053700 | AUBL0002346 |
 | AU Small Finance Bank | 20100003712961 | AUBL000FNCR |
+| Abhyudaya Co-operative Bank | 016011100068758 | ABHY0065016 |
 | Airtel Payments Bank | 7668686924 | AIRP0000001 |
 | Airtel Payments Bank | 7017131477 | AIRP0000001 |
 | Airtel Payments Bank | 1285353305 | AIRP0000001 |
@@ -163,33 +164,24 @@ PDF text extraction: reliable ✅
 | Airtel Payments Bank | 9704262511 | AIRP0000001 |
 | Airtel Payments Bank | 7081362908 | AIRP0000001 |
 | Airtel Payments Bank | 7977564475 | AIRP0000001 |
-| Airtel Payments Bank | 0055010100008004 | JAKA0CIRCUS |
 | Airtel Payments Bank | 8473966981 | AIRP0000001 |
 | Airtel Payments Bank | 6266887507 | AIRP0000001 |
 | Airtel Payments Bank | 9123288013 | AIRP0000001 |
 | Airtel Payments Bank | 9105131367 | airp0000001 |
 | Axis Bank | 925010037467392 | UTIB0000005 |
 | Axis Bank | 924020028168727 | UTIB0003235 |
-| Axis Bank | 0210040800003584 | JAKA0KISHEN |
 | Axis Bank | 101012901334 | UTIB0000101 |
 | Axis Bank | 924020045233664 | UTIB0001336 |
 | Axis Bank | 923010003564405 | UTIB0001870 |
 | Axis Bank | 920020016314239 | UTIB0003028 |
-| Axis Bank | 21506177740 | RMGB0000001 |
 | Axis Bank | 917010036824210 | UTIB0001558 |
 | Axis Bank | 925020030818864 | UTIB0000301 |
-| Axis Bank | 83077791596 | RMGB0000275 |
-| Axis Bank | 114016908660 | GSCB0RJT165 |
 | Axis Bank | 925020023701504 | UTIB0005320 |
-| Axis Bank | 10234437053 | IDFB0020101 |
 | Axis Bank | 924020011123146 | utib0002073 |
 | Axis Bank | 917020056871251 | utib0000846 |
-| Axis Bank | 83071951138 | RMGB0000118 |
-| Axis Bank | 1238040800002011 | JAKA0ESANIK |
 | Axis Bank | 916010080949133 | UTIB0001839 |
 | Axis Bank | 924010072198122 | UTIB0005398 |
 | Axis Bank | 924020007330961 | UTIB0000022 |
-| Axis Bank | 118002201115 | GSCB0BKD041 |
 | Axis Bank | 925020049827361 | UTIB0002321 |
 | Axis Bank | 924030043743397 | UTIB0000401 |
 | Axis Bank | 924010035034564 | UTIB0002241 |
@@ -202,13 +194,11 @@ PDF text extraction: reliable ✅
 | Axis Bank | 925020050042861 | UTIB0000355 |
 | Axis Bank | 923010030836434 | UTIB0000512 |
 | Axis Bank | 912030003384630 | UTIB0001242 |
-| Axis Bank | 0012041000001277 | JAKA0FOREST |
 | Axis Bank | 921010000978812 | UTIB0003562 |
 | Axis Bank | 925020022598657 | UTIB0004388 |
 | Axis Bank | 887001023029944 | UTIB0SVAUB1 |
 | Axis Bank | 918010095570270 | utib0003022 |
 | Axis Bank | 925010007276100 | UTIB0002195 |
-| Axis Bank | 0783040150003790 | JAKA0WACHII |
 | Axis Bank | 925010038305110 | utib0000730 |
 | Axis Bank | 925010034356220 | UTIB0004514 |
 | Axis Bank | 10001291013360 | UTIB0000100 |
@@ -257,7 +247,6 @@ PDF text extraction: reliable ✅
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 23690100016554 | BARB0ALTAKA |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 62640100004447 | BARB0VJNETT |
 | Bank of India | 836910110006734 | BKID0008369 |
-| Bank of India | 204022010005794 | TSAB0020040 |
 | Bank of India | 668910110007173 | BKID0006689 |
 | Bank of India | 814618210001819 | BKID0008505 |
 | Bank of India | 756410110005733 | BKID0007564 |
@@ -297,8 +286,6 @@ PDF text extraction: reliable ✅
 | Canara Bank | 110095894329 | CNRB0005871 |
 | Canara Bank | 1065101117619 | CNRB0001065 |
 | Canara Bank | 110158557547 | CNRB0003235 |
-| Canara Bank (including Syndicate Bank) | 10226567843 | IDFB0020101 |
-| Canara Bank (including Syndicate Bank) | 12217111000070 | PKGB0012217 |
 | Central Bank of India | 00000003259136785 | CBIN0281582 |
 | Central Bank of India | 5768345775 | CBIN0282593 |
 | Central Bank of India | 3857555242 | CBIN0282499 |
@@ -310,7 +297,6 @@ PDF text extraction: reliable ✅
 | Central Bank of India | 00000003513307938 | CBIN0280795 |
 | Central Bank of India | 3541519610 | CBIN0280433 |
 | Citibank | CITIG012111 | CITI0100000 |
-| City Union Bank | 166410801200274 | KSBK0001664 |
 | Ease Buzz | Na | — |
 | Federal Bank | 23640200004816 | FDRL0002364 |
 | Federal Bank | 55550103616205 | FDRL0005555 |
@@ -322,13 +308,15 @@ PDF text extraction: reliable ✅
 | Fino Payments Bank | 20410948413 | FINO0000001 |
 | Fino Payments Bank | 20325406361 | FINO0001596 |
 | Fino Payments Bank | 3218000283 | FINO0000001 |
-| Google Pay | 0044020100000577 | jaka0dooroo |
+| Gujarat State Co-operative Bank | 195003973120 | GSCB0PDC019 |
+| Gujarat State Co-operative Bank | 114016908660 | GSCB0RJT165 |
+| Gujarat State Co-operative Bank | 118002201115 | GSCB0BKD041 |
+| Gujarat State Co-operative Bank | 44910052001003882 | GSCB0ASCB02 |
 | HDFC Bank | 50100261608427 | HDFC0001997 |
 | HDFC Bank | 50100709027010 | HDFC0001765 |
 | HDFC Bank | 57500001372151 | HDFC0MERUPI |
 | HDFC Bank | 50100676669680 | HDFC0006225 |
 | HDFC Bank | 50100835369852 | hdfc0001202 |
-| HDFC Bank | 10238675152 | IDFB0040101 |
 | HDFC Bank | 00030310016252 | HDFC0MERUPI |
 | HDFC Bank | 99992233778889 | HDFC0001068 |
 | HDFC Bank | 50100120418080 | HDFC0000973 |
@@ -361,6 +349,11 @@ PDF text extraction: reliable ✅
 | ICICI Bank | cca2004008@icici | ICIC0DC0099 |
 | ICICI Bank | 188905000298 | ICIC0DC0099 |
 | IDBI Bank | 0579102000014827 | IBKL0000579 |
+| IDFC FIRST Bank | 10234437053 | IDFB0020101 |
+| IDFC FIRST Bank | 10226567843 | IDFB0020101 |
+| IDFC FIRST Bank | 10238675152 | IDFB0040101 |
+| IDFC FIRST Bank | 10084554683 | IDFB0080303 |
+| IDFC FIRST Bank | 10237798288 | IDFB0080152 |
 | India Post Payments Bank | 005910016782 | IPOS0000001 |
 | India Post Payments Bank | 052910109992 | IPOS0000001 |
 | India Post Payments Bank | 055010805674 | IPOS0000001 |
@@ -410,7 +403,6 @@ PDF text extraction: reliable ✅
 | Indian Overseas Bank | 199202000015780 | IOBA0001992 |
 | Indian Overseas Bank | 199102000016125 | IOBA0001991 |
 | Indian Overseas Bank | 190801000000638 | IOBA0001908 |
-| Indian Overseas Bank | 132810801200017 | KSBK0001328 |
 | Indian Overseas Bank | 032502000001250 | IOBA0000325 |
 | Indian Overseas Bank | 362802000000175 | IOBA0003628 |
 | Indian Overseas Bank | 105701000072447 | IOBA0001057 |
@@ -425,13 +417,9 @@ PDF text extraction: reliable ✅
 | Indian Overseas Bank | 125302000002323 | IOBA0001253 |
 | IndusInd Bank | 257022111300 | INDB0002214 |
 | IndusInd Bank | 201016610784 | INDB0001548 |
-| IndusInd Bank | 016011100068758 | ABHY0065016 |
-| IndusInd Bank | 80068220455 | MAHG0004307 |
-| IndusInd Bank | 195003973120 | GSCB0PDC019 |
 | IndusInd Bank | 201012252786 | INDB0001389 |
 | IndusInd Bank | 201024107841 | INDB0001854 |
 | IndusInd Bank | 100249597511 | INDB0001076 |
-| IndusInd Bank | 83066517957 | RMGB0000253 |
 | IndusInd Bank | 917877678430 | PPIW0881822 |
 | IndusInd Bank | 201025971146 | INDB0001854 |
 | IndusInd Bank | 100228514089 | INDB0000504 |
@@ -440,6 +428,16 @@ PDF text extraction: reliable ✅
 | IndusInd Bank | 100194189601 | INDB0000493 |
 | IndusInd Bank | 00993564615950 | INDB0MERCHA |
 | IndusInd Bank | 201014799096 | INDB0000312 |
+| Jammu and Kashmir Bank | 0210040800003584 | JAKA0KISHEN |
+| Jammu and Kashmir Bank | 1238040800002011 | JAKA0ESANIK |
+| Jammu and Kashmir Bank | 0138021360000019 | JAKA0SOGAAM |
+| Jammu and Kashmir Bank | 0044020100000577 | jaka0dooroo |
+| Jammu and Kashmir Bank | 0036021360000289 | JAKA0BEERWA |
+| Jammu and Kashmir Bank | 0120010100001030 | JAKA0SHIMLA |
+| Jammu and Kashmir Bank | 0012041000001277 | JAKA0FOREST |
+| Jammu and Kashmir Bank | 0783040150003790 | JAKA0WACHII |
+| Jammu and Kashmir Bank | 0054010100005473 | JAKA0GOLDEN |
+| Jammu and Kashmir Bank | 0055010100008004 | JAKA0CIRCUS |
 | Jio Payments Bank | 002070251000009 | JIOP0000001 |
 | Jio Payments Bank | 002070861000002 | JIOP0000001 |
 | Jio Payments Bank | 003521731171109 | JIOP0000001 |
@@ -449,7 +447,11 @@ PDF text extraction: reliable ✅
 | Jio Payments Bank | 003321714263586 | JIOP0000001 |
 | Jio Payments Bank | 003321714337016 | JIOP0000001 |
 | Karnataka Bank | 6032500102304901 | KARB0000603 |
+| Karnataka Gramin Bank | 10536101017636 | PKGB0010536 |
+| Karnataka Gramin Bank | 12217111000070 | PKGB0012217 |
 | Karur Vysya Bank | 1481166000060218 | KVBL0001481 |
+| Kerala State Co-operative Bank | 166410801200274 | KSBK0001664 |
+| Kerala State Co-operative Bank | 132810801200017 | KSBK0001328 |
 | Kotak Mahindra Bank | 6347198257 | KKBK0002791 |
 | Kotak Mahindra Bank | 7450841290 | KKBK0000001 |
 | Kotak Mahindra Bank | FPPI31a8fdd06cb5 | PPIW0884509 |
@@ -465,9 +467,9 @@ PDF text extraction: reliable ✅
 | Kotak Mahindra Bank | 6348908008 | KKBK0000285 |
 | Kotak Mahindra Bank | 0548396313 | KKBK0000811 |
 | Kotak Mahindra Bank | 2549599434 | KKBK0000253 |
-| Kotak Mahindra Bank | 44910052001003882 | GSCB0ASCB02 |
 | Kotak Mahindra Bank | 7151243140 | KKBK0003543 |
 | Kotak Mahindra Bank | 2746747683 | KKBK0000001 |
+| Maharashtra Gramin Bank | 80068220455 | MAHG0004307 |
 | NSDL Payments Bank | 502004099036 | NSPB0000015 |
 | NSDL Payments Bank | 501053933880 | NSPB0000002 |
 | NSDL Payments Bank | 501044126051 | NSPB0000002 |
@@ -484,10 +486,7 @@ PDF text extraction: reliable ✅
 | Paytm | NA | — |
 | Paytm | referremark | — |
 | Paytm | RR | — |
-| PhonePe | 0120010100001030 | JAKA0SHIMLA |
 | PhonePe | BillNumber042000010134 | NA |
-| PhonePe | 10084554683 | IDFB0080303 |
-| PhonePe | 10237798288 | IDFB0080152 |
 | PhonePe | Rechargenumber8448210157 | — |
 | PhonePe | Mobilenumber9669499795 | — |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0793208100657578 | PUNB0079320 |
@@ -497,7 +496,6 @@ PDF text extraction: reliable ✅
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 8119010071646 | PUNB0RRBTGB |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 7371026015600 | PUNB0RRBAGB |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 72240100189671 | PUNB0MBGB06 |
-| Punjab National Bank (including Oriental Bank of Commerce and Un | 0138021360000019 | JAKA0SOGAAM |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0053300100001036 | PUNB0005330 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 9162000100048685 | PUNB0916200 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0053101700251175 | PUNB0005310 |
@@ -544,6 +542,11 @@ PDF text extraction: reliable ✅
 | RBL Bank | 409002200157 | RATN0000049 |
 | RBL Bank | 2541109900110192 | RATN0000990 |
 | RBL Bank | 2541109900110151 | RATN000RAPL |
+| Rajasthan Marudhara Gramin Bank | 21506177740 | RMGB0000001 |
+| Rajasthan Marudhara Gramin Bank | 83077791596 | RMGB0000275 |
+| Rajasthan Marudhara Gramin Bank | 83066517957 | RMGB0000253 |
+| Rajasthan Marudhara Gramin Bank | 83071951138 | RMGB0000118 |
+| Rajasthan Marudhara Gramin Bank | 21611046990 | RMGB0000001 |
 | Razorpay | RnACk0oaBCKtya | — |
 | Razorpay | IgnuOmEhIbJMJM | — |
 | Razorpay | QGYGfF0LpX8dVX | — |
@@ -597,7 +600,6 @@ PDF text extraction: reliable ✅
 | State Bank of India | 00000035261666304 | SBIN0014066 |
 | State Bank of India | 00000033575353741 | SBIN0006375 |
 | State Bank of India | 00000043323592332 | SBIN0014154 |
-| State Bank of India | 0036021360000289 | JAKA0BEERWA |
 | State Bank of India | 00000062308245432 | SBIN0020236 |
 | State Bank of India | 41943554101 | SBIN0060324 |
 | State Bank of India | 00000061275239359 | SBIN0032471 |
@@ -693,7 +695,6 @@ PDF text extraction: reliable ✅
 | State Bank of India | 00000041139415334 | SBIN0012404 |
 | State Bank of India | 43839524614 | SBIN0061303 |
 | State Bank of India | 41767716540 | SBIN0000105 |
-| State Bank of India | 0054010100005473 | JAKA0GOLDEN |
 | State Bank of India | 00000039503559367 | SBIN0009170 |
 | State Bank of India | 00000084005424634 | SBIN0RRVCGB |
 | State Bank of India | 00000061175480628 | SBIN0031054 |
@@ -712,6 +713,7 @@ PDF text extraction: reliable ✅
 | Suryoday Small Finance Bank | 251000252719 | sury0bk0000 |
 | Suryoday Small Finance Bank | 251013106580 | SURY0000011 |
 | Tamilnad Mercantile Bank | 181100050320563 | TMBL0000181 |
+| Telangana State Co-operative Apex Bank | 204022010005794 | TSAB0020040 |
 | UCO Bank | 00550110099483 | UCBA0000055 |
 | UCO Bank | 16753211119029 | UCBA0001675 |
 | UCO Bank | 07963211151593 | UCBA0000796 |
@@ -745,8 +747,6 @@ PDF text extraction: reliable ✅
 | Union Bank of India (including Andhra Bank and Corporation Bank) | 702802010005733 | UBIN0570281 |
 | Union Bank of India (including Andhra Bank and Corporation Bank) | 616302010014425 | UBIN0561631 |
 | Union Bank of India (including Andhra Bank and Corporation Bank) | 595402120000215 | UBIN0559547 |
-| Union Bank of India( including Andhra Bank and Corporation Bank) | 21611046990 | RMGB0000001 |
-| Union Bank of India( including Andhra Bank and Corporation Bank) | 10536101017636 | PKGB0010536 |
 | Yes Bank | 002261100000025 | YESB0YBLUPI |
 | Yes Bank | 072052000006172 | YESB0000720 |
 | Yes Bank | 002267800000666 | YESB0000022 |
@@ -765,7 +765,7 @@ PDF text extraction: reliable ✅
 
 | Result | Suite | Summary |
 |---|---|---|
-| ✅ PASS | `npx jest` | Test Suites: 9 passed, 9 total \| Tests:       189 passed, 189 total |
+| ✅ PASS | `npx jest` | Test Suites: 14 passed, 14 total \| Tests:       254 passed, 254 total |
 | ✅ PASS | `node backend/scripts/accuracy_test.js` | Final score: 30/30 checks passed |
 | ✅ PASS | `node backend/scripts/consistency_test.js` | 4/4 consistency checks passed |
 | ✅ PASS | `node backend/scripts/security_audit.js` | Final security score: 10/10 \| Verdict: all attack vectors contained. ✅ |

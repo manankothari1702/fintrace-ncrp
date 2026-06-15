@@ -31,6 +31,10 @@
  */
 
 const XLSX = require('xlsx');
+const {
+  posExitRows, posMerchantAggregates, atmOnlyCashouts,
+  accountCountByTerminal, cashoutReconciliation,
+} = require('./exportViews');
 
 /** @param {unknown} v */
 function num(v) {
@@ -146,22 +150,52 @@ function generateReportExcel(bundle = {}) {
   ]);
 
   // ── 3. Lien Calculation ──────────────────────────────────────────────────
+  // The persisted lien_records rows carry only the lien amount + status — the
+  // derivation columns (layer, received, forwarded, on hold, cashed out) live
+  // on the analyzer's lien_calculation snapshot. Join the two by account so the
+  // worksheet shows HOW each lien figure was derived; the per-row Lien Eligible
+  // values and the total are read as-is, never recomputed.
   const lienRows = (liens && liens.length) ? liens : (analysis.lien_calculation || []);
+  const lienDetailByAcct = new Map(
+    (analysis.lien_calculation || []).map((l) => [String(l.account_no), l]));
   const lienTableTotal = num(summary.lien_table_total)
     || lienRows.reduce((s, l) => s + num(l.lien_eligible_amount ?? l.lien_amount), 0);
   addSheet(wb, 'Lien Calculation', [
-    ['Account No.', 'Bank', 'IFSC', 'Layer', 'Received [Rs.]', 'Forwarded [Rs.]', 'On Hold [Rs.]', 'Cashed Out [Rs.]', 'Lien Eligible [Rs.]', 'Status'],
-    ...lienRows.map((l) => [
-      l.account_no, l.bank_name || '', l.ifsc_code || '',
-      l.layer_no == null ? '' : `L${l.layer_no}`,
-      num(l.total_received), num(l.onward_forwarded ?? l.total_forwarded),
-      num(l.total_on_hold), num(l.total_cashed_out),
-      num(l.lien_eligible_amount ?? l.lien_amount), l.lien_status || 'pending',
-    ]),
+    ['Account No.', 'Bank', 'IFSC', 'Layer', 'Received [Rs.]', 'Forwarded [Rs.]', 'On Hold [Rs.]', 'Cashed Out [Rs.]', 'Gross Balance [Rs.]', 'Disputed Inflow [Rs.]', 'Lien Eligible [Rs.]', 'Status'],
+    ...lienRows.map((l) => {
+      const d = lienDetailByAcct.get(String(l.account_no)) || {};
+      const layer = l.layer_no ?? d.layer_no;
+      const received = num(l.total_received ?? d.total_received);
+      const forwarded = num(l.onward_forwarded ?? l.total_forwarded ?? d.onward_forwarded);
+      const onHold = num(l.total_on_hold ?? d.total_on_hold);
+      const cashedOut = num(l.total_cashed_out ?? d.total_cashed_out);
+      const lienEligible = num(l.lien_eligible_amount ?? l.lien_amount);
+      // Gross balance (pre-cap residue) and the disputed-inflow cap are read from
+      // the analyzer rollup, never recomputed. gross_balance falls back to the
+      // component subtraction for legacy rows; the disputed cap falls back to the
+      // value that keeps min(gross, cap) === lien for rows analysed before the
+      // field existed, so the worksheet always reconciles.
+      const grossBalance = (l.gross_balance ?? d.gross_balance) != null
+        ? num(l.gross_balance ?? d.gross_balance)
+        : Math.max(0, received - forwarded - onHold - cashedOut);
+      const disputedInflow = (l.disputed_received ?? d.disputed_received) != null
+        ? num(l.disputed_received ?? d.disputed_received)
+        : (lienEligible < grossBalance ? lienEligible : grossBalance);
+      return [
+        l.account_no, l.bank_name || '', l.ifsc_code || '',
+        layer == null ? '' : `L${layer}`,
+        received, forwarded, onHold, cashedOut,
+        grossBalance, disputedInflow,
+        lienEligible, l.lien_status || 'pending',
+      ];
+    }),
     [],
     // Lien-eligible total (NOT the recovery residual on the Summary sheet).
-    ['Total lien-eligible balance across flagged accounts', '', '', '', '', '', '', '', lienTableTotal, ''],
+    ['Total lien-eligible balance across flagged accounts', '', '', '', '', '', '', '', '', '', lienTableTotal, ''],
     ['(may exceed victim loss as funds traverse multiple layers)'],
+    // Exact analyzer formula, including the disputed-inflow cap and the floor.
+    ['Formula: Gross Balance = max(0, Received - Forwarded - On Hold - Cashed Out).'],
+    ['Lien Eligible = min(Gross Balance, Disputed Inflow): recoverable funds are capped at the account\'s disputed (fraud-attributed) inflow and floored at zero, since lien cannot exceed the fraud money that entered.'],
   ]);
 
   // ── 4. Suspected Mules ───────────────────────────────────────────────────
@@ -225,36 +259,55 @@ function generateReportExcel(bundle = {}) {
     ...victimRows.map((v) => [v.account_no, num(v.txn_count), num(v.amount_sent)]),
   ]);
 
-  // ── 8. ATM Exit Details ───────────────────────────────────────────────────
+  // ── 8 + 9. ATM / POS Exit Details ────────────────────────────────────────
+  // The two sheets are scoped strictly by the ledger's payment mode: ATM
+  // withdrawals only on the ATM sheet, POS merchant cash-outs only on the POS
+  // sheet — no terminal or transaction appears on both. (The analyzer's
+  // terminal aggregates bucket POS legs under ATM because POS legs carry their
+  // terminal id in the atm_id column; that classification is load-bearing for
+  // same-day-cashout detection, so the split happens here, at display time.)
   const geo = analysis.geography || {};
   const cashAnalysis = analysis.cashout_analysis || {};
-  // City/State aren't carried on top_atms; enrich from the cashout analysis
-  // (matched on ATM id) when those columns were present in the NCRP export.
-  const atmLoc = new Map();
-  for (const ac of (cashAnalysis.atm_cashouts || [])) {
-    atmLoc.set(String(ac.atm_id), { city: ac.city, state: ac.state });
-  }
-  const topAtms = Array.isArray(geo.top_atms) ? geo.top_atms : [];
+  const atmTerminals = atmOnlyCashouts(cashAnalysis.atm_cashouts || [], transactions);
+  const acctsByTerminal = accountCountByTerminal(transactions);
+  const posRows = posExitRows(transactions);
+
+  // Gross-vs-confirmed reconciliation, printed on both sheets so a reader who
+  // sums the details sees exactly why the headline differs.
+  const atmShownAmount = atmTerminals.reduce((s, a) => s + num(a.amount), 0);
+  const atmShownTxns = atmTerminals.reduce((s, a) => s + num(a.count), 0);
+  const posShownAmount = posRows.reduce((s, t) => s + num(t.transaction_amount), 0);
+  const recon = cashoutReconciliation(
+    { summary, cashout: cashAnalysis },
+    atmShownAmount + posShownAmount, atmShownTxns + posRows.length);
+  const reconBlock = [
+    [],
+    ['CASH-OUT RECONCILIATION (ATM + POS sheets)'],
+    ['Gross withdrawals shown [Rs.]', recon.gross_shown, `${recon.rows_shown} rows across the ATM and POS sheets`],
+    ['Less duplicate rows included above [Rs.]', recon.dup_amount_shown, `${recon.dup_rows_collapsed} duplicate ledger row(s) were collapsed during analysis`],
+    ['Less excess over disputed inflow per account (cap) [Rs.]', recon.cap_excess, 'amounts above an account\'s disputed inflow are its own/clean funds'],
+    ['Confirmed cashed out (headline) [Rs.]', recon.confirmed, 'gross - duplicates - cap = confirmed'],
+  ];
+
   addSheet(wb, 'ATM Exit Details', [
-    ['ATM ID', 'Location', 'City', 'State', 'Amount [Rs.]', 'Txns', 'Accounts'],
-    ...topAtms.map((a) => {
-      const loc = atmLoc.get(String(a.atm_id)) || {};
-      return [a.atm_id || '', a.location || '', loc.city || '', loc.state || '',
-        num(a.amount), num(a.txn_count), num(a.account_count)];
-    }),
+    ['ATM ID', 'Location', 'City', 'State', 'Gross Amount [Rs.]', 'Txns', 'Accounts'],
+    ...atmTerminals.map((a) => [
+      a.atm_id || '', a.atm_location || a.location || '', a.city || '', a.state || '',
+      num(a.amount), num(a.count ?? a.txn_count),
+      num(acctsByTerminal.get(String(a.atm_id)) ?? a.account_count),
+    ]),
+    ...reconBlock,
   ]);
 
-  // ── 9. POS Exit Details ───────────────────────────────────────────────────
   // POS cash-outs straight from the ledger. The merchant name and terminal id
   // live in the atm_location / atm_id columns for POS legs.
-  const posRows = (transactions || [])
-    .filter((t) => String(t.payment_mode || '').toUpperCase() === 'POS');
   addSheet(wb, 'POS Exit Details', [
-    ['Date', 'Account', 'Bank', 'Amount [Rs.]', 'Merchant', 'Terminal ID'],
+    ['Date', 'Account', 'Bank', 'Gross Amount [Rs.]', 'Merchant', 'Terminal ID'],
     ...posRows.map((t) => [
       fmtDate(t.transaction_date), t.beneficiary_account || '', t.beneficiary_bank || '',
       num(t.transaction_amount), t.atm_location || '', t.atm_id || '',
     ]),
+    ...reconBlock,
   ]);
 
   // ── 10. Daily Volume ──────────────────────────────────────────────────────
@@ -349,15 +402,20 @@ function generateReportExcel(bundle = {}) {
   ]);
 
   // ── 14. Geographic Hotspots ───────────────────────────────────────────────
+  // Merchants: prefer the analyzer's view, but derive from the ledger's POS
+  // legs when it is empty (POS legs that carry a terminal id are bucketed as
+  // ATM by the analyzer, leaving top_merchants blank — see sheets 8/9).
   const byState = Array.isArray(geo.by_state) ? geo.by_state : [];
-  const merchants = Array.isArray(geo.top_merchants) ? geo.top_merchants : [];
+  const merchants = (transactions && transactions.length)
+    ? posMerchantAggregates(transactions)
+    : (Array.isArray(geo.top_merchants) ? geo.top_merchants : []);
   addSheet(wb, 'Geographic Hotspots', [
     ['CASHOUT BY STATE'],
     ['State', 'Amount [Rs.]', 'Txns', 'Share %'],
     ...byState.map((s) => [s.state || '', num(s.amount), num(s.txn_count ?? s.count), num(s.pct)]),
     [],
     ['TOP MERCHANTS (POS)'],
-    ['Merchant', 'Type', 'Amount [Rs.]', 'Txns'],
+    ['Merchant', 'Type', 'Gross Amount [Rs.]', 'Txns'],
     ...merchants.map((m) => [m.name || '', m.type || 'Merchant', num(m.amount), num(m.txn_count)]),
   ]);
 

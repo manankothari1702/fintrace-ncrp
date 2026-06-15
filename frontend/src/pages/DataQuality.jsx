@@ -60,12 +60,32 @@ export default function DataQuality() {
     return () => { cancelled = true; };
   }, [reportId]);
 
+  // Order for review priority: actionable freeze-targets first (a lien letter
+  // is about to go to an unconfirmed bank), then other actionable rows, then
+  // informational (auto-corrected / expected) rows. Rows from reports analysed
+  // before the severity model carry no `severity` and keep their server order.
+  const sortedRows = useMemo(() => {
+    const rank = (r) => {
+      if (r.severity === undefined) return 1;
+      if (r.severity === 'actionable') return r.freeze_target ? 0 : 1;
+      return 2;
+    };
+    return [...rows].sort((a, b) => rank(a) - rank(b));
+  }, [rows]);
+
   const counts = useMemo(() => {
-    const c = { total: rows.length, mismatch: 0, noIfsc: 0, unknown: 0 };
+    const c = {
+      total: rows.length, mismatch: 0, noIfsc: 0, unknown: 0,
+      actionable: 0, freezeTargets: 0, hasSeverity: rows.some((r) => r.severity !== undefined),
+    };
     for (const r of rows) {
       if (r.bank_flag === 'IFSC_TEXT_MISMATCH') c.mismatch += 1;
       else if (r.bank_flag === 'NO_IFSC' || r.bank_flag === 'INVALID_IFSC') c.noIfsc += 1;
       else if (r.bank_flag === 'UNKNOWN_IFSC_PREFIX') c.unknown += 1;
+      if (r.severity === 'actionable') {
+        c.actionable += 1;
+        if (r.freeze_target) c.freezeTargets += 1;
+      }
     }
     return c;
   }, [rows]);
@@ -112,9 +132,31 @@ export default function DataQuality() {
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="Accounts to verify" value={counts.total} icon="🔎" color="var(--accent-orange)" />
-        <StatCard title="IFSC vs text mismatch" value={counts.mismatch} subtitle="letter uses the IFSC bank" icon="⚠️" color="var(--accent-orange)" />
-        <StatCard title="Wallet / no IFSC" value={counts.noIfsc} subtitle="confirm nodal entity" icon="👛" color="var(--brand)" />
+        {counts.hasSeverity ? (
+          <>
+            <StatCard
+              title="Freeze targets to verify"
+              value={counts.freezeTargets}
+              subtitle="lien-table accounts, unconfirmed bank"
+              icon="⛔"
+              color={counts.freezeTargets > 0 ? 'var(--danger)' : 'var(--accent)'}
+            />
+            <StatCard
+              title="Actionable flags"
+              value={counts.actionable}
+              subtitle="need bank verification"
+              icon="🔎"
+              color={counts.actionable > 0 ? 'var(--accent-orange)' : 'var(--accent)'}
+            />
+            <StatCard title="Auto-corrected from IFSC" value={counts.mismatch} subtitle="source text disagreed (resolved)" icon="✓" color="var(--brand)" />
+          </>
+        ) : (
+          <>
+            <StatCard title="Accounts to verify" value={counts.total} icon="🔎" color="var(--accent-orange)" />
+            <StatCard title="IFSC vs text mismatch" value={counts.mismatch} subtitle="letter uses the IFSC bank" icon="⚠️" color="var(--accent-orange)" />
+            <StatCard title="Wallet / no IFSC" value={counts.noIfsc} subtitle="confirm nodal entity" icon="👛" color="var(--brand)" />
+          </>
+        )}
       </div>
 
       <div className="card card-pad">
@@ -141,15 +183,27 @@ export default function DataQuality() {
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => {
+                sortedRows.map((r) => {
                   const meta = flagMeta(r.bank_flag);
                   return (
                     <tr key={r.account_no}>
-                      <td>{r.account_no}</td>
+                      <td>
+                        {r.account_no}
+                        {r.severity === 'actionable' && r.freeze_target && (
+                          <div><Badge color="var(--danger)">Freeze target</Badge></div>
+                        )}
+                      </td>
                       <td style={{ fontWeight: 600 }}>{r.bank || '—'}</td>
                       <td>{r.ifsc_code || '—'}</td>
                       <td style={{ color: 'var(--text-muted)' }}>{r.raw_bank || '(blank)'}</td>
-                      <td><Badge color={meta.color}>{meta.label}</Badge></td>
+                      <td>
+                        <Badge color={r.severity === 'informational' ? 'var(--text-muted)' : meta.color}>
+                          {meta.label}
+                        </Badge>
+                        {r.severity === 'informational' && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>resolved / expected</div>
+                        )}
+                      </td>
                       <td style={{ maxWidth: 360, color: 'var(--text-muted)', fontSize: 12 }}>{r.message}</td>
                     </tr>
                   );

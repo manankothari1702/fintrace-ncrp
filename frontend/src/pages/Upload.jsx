@@ -489,7 +489,18 @@ function ParserWarnings({ warnings }) {
         ⚠️ Parser notes ({warnings.length})
       </div>
       <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a5400' }}>
-        {warnings.map((w, i) => <li key={i}>{w}</li>)}
+        {warnings.map((w, i) => {
+          // Warnings are either plain strings (parser notes) or structured
+          // objects ({ code, message }) such as the changed-source alert.
+          const isObj = w && typeof w === 'object';
+          const text = isObj ? w.message : w;
+          const isSourceChanged = isObj && w.code === 'SOURCE_FILE_CHANGED';
+          return (
+            <li key={i} style={isSourceChanged ? { fontWeight: 700, color: '#8a2a00' } : undefined}>
+              {isSourceChanged ? '🔑 Source file changed — ' : ''}{text}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

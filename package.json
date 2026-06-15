@@ -1,6 +1,6 @@
 {
   "name": "fintrace-ncrp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "FinTrace NCRP — offline-first Electron desktop app for cyber-fraud transaction analysis.",
   "author": "M Intergraph Systems Pvt. Ltd.",
@@ -19,6 +19,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "better-sqlite3": "^11.10.0",
     "call-bind-apply-helpers": "1.0.2",
     "dayjs": "^1.11.13",
@@ -54,7 +55,12 @@
       {
         "from": "node_modules",
         "to": "node_modules",
-        "filter": ["**/*", "!**/.bin/**", "!**/electron/**", "!**/electron-builder/**"]
+        "filter": [
+          "**/*",
+          "!**/.bin/**",
+          "!**/electron/**",
+          "!**/electron-builder/**"
+        ]
       }
     ],
     "extraFiles": [

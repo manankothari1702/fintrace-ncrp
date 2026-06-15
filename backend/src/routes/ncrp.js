@@ -50,7 +50,9 @@ const {
   insertDraftEmail,
   upsertRepeatAccount,
   insertAuditLog,
+  findReportsByAckNo,
 } = require('../db/queries');
+const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
 const { generateReportExcel } = require('../utils/excelGenerator');
 const { generateDraftEmails } = require('../utils/emailGenerator');
@@ -626,13 +628,58 @@ function createNcrpRouter(db) {
       const rows = parsed.rows || [];
       const warnings = parsed.warnings || [];
 
+      // ── Evidentiary provenance ────────────────────────────────────────
+      // Hash the raw uploaded bytes BEFORE parsing/ingest so the digest is over
+      // the exact file the officer submitted. Failure to hash must not block an
+      // upload — provenance degrades to "not recorded" rather than losing the
+      // case. Node crypto only; no new handler.
+      const uploadedAt = new Date().toISOString();
+      const version = appVersion();
+      let sourceSha256 = null;
+      try {
+        sourceSha256 = sha256File(req.file.path);
+      } catch (_hashErr) {
+        warnings.push({
+          code: 'PROVENANCE_HASH_FAILED',
+          message: 'Could not compute the source-file hash; provenance will be incomplete.',
+        });
+      }
+
+      // Changed-source detection: if this case (same NCRP acknowledgement
+      // number) was previously ingested from a file with a DIFFERENT hash, warn
+      // the officer that the source has changed.
+      const ackNo = (() => {
+        const r = rows.find((row) => row && row.ack_no != null && String(row.ack_no).trim() !== '');
+        return r ? String(r.ack_no).trim() : null;
+      })();
+      if (sourceSha256 && ackNo) {
+        try {
+          const prior = findReportsByAckNo(db, ackNo)
+            .filter((p) => p.source_sha256 && p.source_sha256 !== sourceSha256);
+          if (prior.length > 0) {
+            const p = prior[0];
+            warnings.push({
+              code: 'SOURCE_FILE_CHANGED',
+              message: `Source changed: case ${ackNo} was previously analysed from a file with a ` +
+                `different SHA-256 (report #${p.id}, "${p.original_filename}", ` +
+                `uploaded ${p.upload_date}). The figures may differ from the earlier dossier.`,
+              ackNo,
+              previousReportId: p.id,
+              previousSha256: p.source_sha256,
+              currentSha256: sourceSha256,
+            });
+          }
+        } catch (_e) { /* detection is best-effort; never blocks ingest */ }
+      }
+
       let reportId;
       try {
         reportId = insertReport(db, {
           filename: req.file.filename,        // UUID-based storage name
           original_filename: safeOriginalName, // sanitised display name
-          upload_date: new Date().toISOString(),
+          upload_date: uploadedAt,
           analysis_status: 'pending',
+          source_sha256: sourceSha256,
         });
 
         // Batch the inserts: INSERT_BATCH_SIZE rows per SQLite transaction.
@@ -640,10 +687,21 @@ function createNcrpRouter(db) {
         for (let i = 0; i < withReportId.length; i += INSERT_BATCH_SIZE) {
           insertManyTransactions(db, withReportId.slice(i, i + INSERT_BATCH_SIZE));
         }
+        // Audit row carries the full provenance tuple: case id (report_id), the
+        // original filename, the source SHA-256, the upload timestamp, and the
+        // FinTrace version — a tamper-evident record of what was ingested.
         insertAuditLog(db, {
           report_id: reportId,
           action: 'upload.ingested',
-          details: { filename: safeOriginalName, rowCount: rows.length },
+          details: {
+            filename: safeOriginalName,
+            rowCount: rows.length,
+            source_sha256: sourceSha256,
+            uploaded_at: uploadedAt,
+            app_version: version,
+            ack_no: ackNo,
+            source_changed: warnings.some((w) => w && w.code === 'SOURCE_FILE_CHANGED'),
+          },
         });
       } catch (_dbErr) {
         return sendError(res, 500, 'DB_ERROR', 'Failed to store report.');
@@ -654,6 +712,7 @@ function createNcrpRouter(db) {
         reportId,
         filename: safeOriginalName,
         rowCount: rows.length,
+        sourceSha256,
         warnings,
       });
 
@@ -956,6 +1015,11 @@ function createNcrpRouter(db) {
       const emails = stmt.emails.all(report.id)
         .map((e) => ({ ...e, account_list: parseAccountList(e.account_list) }));
       const layers = stmt.layers.all(report.id);
+      // Raw ledger: drives the writer-side ATM/POS exit split and the POS
+      // merchant table (same bundle field the Excel export already passes).
+      const transactions = db.prepare(
+        'SELECT * FROM ncrp_transactions WHERE report_id = ? ORDER BY transaction_date ASC, id ASC'
+      ).all(report.id);
       const ci = stmt.caseInfo.get(report.id) || {};
 
       const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
@@ -963,7 +1027,7 @@ function createNcrpRouter(db) {
       const outPath = path.join(EXPORTS_DIR, fileName);
 
       await generateReportPdf({
-        report, analysis, liens, emails, layers,
+        report, analysis, liens, emails, layers, transactions,
         ack_no: ci.ack_no ?? null,
         complaint_date: ci.complaint_date ?? null,
       }, outPath);

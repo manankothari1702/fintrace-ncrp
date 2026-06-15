@@ -1,6 +1,23 @@
 # FinTrace NCRP — Release Checklist
 
-## 0.2.0 (current release)
+## 0.3.0 (current release)
+
+**Release:** v0.3.0
+**Product:** FinTrace NCRP — Cyber Crime Financial Trail Analyzer
+**Owner:** M Intergraph Systems Pvt. Ltd. (MINT)
+
+| # | Item | Status | Result / Notes |
+|---|------|--------|----------------|
+| 1 | Version bumped across root/backend/frontend `package.json` | **[x] PASS** | Bumped root `package.json`, `backend/package.json`, and `frontend/package.json` from `0.2.0` → **0.3.0**; sidebar UI footer reads `v0.3.0`; `app.getVersion()` (IPC `app:get-version`) and the backend `appVersion()` both read `package.json`, so they return 0.3.0 automatically. Installer-name references in `USER_GUIDE.md` / `BUILD_INSTRUCTIONS.md` updated to `FinTrace NCRP Setup 0.3.0.exe`. |
+| 2 | Visual PDF dossier (charts + annexure split) | **[x] PASS** | Dossier upgraded from tabular-only to visual: money-flow network, layer-breakdown, and daily-volume charts built as SVG and rasterised to PNG (`@resvg/resvg-js`) for reliable printing; deterministic (same case → same charts). Bulky tables moved to a labelled Annexure (A–H); all 15 Section-102 lien letters and financial figures preserved. |
+| 3 | Evidentiary provenance (source-file SHA-256) | **[x] PASS** | SHA-256 of the raw uploaded NCRP file is computed before parsing, stored on the case record + audit log (filename, hash, upload timestamp, app version), stamped into the PDF (cover "Source & Provenance" block, every page footer, and PDF metadata), and a changed-source warning fires when the same case is re-ingested from a file with a different hash. |
+| 4 | Backend test suite green | **[x] PASS** | `cd backend && npm test` → **254/254 tests across 14 suites**; cross-artifact validator (`scripts/validate_v020.js`) 66/66. |
+| 5 | Code signing | **[~] IN PROGRESS** | Authenticode signing of the installer and binaries is still being set up (carried over from 0.2.0). |
+| 6 | Offline auto-updater | **[~] IN PROGRESS** | Offline / air-gapped update flow remains under development (carried over from 0.2.0). |
+
+---
+
+## 0.2.0 — historical
 
 **Release:** v0.2.0
 **Product:** FinTrace NCRP — Cyber Crime Financial Trail Analyzer
