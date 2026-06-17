@@ -193,7 +193,6 @@ function locateGoldFile() {
   const candidates = [
     path.join(BACKEND_DIR, '32712250107145 (1).xlsx'),
     path.join(ROOT_DIR, '32712250107145 (1).xlsx'),
-    path.join(BACKEND_DIR, 'sample_ncrp.xlsx'), // last-resort (wrong file; ack check will flag it)
   ];
   return candidates.find((p) => fs.existsSync(p)) || null;
 }

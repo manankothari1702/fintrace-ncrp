@@ -46,9 +46,9 @@ const BASE = `http://${HOST}:${PORT}`;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const FILES = {
-  small: path.join(BACKEND_DIR, 'sample_ncrp.xlsx'),                 // 10 rows
-  medium: path.join(ROOT_DIR, '32712250107145 (1).xlsx'),           // 151 rows
-  large: path.join(ROOT_DIR, '32712250107170 (1).xlsx'),            // 2411 rows
+  small: path.join(ROOT_DIR, '32712250107145 (1).xlsx'),            // 151 rows (case 145)
+  medium: path.join(ROOT_DIR, 'BankAction_CompleteTrail.xlsx'),     // 155 rows
+  large: path.join(ROOT_DIR, '32712250107170 (1).xlsx'),            // 2411 rows (case 170)
 };
 
 // ─── Reporting ──────────────────────────────────────────────────────────
@@ -270,11 +270,11 @@ async function main() {
       let countsOk = distinct;
       for (const id of ids) {
         const n = db.prepare('SELECT COUNT(*) AS n FROM ncrp_transactions WHERE report_id = ?').get(id).n;
-        if (n !== 10) countsOk = false;
+        if (n !== 151) countsOk = false; // FILES.small = case 145, 151 ingested rows
       }
       if (distinct && countsOk) {
         record('PASS', 'Concurrent uploads isolated',
-          `5 distinct reports [${ids.join(', ')}], each with exactly 10 rows, no DB errors`);
+          `5 distinct reports [${ids.join(', ')}], each with exactly 151 rows, no DB errors`);
       } else {
         record('FAIL', 'Concurrent uploads', `ids=${JSON.stringify(ids)} distinct=${distinct} countsOk=${countsOk}`);
       }
@@ -282,15 +282,17 @@ async function main() {
 
     // ── 9) Data isolation between reports ───────────────────────────────
     {
-      const a = await uploadFile(BASE, FILES.small, 'isolation-A.xlsx');   // 10 rows
-      const b = await uploadFile(BASE, FILES.medium, 'isolation-B.xlsx');  // 151 rows
+      const a = await uploadFile(BASE, FILES.small, 'isolation-A.xlsx');   // 151 rows
+      const b = await uploadFile(BASE, FILES.medium, 'isolation-B.xlsx');  // 155 rows
       const idA = a.body && a.body.reportId;
       const idB = b.body && b.body.reportId;
       const txA = await getJson(`${BASE}/api/ncrp/${idA}/transactions?page=1&limit=500`);
       const txB = await getJson(`${BASE}/api/ncrp/${idB}/transactions?page=1&limit=500`);
       const aOnlyA = Array.isArray(txA.body.data) && txA.body.data.every((r) => r.report_id === idA);
       const bOnlyB = Array.isArray(txB.body.data) && txB.body.data.every((r) => r.report_id === idB);
-      const totalsOk = txA.body.total === 10 && txB.body.total === 151;
+      // case 145 ingests 151 rows; BankAction ingests 154 (its 1 Old Transaction
+      // row, >6mo, is excluded by the parser per the old-transaction policy).
+      const totalsOk = txA.body.total === 151 && txB.body.total === 154;
       if (aOnlyA && bOnlyB && totalsOk) {
         record('PASS', 'Cross-report data isolation holds',
           `report ${idA} → ${txA.body.total} rows (all its own), report ${idB} → ${txB.body.total} rows (all its own); zero bleed`);

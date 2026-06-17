@@ -98,9 +98,13 @@ const {
 } = require(path.join(BACKEND_DIR, 'src', 'db', 'queries'));
 
 // ─── Files under test → target tiers ──────────────────────────────────
+// Real NCRP case files, mapped to tiers by row count (smallest → Small).
+// Note: the two ~150-row cases are the same size class — there is no genuine
+// "tiny" sample any more, so Small/Medium ceilings are equal and Large is the
+// only distinct performance tier.
 const FILES = [
-  { tier: 'Small',  rows: 10,   targetMs: 1000,  file: path.join(BACKEND_DIR, 'sample_ncrp.xlsx') },
-  { tier: 'Medium', rows: 151,  targetMs: 3000,  file: path.join(ROOT_DIR, '32712250107145 (1).xlsx') },
+  { tier: 'Small',  rows: 151,  targetMs: 3000,  file: path.join(ROOT_DIR, '32712250107145 (1).xlsx') },
+  { tier: 'Medium', rows: 155,  targetMs: 3000,  file: path.join(ROOT_DIR, 'BankAction_CompleteTrail.xlsx') },
   { tier: 'Large',  rows: 2411, targetMs: 15000, file: path.join(ROOT_DIR, '32712250107170 (1).xlsx') },
 ];
 

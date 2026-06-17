@@ -10,7 +10,7 @@
  * pre-release sign-off.
  *
  * Usage:
- *   node scripts/e2e_validate.js                   # uses sample_ncrp.xlsx
+ *   node scripts/e2e_validate.js                   # uses real case 145 (32712250107145)
  *   node scripts/e2e_validate.js path/to/file.xlsx # uses the supplied file
  *
  * Exit code: 0 if every step passes, 1 otherwise.
@@ -168,7 +168,8 @@ function downloadFile(host, port, pathName, outPath) {
 async function main() {
   const wholeStart = Date.now();
   const inputFile =
-    process.argv[2] || path.resolve(__dirname, '..', 'sample_ncrp.xlsx');
+    process.argv[2] ||
+    path.resolve(__dirname, '..', '..', '32712250107145 (1).xlsx');
 
   if (!fs.existsSync(inputFile)) {
     console.error(c(RED, `Input file not found: ${inputFile}`));
