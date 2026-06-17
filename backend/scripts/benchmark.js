@@ -105,7 +105,7 @@ const {
 const FILES = [
   { tier: 'Small',  rows: 151,  targetMs: 3000,  file: path.join(ROOT_DIR, '32712250107145 (1).xlsx') },
   { tier: 'Medium', rows: 155,  targetMs: 3000,  file: path.join(ROOT_DIR, 'BankAction_CompleteTrail.xlsx') },
-  { tier: 'Large',  rows: 2411, targetMs: 15000, file: path.join(ROOT_DIR, '32712250107170 (1).xlsx') },
+  { tier: 'Large',  rows: 2411, targetMs: 2000,  file: path.join(ROOT_DIR, '32712250107170 (1).xlsx') },
 ];
 
 const STAGES = [
