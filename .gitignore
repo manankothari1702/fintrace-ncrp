@@ -43,3 +43,19 @@ coverage/
 
 *.xlsx
 *.xls
+
+# Temp / backup files
+*.tmp
+*.bak
+*.old
+*~
+
+# Build dirs
+release/
+build/
+
+# Claude runtime locks
+.claude/*.lock
+
+# Local quarantine (pending review before permanent delete)
+_trash/
