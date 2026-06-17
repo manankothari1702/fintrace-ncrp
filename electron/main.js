@@ -33,6 +33,17 @@ const path = require('path');
 const fs = require('fs');
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
 
+// Stamp the real packaged app version into the environment BEFORE the embedded
+// backend is required, so provenance.appVersion() — and thus every case record,
+// audit-log entry, and PDF cover/footer/metadata — reports the installed version
+// instead of falling back. app.getVersion() reads the app's package.json version
+// (set by electron-builder in packaged builds; the repo root in dev).
+try {
+  if (!process.env.FINTRACE_VERSION && app && typeof app.getVersion === 'function') {
+    process.env.FINTRACE_VERSION = app.getVersion();
+  }
+} catch (_e) { /* non-fatal: appVersion() falls back to the package version */ }
+
 // electron-log: hard dependency in packaged builds, but fall back to a console
 // shim during incremental dev so `electron .` still launches before the package
 // is installed.

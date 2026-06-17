@@ -31,7 +31,9 @@ export default function Emails() {
   const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [openId, setOpenId] = useState(null);
+  // Each card owns its collapse state independently (a Set of expanded ids),
+  // so collapsing one letter never touches the others.
+  const [openIds, setOpenIds] = useState(() => new Set());
   const [copiedId, setCopiedId] = useState(null);
   const [savingId, setSavingId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -51,7 +53,9 @@ export default function Emails() {
       .then((rows) => {
         if (cancelled) return;
         setEmails(rows);
-        setOpenId(rows[0]?.id ?? null);
+        // Start with every letter expanded; the officer collapses the ones
+        // they've dealt with.
+        setOpenIds(new Set(rows.map((r) => r.id)));
       })
       .catch((e) => { if (!cancelled) setError(e); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -66,12 +70,19 @@ export default function Emails() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // Escape collapses the open letter (the expanded letter behaves like a modal).
+  // Escape collapses all open letters.
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape' && openId !== null) setOpenId(null); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpenIds(new Set()); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openId]);
+  }, []);
+
+  // Toggle one card's collapse state without disturbing the others.
+  const toggleOpen = (id) => setOpenIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const copyBody = (email) => {
     navigator.clipboard.writeText(email.body)
@@ -169,47 +180,55 @@ export default function Emails() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {emails.map((email) => {
-            const isOpen = openId === email.id;
+            const isOpen = openIds.has(email.id);
+            const bodyId = `letter-body-${email.id}`;
             return (
               <div className="card letter-card" key={email.id}>
                 <button
                   type="button"
-                  onClick={() => setOpenId(isOpen ? null : email.id)}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: 'transparent', border: 'none', textAlign: 'left' }}
+                  onClick={() => toggleOpen(email.id)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: 'transparent', border: 'none', textAlign: 'left', cursor: 'pointer' }}
                   aria-expanded={isOpen}
+                  aria-controls={bodyId}
+                  title={isOpen ? 'Collapse this letter' : 'Expand this letter'}
                 >
                   <span style={{ fontSize: 18 }}>✉️</span>
                   <strong>{email.bank_name}</strong>
                   <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{email.account_list.length} account(s)</span>
                   <span className="spacer" style={{ flex: 1 }} />
                   <Badge color={email.status === 'sent' ? 'var(--accent)' : 'var(--text-muted)'}>{email.status}</Badge>
-                  <span style={{ color: 'var(--brand)' }}>{isOpen ? '▾' : '▸'}</span>
+                  {/* Single chevron rotated by CSS: pointing down when expanded,
+                      left when collapsed. The whole header row is the hit target. */}
+                  <span
+                    className="letter-chevron"
+                    style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                    aria-hidden="true"
+                  >▾</span>
                 </button>
 
-                {/* Body stays mounted (hidden when collapsed) so the print
+                {/* Body stays mounted (collapsed via CSS) so the print
                     stylesheet can reveal every letter at once for the case file. */}
-                <div
-                  className={`letter-body${isOpen ? '' : ' is-collapsed'}`}
-                  style={{ padding: '0 18px 18px', borderTop: '1px solid var(--border)' }}
-                >
-                  <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', margin: '14px 0', fontSize: 13 }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Subject</span><span style={{ fontWeight: 600 }}>{email.subject}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>To</span><span>{bankEmailPlaceholder(email.bank_name)} <em style={{ color: 'var(--text-muted)' }}>(placeholder)</em></span>
-                  </div>
+                <div id={bodyId} className={`letter-body${isOpen ? '' : ' is-collapsed'}`}>
+                  <div className="letter-body-inner">
+                    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', margin: '14px 0', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Subject</span><span style={{ fontWeight: 600 }}>{email.subject}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>To</span><span>{bankEmailPlaceholder(email.bank_name)} <em style={{ color: 'var(--text-muted)' }}>(placeholder)</em></span>
+                    </div>
 
-                  <pre style={{
-                    fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
-                    background: '#fafbfd', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                    padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
-                  }}>{email.body}</pre>
+                    <pre style={{
+                      fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
+                      background: '#fafbfd', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                      padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
+                    }}>{email.body}</pre>
 
-                  <div className="letter-actions" style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                    <button type="button" className="btn btn-sm btn-primary" onClick={() => copyBody(email)}>
-                      {copiedId === email.id ? '✓ Copied!' : '📋 Copy to Clipboard'}
-                    </button>
-                    <button type="button" className="btn btn-sm" disabled={email.status === 'sent' || savingId === email.id} onClick={() => markSent(email)}>
-                      {email.status === 'sent' ? 'Marked as Sent' : savingId === email.id ? 'Saving…' : 'Mark as Sent'}
-                    </button>
+                    <div className="letter-actions" style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                      <button type="button" className="btn btn-sm btn-primary" onClick={() => copyBody(email)}>
+                        {copiedId === email.id ? '✓ Copied!' : '📋 Copy to Clipboard'}
+                      </button>
+                      <button type="button" className="btn btn-sm" disabled={email.status === 'sent' || savingId === email.id} onClick={() => markSent(email)}>
+                        {email.status === 'sent' ? 'Marked as Sent' : savingId === email.id ? 'Saving…' : 'Mark as Sent'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

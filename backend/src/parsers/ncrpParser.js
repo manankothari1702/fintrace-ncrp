@@ -18,11 +18,19 @@
  *   "AEPS"                   — Aadhaar-enabled cash withdrawals.
  *   "Transaction put on hold"— funds frozen by the holding bank.
  *   "Other" / "Others Less Then 500" — misc / low-value debits.
- * Each sheet has its OWN header row (on row 0) and its OWN column set — the
- * amount/date columns are named per channel ("Withdrawal Amount",
- * "Put on hold Date", etc.). This parser detects the header + column mapping
- * PER SHEET, materialises each sheet's rows, and concatenates them into one
- * canonical array. Sheets without recognisable NCRP columns are skipped.
+ * Each sheet has its OWN header row (usually row 0; banner rows above the
+ * table are tolerated — the first 11 rows are scanned) and its OWN column set —
+ * the amount/date columns are named per channel ("Withdrawal Amount",
+ * "Put on hold Date", etc.). This parser forward-fills merged cells, detects
+ * the header + column mapping PER SHEET (exact synonym match first, then a
+ * punctuation-insensitive loose match), matches sheet names fuzzily against
+ * the known channel names, materialises each sheet's rows, and concatenates
+ * them into one canonical array. Sheets without recognisable NCRP columns are
+ * skipped and logged; a sheet WITH data whose required columns cannot be
+ * confidently mapped — or whose disbursement channel cannot be determined at
+ * all (unknown name AND no payment-mode / ATM-ID / beneficiary column) —
+ * FAILS LOUD via structured `errors` (and contributes no rows) rather than
+ * producing silently wrong figures.
  *
  * Because the non-transfer sheets carry no dedicated payment-mode column, the
  * sheet's channel is folded into `payment_mode` ('ATM' / 'POS' / 'AEPS' /
@@ -42,15 +50,17 @@ const fs = require('fs');
 const XLSX = require('xlsx');
 
 const HEADER_SYNONYMS = require('../config/header_synonyms.json');
+const { resolveBank } = require('../lib/ifscBankResolver');
 
 // ─── Constants ───────────────────────────────────────────────────────
 
 /**
- * Number of leading rows scanned for the header row. Real exports put the
- * header on row 0, but some portal versions prepend a title/metadata row, so
- * we scan a few rows and pick the best match (see {@link findHeaderRow}).
+ * Number of leading rows scanned for the header row (rows 0–10 inclusive).
+ * Real exports put the header on row 0, but some portal versions prepend
+ * title/banner/metadata rows above the table, so we scan a window and pick
+ * the best match (see {@link findHeaderRow}).
  */
-const HEADER_SCAN_DEPTH = 5;
+const HEADER_SCAN_DEPTH = 11;
 
 /**
  * Minimum canonical-column matches a row must contain to be accepted as the
@@ -85,6 +95,10 @@ const CANONICAL_FIELDS = Object.freeze([
   'transaction_date', 'transaction_amount', 'disputed_amount', 'utr_no',
   'payment_mode', 'layer_no',
   'atm_id', 'atm_location', 'city', 'state', 'remarks',
+  // Bank-attribution audit fields (FinTrace v0.2.0). `beneficiary_bank` now
+  // carries the IFSC-authoritative name; these preserve the original text and
+  // record how the name was resolved (see lib/ifscBankResolver).
+  'raw_beneficiary_bank', 'bank_source', 'bank_flag',
 ]);
 
 /**
@@ -103,6 +117,37 @@ const SYNONYM_TO_CANONICAL = (() => {
       map.set(normalizeHeader(syn), canonical);
     }
   }
+  return map;
+})();
+
+/**
+ * Loose inverse synonym map: alphanumeric-only header string → canonical
+ * field. Consulted only when the exact-normalised lookup misses, so it can
+ * never change the mapping of a header the exact map already knows. Catches
+ * punctuation/spacing drift the synonym list can't enumerate ("Layer-No.",
+ * "A/C No", "Txn.Amount"). Keys that would map to TWO different canonical
+ * fields are dropped entirely — when a loose match is ambiguous we refuse to
+ * guess (the column simply stays unmapped and is surfaced as such).
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const SYNONYM_TO_CANONICAL_LOOSE = (() => {
+  const map = new Map();
+  const ambiguous = new Set();
+  const add = (key, canonical) => {
+    if (key === '') return;
+    const existing = map.get(key);
+    if (existing !== undefined && existing !== canonical) {
+      ambiguous.add(key);
+      return;
+    }
+    map.set(key, canonical);
+  };
+  for (const [canonical, synonyms] of Object.entries(HEADER_SYNONYMS)) {
+    add(normalizeHeaderLoose(canonical), canonical);
+    for (const syn of synonyms) add(normalizeHeaderLoose(syn), canonical);
+  }
+  for (const key of ambiguous) map.delete(key);
   return map;
 })();
 
@@ -137,6 +182,18 @@ function normalizeHeader(value) {
 }
 
 /**
+ * Loose header normalisation: everything {@link normalizeHeader} does, then
+ * strip every character that is not a Latin letter, digit, or Devanagari
+ * letter. "Layer No." / "Layer-No" / "layerno" all collapse to "layerno".
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function normalizeHeaderLoose(value) {
+  return normalizeHeader(value).replace(/[^a-z0-9ऀ-ॿ]+/g, '');
+}
+
+/**
  * Treat the value as "no data". Covers SheetJS's null/undefined sentinels,
  * empty strings, whitespace-only strings, NaN, and the common placeholder
  * tokens NCRP operators paste in for missing values.
@@ -164,6 +221,23 @@ function isBlank(value) {
 function trimOrNull(value) {
   if (isBlank(value)) return null;
   return stripBOM(String(value)).trim();
+}
+
+/**
+ * Canonicalise an IFSC cell. A syntactically valid IFSC (4 letters, '0', 6
+ * alphanumerics) is uppercased to its canonical form so the dossier never
+ * prints a lowercase code (some NCRP exports carry "jiop0000001"). Malformed /
+ * non-IFSC values are returned verbatim so the INVALID_IFSC flag still shows
+ * the operator exactly what the source file held.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function canonicalizeIfsc(value) {
+  const s = trimOrNull(value);
+  if (s === null) return null;
+  const up = s.toUpperCase();
+  return /^[A-Z]{4}0[A-Z0-9]{6}$/.test(up) ? up : s;
 }
 
 /**
@@ -466,7 +540,28 @@ const SHEET_CATEGORY = Object.freeze({
   AEPS: 'AEPS',
   HOLD: 'HOLD',
   OTHER: 'OTHER',
+  // Banks flag transactions older than the 6-month NCRP reporting window in a
+  // separate "Old Transaction" tab. These rows are informational / reference
+  // only: they carry no recoverable money (typically ₹0.00) and are excluded
+  // from every financial figure. The parser routes them to a dedicated
+  // `oldTransactions` array, never into the canonical `rows` the analyzer reads.
+  OLD_TRANSACTION: 'OLD_TRANSACTION',
 });
+
+/**
+ * Extra columns that appear ONLY on the "Old Transaction" sheet (not part of the
+ * canonical NCRP schema). Keyed by their loose-normalised header
+ * ({@link normalizeHeaderLoose}) so spacing / punctuation drift still matches.
+ * `pifsc_code` is used for IFSC-authoritative bank resolution when present.
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const OLD_TXN_EXTRA_ALIASES = new Map([
+  ['ptrans', 'parent_txn'],       // parent transaction reference
+  ['paccountno', 'parent_account'], // parent account reference
+  ['pifsccode', 'pifsc_code'],    // IFSC for the old-transaction account
+  ['pisnodal', 'pis_nodal'],      // nodal-account flag
+]);
 
 /**
  * Classify a sheet by its name into a disbursement channel.
@@ -476,12 +571,79 @@ const SHEET_CATEGORY = Object.freeze({
  */
 function classifySheetCategory(sheetName) {
   const n = String(sheetName || '').toLowerCase();
+  // Tested before the cashout/transfer keywords: an "Old Transaction" tab must
+  // never be mistaken for a money channel — it contributes no financial figure.
+  if (/old\s*transaction/.test(n)) return SHEET_CATEGORY.OLD_TRANSACTION;
   if (/withdrawal\s*through\s*atm|\batm\b/.test(n)) return SHEET_CATEGORY.ATM;
   if (/withdrawal\s*through\s*pos|\bpos\b/.test(n)) return SHEET_CATEGORY.POS;
   if (/aeps/.test(n)) return SHEET_CATEGORY.AEPS;
   if (/put\s*on\s*hold|on\s*hold|\bhold\b/.test(n)) return SHEET_CATEGORY.HOLD;
   if (/money\s*transfer|\btransfer\b/.test(n)) return SHEET_CATEGORY.TRANSFER;
   return SHEET_CATEGORY.OTHER;
+}
+
+/**
+ * Normalise a sheet name for fuzzy matching: lowercase, every punctuation /
+ * underscore / extra-whitespace run collapsed to a single space.
+ * " MONEY_transfer  TO " → "money transfer to".
+ *
+ * @param {unknown} name
+ * @returns {string}
+ */
+function normalizeSheetName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * The known NCRP CompleteTrail sheet names (normalised) → channel category.
+ * Includes the portal's real spellings ("Others Less Then 500" — sic) and
+ * the common shorthand variants.
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const KNOWN_SHEET_NAMES = new Map([
+  ['money transfer to', SHEET_CATEGORY.TRANSFER],
+  ['money transfer', SHEET_CATEGORY.TRANSFER],
+  ['withdrawal through atm', SHEET_CATEGORY.ATM],
+  ['atm', SHEET_CATEGORY.ATM],
+  ['withdrawal through pos', SHEET_CATEGORY.POS],
+  ['pos', SHEET_CATEGORY.POS],
+  ['aeps', SHEET_CATEGORY.AEPS],
+  ['transaction put on hold', SHEET_CATEGORY.HOLD],
+  ['put on hold', SHEET_CATEGORY.HOLD],
+  ['hold', SHEET_CATEGORY.HOLD],
+  ['other', SHEET_CATEGORY.OTHER],
+  ['others', SHEET_CATEGORY.OTHER],
+  ['others less then 500', SHEET_CATEGORY.OTHER],
+  ['others less than 500', SHEET_CATEGORY.OTHER],
+  // Transactions older than the 6-month NCRP window (singular + plural variants).
+  ['old transaction', SHEET_CATEGORY.OLD_TRANSACTION],
+  ['old transactions', SHEET_CATEGORY.OLD_TRANSACTION],
+]);
+
+/**
+ * Classify a sheet with fuzzy name matching.
+ *
+ * Resolution order:
+ *   1. Exact match of the normalised name against {@link KNOWN_SHEET_NAMES}
+ *      (case/whitespace/punctuation-insensitive) → known.
+ *   2. Keyword fallback via {@link classifySheetCategory}; a non-OTHER hit
+ *      still counts as known (the channel keyword is unambiguous).
+ *   3. Anything else → category OTHER, known=false. Such sheets are still
+ *      parsed when they carry recognisable NCRP columns (a renamed sheet
+ *      must not silently lose its rows) but are flagged in `warnings`.
+ *
+ * @param {string} sheetName
+ * @returns {{ category: string, known: boolean }}
+ */
+function classifySheet(sheetName) {
+  const normalized = normalizeSheetName(sheetName);
+  const exact = KNOWN_SHEET_NAMES.get(normalized);
+  if (exact !== undefined) return { category: exact, known: true };
+  // Keyword fallback on the NORMALISED name so punctuation/underscores
+  // ("Withdrawal_Through_ATM (1)") can't defeat the word-boundary regexes.
+  const category = classifySheetCategory(normalized);
+  return { category, known: category !== SHEET_CATEGORY.OTHER };
 }
 
 /**
@@ -553,6 +715,69 @@ function parseAtmFromRemarks(remarks) {
   return out;
 }
 
+// ─── Merged-cell handling ────────────────────────────────────────────
+
+/**
+ * Forward-fill merged regions in a worksheet, in place.
+ *
+ * Excel stores a merged range's value only in its top-left (anchor) cell; the
+ * covered cells read back as blank, which would silently blank out headers and
+ * data (e.g. an Ack No merged down a block of rows). For every range in
+ * `ws['!merges']`, copy the anchor's value into each covered cell that is
+ * empty, so `sheet_to_json` sees the value everywhere the spreadsheet displays
+ * it. Non-empty covered cells are never overwritten.
+ *
+ * @param {XLSX.WorkSheet} ws
+ * @returns {number} Count of cells filled.
+ */
+function forwardFillMerges(ws) {
+  const merges = ws && ws['!merges'];
+  if (!Array.isArray(merges) || merges.length === 0) return 0;
+  let filled = 0;
+  for (const m of merges) {
+    if (!m || !m.s || !m.e) continue;
+    const anchor = ws[XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c })];
+    if (!anchor || anchor.v === undefined || anchor.v === null || anchor.v === '') continue;
+    for (let r = m.s.r; r <= m.e.r; r++) {
+      for (let c = m.s.c; c <= m.e.c; c++) {
+        if (r === m.s.r && c === m.s.c) continue;
+        const addr = XLSX.utils.encode_cell({ r, c });
+        const cell = ws[addr];
+        if (cell === undefined || cell.v === undefined || cell.v === null || cell.v === '') {
+          ws[addr] = { t: anchor.t, v: anchor.v, w: anchor.w };
+          filled++;
+        }
+      }
+    }
+  }
+  return filled;
+}
+
+/**
+ * True when a data row is just a copy of the header row — the artefact a
+ * vertically-merged (two-row) header leaves behind after forward-fill, and
+ * the shape of headers some exporters repeat mid-table. Compares only the
+ * mapped columns; requires at least two matching cells so a sparse row can't
+ * false-positive.
+ *
+ * @param {ReadonlyArray<unknown>} row
+ * @param {ReadonlyArray<unknown>} headers
+ * @param {Record<string, number>} mapping
+ * @returns {boolean}
+ */
+function isRepeatedHeaderRow(row, headers, mapping) {
+  if (!Array.isArray(row)) return false;
+  let compared = 0;
+  for (const idx of Object.values(mapping)) {
+    const h = normalizeHeader(headers[idx]);
+    if (h === '') continue;
+    const c = normalizeHeader(idx < row.length ? row[idx] : null);
+    if (c !== h) return false;
+    compared++;
+  }
+  return compared >= 2;
+}
+
 // ─── Header detection ────────────────────────────────────────────────
 
 /**
@@ -581,7 +806,11 @@ function detectColumnMapping(headers) {
     const cell = headers[i];
     const normalized = normalizeHeader(cell);
     if (normalized === '') continue;
-    const canonical = SYNONYM_TO_CANONICAL.get(normalized);
+    // Exact-normalised match first (authoritative); loose alphanumeric-only
+    // match as fallback so punctuation/spacing drift still resolves. The loose
+    // map drops ambiguous keys at build time, so it never guesses.
+    const canonical = SYNONYM_TO_CANONICAL.get(normalized)
+      || SYNONYM_TO_CANONICAL_LOOSE.get(normalizeHeaderLoose(cell));
     if (canonical) {
       if (mapping[canonical] === undefined) {
         mapping[canonical] = i;
@@ -622,20 +851,161 @@ function findHeaderRow(rows) {
   return best;
 }
 
+// ─── Required-column policy (FAIL LOUD) ───────────────────────────────
+
+/**
+ * Columns that MUST be confidently mapped before a sheet's rows may
+ * contribute to any computed figure, per channel. A wrong number in front of
+ * an SP is unacceptable; refusing with a clear reason is correct — so when a
+ * required column is missing on a sheet that has data rows, the parser emits
+ * a structured {@link ParseError} and contributes NO rows from that sheet.
+ *
+ * The pseudo-column 'account' is satisfied by EITHER victim_account (the
+ * channel sheets' single "Account No./ (Wallet /PG/PA) Id" column) or
+ * beneficiary_account (the transfer sheet's "Account No").
+ *
+ * Channel-aware on purpose — real NCRP exports genuinely omit columns per
+ * channel: "Others Less Then 500" carries NO amount column at all, and
+ * "Transaction put on hold" has no Disputed Amount. Requiring those would
+ * reject every authentic file.
+ *
+ * @type {Readonly<Record<string, ReadonlyArray<string>>>}
+ */
+const REQUIRED_COLUMNS_BY_CATEGORY = Object.freeze({
+  [SHEET_CATEGORY.TRANSFER]: Object.freeze(['account', 'transaction_amount', 'disputed_amount']),
+  [SHEET_CATEGORY.ATM]:      Object.freeze(['account', 'transaction_amount']),
+  [SHEET_CATEGORY.POS]:      Object.freeze(['account', 'transaction_amount']),
+  [SHEET_CATEGORY.AEPS]:     Object.freeze(['account', 'transaction_amount']),
+  [SHEET_CATEGORY.HOLD]:     Object.freeze(['account', 'transaction_amount']),
+  [SHEET_CATEGORY.OTHER]:    Object.freeze(['account']),
+  // Old transactions are informational; only an account identifier is required.
+  // Amount is intentionally NOT required — these rows are typically ₹0.00 and
+  // never feed a financial figure.
+  [SHEET_CATEGORY.OLD_TRANSACTION]: Object.freeze(['account']),
+});
+
+/** Officer-facing labels + example headers for each required column. */
+const REQUIRED_COLUMN_INFO = Object.freeze({
+  account: {
+    label: 'Account No./ (Wallet /PG/PA) Id',
+    canonicalFields: ['victim_account', 'beneficiary_account'],
+  },
+  transaction_amount: {
+    label: 'Transaction Amount',
+    canonicalFields: ['transaction_amount'],
+  },
+  disputed_amount: {
+    label: 'Disputed Amount',
+    canonicalFields: ['disputed_amount'],
+  },
+});
+
+/**
+ * @typedef {Object} ParseError
+ * @property {'REQUIRED_COLUMN_MISSING'|'UNKNOWN_CHANNEL_WITH_TRANSACTIONS'} code
+ * @property {string} sheet            Sheet name as it appears in the workbook.
+ * @property {string} category         SHEET_CATEGORY the sheet was classified as.
+ * @property {string} [expectedColumn] Officer-facing name of the missing column
+ *                                     (REQUIRED_COLUMN_MISSING only).
+ * @property {string[]} [canonicalFields] Canonical field(s) that would satisfy it.
+ * @property {string[]} [acceptedHeaders] Sample header spellings that would match.
+ * @property {string[]} foundHeaders   Non-blank headers actually present.
+ * @property {number} dataRows         Data rows the sheet holds (excluded from output).
+ * @property {string} message          Human-readable explanation.
+ */
+
+/**
+ * Build the structured error for a required column that could not be mapped.
+ *
+ * @param {string} sheetName
+ * @param {string} category
+ * @param {string} requiredKey - Key of REQUIRED_COLUMN_INFO.
+ * @param {ReadonlyArray<unknown>} headers
+ * @param {number} dataRows
+ * @returns {ParseError}
+ */
+function buildRequiredColumnError(sheetName, category, requiredKey, headers, dataRows) {
+  const info = REQUIRED_COLUMN_INFO[requiredKey];
+  const accepted = [];
+  for (const field of info.canonicalFields) {
+    for (const syn of (HEADER_SYNONYMS[field] || []).slice(0, 4)) accepted.push(syn);
+  }
+  const found = (Array.isArray(headers) ? headers : [])
+    .filter((h) => !isBlank(h))
+    .map((h) => String(h).trim());
+  return {
+    code: 'REQUIRED_COLUMN_MISSING',
+    sheet: sheetName,
+    category,
+    expectedColumn: info.label,
+    canonicalFields: [...info.canonicalFields],
+    acceptedHeaders: accepted,
+    foundHeaders: found,
+    dataRows,
+    message:
+      `Sheet '${sheetName}' has ${dataRows} data row(s) but no column matching ` +
+      `'${info.label}' could be identified. Found columns: ` +
+      `${found.length ? found.join(', ') : '(none)'}. ` +
+      'Figures from this sheet cannot be computed safely — correct the header ' +
+      'or re-export the file from NCRP, then upload again.',
+  };
+}
+
+/**
+ * Build the structured error for an unknown-named sheet that carries
+ * transaction-shaped rows but no way to determine its disbursement channel.
+ *
+ * WHY THIS BLOCKS (consequence-scoped policy): the channel decides whether a
+ * row is a cash EXIT. Cash exits reduce an account's lien-eligible balance
+ * (lien = received − forwarded − on_hold − cashed_out, floored and capped).
+ * Rows we can't classify would be EXCLUDED from cashed_out, which UNDERSTATES
+ * cash-out and INFLATES the lien — the dangerous direction, since the lien
+ * figure goes into Section 102 CrPC bank letters and SP reports. Refusing
+ * with a clear reason is correct; a quiet warning is not.
+ *
+ * @param {string} sheetName
+ * @param {ReadonlyArray<unknown>} headers
+ * @param {number} txnRows - Count of rows carrying both an account and an amount.
+ * @returns {ParseError}
+ */
+function buildUnknownChannelError(sheetName, headers, txnRows) {
+  const found = (Array.isArray(headers) ? headers : [])
+    .filter((h) => !isBlank(h))
+    .map((h) => String(h).trim());
+  return {
+    code: 'UNKNOWN_CHANNEL_WITH_TRANSACTIONS',
+    sheet: sheetName,
+    category: SHEET_CATEGORY.OTHER,
+    foundHeaders: found,
+    dataRows: txnRows,
+    message:
+      `Sheet '${sheetName}' is not a recognised NCRP sheet name, but it appears ` +
+      `to contain ${txnRows} transaction row(s) (account and amount values present; ` +
+      `columns found: ${found.length ? found.join(', ') : '(none)'}). ` +
+      'The disbursement channel could not be determined — the sheet carries no ' +
+      'payment-mode, ATM-ID, or beneficiary-account column to classify its rows. ' +
+      'Processing is refused: counting these rows without a channel would ' +
+      'understate cashed-out funds and overstate the lien-eligible balance. ' +
+      "Rename the sheet to its NCRP channel (e.g. 'AEPS', 'Withdrawal through ATM', " +
+      "'Money Transfer to') or re-export the file from NCRP, then upload again.",
+  };
+}
+
 // ─── Per-sheet materialisation ─────────────────────────────────────────
 
 /**
  * Build canonical rows from a single worksheet's array-of-arrays.
  *
  * @param {ReadonlyArray<ReadonlyArray<unknown>>} aoa
- * @param {{ row: number }} headerInfo
+ * @param {{ row: number, headers: ReadonlyArray<unknown> }} headerInfo
  * @param {Record<string, number>} mapping
  * @param {string} category - One of SHEET_CATEGORY.
- * @returns {{ rows: Array<Object>, skipped: number }}
+ * @returns {{ rows: Array<Object>, skipped: number, repeatedHeaders: number }}
  */
 function materializeSheetRows(aoa, headerInfo, mapping, category) {
   const rows = [];
   let skipped = 0;
+  let repeatedHeaders = 0;
 
   const getter = (row) => (canonical) => {
     const idx = mapping[canonical];
@@ -648,6 +1018,13 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
   for (let i = headerInfo.row + 1; i < aoa.length; i++) {
     const row = aoa[i];
     if (!Array.isArray(row) || row.every(isBlank)) continue;
+
+    // A copy of the header row (left behind by a vertically-merged two-row
+    // header after forward-fill, or a mid-table repeated header) is not data.
+    if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) {
+      repeatedHeaders++;
+      continue;
+    }
 
     const get = getter(row);
 
@@ -695,15 +1072,43 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
     // Explicit payment-mode column wins; otherwise fold in the channel default.
     const payment_mode = trimOrNull(get('payment_mode')) || defaultPaymentMode(category, remarks);
 
+    // ── Authoritative bank attribution (FinTrace v0.2.0) ──────────────────
+    // The raw "Bank/FIs" text is unreliable; the IFSC's first four chars are
+    // authoritative. Resolve the BENEFICIARY/destination side (the freeze
+    // target) so every downstream consumer — lien letters, mule list, bank
+    // rollups, exports — inherits the corrected name. The original text is
+    // preserved in `raw_beneficiary_bank` for audit, and a data-quality flag
+    // records any IFSC↔text disagreement. Only resolve when there is something
+    // to resolve; rows from the cash-exit / hold / AEPS channels carry no
+    // beneficiary bank or IFSC and are left untouched (null) rather than being
+    // stamped "Unknown".
+    const rawBeneficiaryBank = trimOrNull(get('beneficiary_bank'));
+    const ifscCode = canonicalizeIfsc(get('ifsc_code'));
+    let beneficiary_bank = rawBeneficiaryBank;
+    let raw_beneficiary_bank = null;
+    let bank_source = null;
+    let bank_flag = null;
+    if (ifscCode || rawBeneficiaryBank) {
+      const resolved = resolveBank({
+        rawBank: rawBeneficiaryBank,
+        ifsc: ifscCode,
+        account: beneficiary_account,
+      });
+      beneficiary_bank = resolved.bank;
+      raw_beneficiary_bank = rawBeneficiaryBank; // original text, preserved for audit
+      bank_source = resolved.source;             // 'IFSC' | 'TEXT'
+      bank_flag = resolved.flag;                 // null | 'IFSC_TEXT_MISMATCH' | ...
+    }
+
     rows.push({
       ack_no,
       complaint_date:      parseDate(get('complaint_date')),
       victim_account,
       victim_bank:         trimOrNull(get('victim_bank')),
       beneficiary_account,
-      beneficiary_bank:    trimOrNull(get('beneficiary_bank')),
+      beneficiary_bank,
       beneficiary_name:    trimOrNull(get('beneficiary_name')),
-      ifsc_code:           trimOrNull(get('ifsc_code')),
+      ifsc_code:           ifscCode,
       transaction_date:    parseDate(get('transaction_date')),
       transaction_amount:  parseAmount(get('transaction_amount')),
       disputed_amount:     parseAmount(get('disputed_amount')),
@@ -715,12 +1120,98 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
       city:                trimOrNull(get('city')),
       state:               trimOrNull(get('state')),
       remarks,
+      raw_beneficiary_bank,
+      bank_source,
+      bank_flag,
       same_day_cashout:    0,
       cashout_mode:        null,
     });
   }
 
-  return { rows, skipped };
+  return { rows, skipped, repeatedHeaders };
+}
+
+/**
+ * Map the "Old Transaction" sheet's extra columns (ptrans / paccountno /
+ * pifsc_code / pisnodal) to their canonical index, by loose-normalised header.
+ *
+ * @param {ReadonlyArray<unknown>} headers
+ * @returns {Record<string, number>} field → column index.
+ */
+function detectOldTxnExtraColumns(headers) {
+  const out = {};
+  if (!Array.isArray(headers)) return out;
+  for (let i = 0; i < headers.length; i++) {
+    const key = normalizeHeaderLoose(headers[i]);
+    const field = OLD_TXN_EXTRA_ALIASES.get(key);
+    if (field && out[field] === undefined) out[field] = i;
+  }
+  return out;
+}
+
+/**
+ * Build OLD-TRANSACTION records from a single worksheet's array-of-arrays.
+ *
+ * These are NOT canonical transactions: they predate the 6-month NCRP window
+ * and are excluded from every financial figure. We keep them in a separate,
+ * lighter shape (no analyzer-derived fields) so the dossier can list them in the
+ * data-quality annexure and the UI can warn that they were skipped. The bank is
+ * still IFSC-resolved (using the sheet's `pifsc_code` when present) so the note
+ * names the right institution.
+ *
+ * @param {ReadonlyArray<ReadonlyArray<unknown>>} aoa
+ * @param {{ row: number, headers: ReadonlyArray<unknown> }} headerInfo
+ * @param {Record<string, number>} mapping
+ * @returns {Array<Object>}
+ */
+function materializeOldTransactionRows(aoa, headerInfo, mapping) {
+  const extra = detectOldTxnExtraColumns(headerInfo.headers);
+  const out = [];
+
+  const cell = (row, idx) => (idx === undefined || idx >= row.length ? null : row[idx]);
+
+  for (let i = headerInfo.row + 1; i < aoa.length; i++) {
+    const row = aoa[i];
+    if (!Array.isArray(row) || row.every(isBlank)) continue;
+    if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) continue;
+
+    const account =
+      trimOrNull(cell(row, mapping.beneficiary_account)) ||
+      trimOrNull(cell(row, mapping.victim_account));
+    const ackNo = trimOrNull(cell(row, mapping.ack_no));
+
+    // No account and no acknowledgement number → summary / blank row, not a
+    // real old-transaction entry.
+    if (account === null && ackNo === null) continue;
+
+    const rawBank = trimOrNull(cell(row, mapping.beneficiary_bank));
+    // Prefer the old-transaction sheet's own pifsc_code; fall back to a standard
+    // IFSC column if one happens to be mapped. Canonicalised to uppercase.
+    const ifsc = canonicalizeIfsc(cell(row, extra.pifsc_code)) || canonicalizeIfsc(cell(row, mapping.ifsc_code));
+    const resolved = (ifsc || rawBank)
+      ? resolveBank({ rawBank, ifsc, account })
+      : { bank: rawBank, ifsc: null, source: null, flag: null, rawBank };
+
+    out.push({
+      ack_no: ackNo,
+      account_no: account,
+      bank: resolved.bank || rawBank,
+      raw_bank: rawBank,
+      ifsc_code: ifsc,
+      bank_source: resolved.source,
+      bank_flag: resolved.flag,
+      layer_no: parseLayer(cell(row, mapping.layer_no)),
+      transaction_date: parseDate(cell(row, mapping.transaction_date)),
+      transaction_amount: parseAmount(cell(row, mapping.transaction_amount)),
+      utr_no: trimOrNull(cell(row, mapping.utr_no)),
+      remarks: trimOrNull(cell(row, mapping.remarks)),
+      parent_txn: trimOrNull(cell(row, extra.parent_txn)),
+      parent_account: trimOrNull(cell(row, extra.parent_account)),
+      pis_nodal: trimOrNull(cell(row, extra.pis_nodal)),
+      note: 'Predates the 6-month NCRP window — excluded from all financial calculations.',
+    });
+  }
+  return out;
 }
 
 // ─── Main entry point ────────────────────────────────────────────────
@@ -743,15 +1234,23 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
  * `warnings` set when the file is structurally valid but no header row can be
  * located on any sheet.
  *
+ * FAIL-LOUD CONTRACT: `errors` carries one structured {@link ParseError} per
+ * required column that could not be mapped on a sheet that has data rows
+ * (see REQUIRED_COLUMNS_BY_CATEGORY). Such sheets contribute ZERO rows, and
+ * callers MUST treat a non-empty `errors` as blocking — no figure derived
+ * from this file may be shown until the file is fixed.
+ *
  * @param {string} filePath - Absolute or relative path to .xlsx / .xls file.
  * @returns {{
  *   rows: Array<Object>,
  *   columnMapping: Record<string, number>,
+ *   oldTransactions: Array<Object>,
  *   warnings: string[],
+ *   errors: ParseError[],
  *   sheets: Array<{
  *     name: string, accepted: boolean, reason?: string, category?: string,
- *     headerRow?: number, rows?: number, skipped?: number,
- *     unmappedColumns?: string[]
+ *     headerRow?: number, rows?: number, skipped?: number, dataRows?: number,
+ *     missingColumns?: string[], unmappedColumns?: string[]
  *   }>
  * }}
  *
@@ -783,8 +1282,12 @@ function parseNcrpFile(filePath) {
   }
 
   const warnings = [];
+  /** @type {ParseError[]} */
+  const errors = [];
   const sheets = [];
   const allRows = [];
+  /** @type {Array<Object>} Old-transaction records (excluded from all figures). */
+  const oldTransactions = [];
   /** @type {Record<string, number>|null} */
   let firstMapping = null;
   const acceptedSheets = [];
@@ -793,6 +1296,11 @@ function parseNcrpFile(filePath) {
 
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
+
+    // Merged regions store their value only in the anchor cell — forward-fill
+    // so merged header/data cells don't read back as blanks.
+    const mergedFilled = forwardFillMerges(sheet);
+
     const aoa = XLSX.utils.sheet_to_json(sheet, {
       header: 1,
       raw: true,
@@ -814,15 +1322,17 @@ function parseNcrpFile(filePath) {
     }
 
     const { mapping, unmapped } = detectColumnMapping(headerInfo.headers);
+    const { category, known } = classifySheet(sheetName);
 
-    // Safety check: a genuine NCRP data sheet always carries an acknowledgement
-    // number and at least one account column. Reject sheets that merely matched
-    // a few unrelated synonyms.
-    if (
-      mapping.ack_no === undefined &&
-      mapping.victim_account === undefined &&
-      mapping.beneficiary_account === undefined
-    ) {
+    const hasKeyColumns =
+      mapping.ack_no !== undefined ||
+      mapping.victim_account !== undefined ||
+      mapping.beneficiary_account !== undefined;
+
+    // A sheet whose name matches nothing known AND that carries none of the
+    // key NCRP columns merely matched a few stray synonyms — not an NCRP data
+    // sheet. Skip it (logged below), exactly as before.
+    if (!hasKeyColumns && !known) {
       sheets.push({
         name: sheetName, accepted: false, reason: 'no-key-columns',
         unmappedColumns: unmapped,
@@ -831,10 +1341,165 @@ function parseNcrpFile(filePath) {
       continue;
     }
 
-    const category = classifySheetCategory(sheetName);
-    const { rows: sheetRows, skipped } = materializeSheetRows(
+    // Count usable data rows below the header (blank rows and repeated-header
+    // artefacts excluded) BEFORE deciding whether missing columns are fatal —
+    // a header-only sheet with nothing to mis-compute is not an error.
+    let dataRows = 0;
+    for (let i = headerInfo.row + 1; i < aoa.length; i++) {
+      const row = aoa[i];
+      if (!Array.isArray(row) || row.every(isBlank)) continue;
+      if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) continue;
+      dataRows++;
+    }
+
+    // FAIL LOUD: a sheet with data whose required columns can't be confidently
+    // mapped contributes structured errors and ZERO rows. Guessing here is how
+    // a wrong figure ends up in front of an SP.
+    if (dataRows > 0) {
+      const required = REQUIRED_COLUMNS_BY_CATEGORY[category] || ['account'];
+      const missing = required.filter((req) => (
+        req === 'account'
+          ? mapping.victim_account === undefined && mapping.beneficiary_account === undefined
+          : mapping[req] === undefined
+      ));
+      if (missing.length > 0) {
+        for (const req of missing) {
+          errors.push(buildRequiredColumnError(
+            sheetName, category, req, headerInfo.headers, dataRows
+          ));
+        }
+        sheets.push({
+          name: sheetName,
+          accepted: false,
+          reason: 'missing-required-columns',
+          category,
+          headerRow: headerInfo.row,
+          dataRows,
+          missingColumns: missing.map((req) => REQUIRED_COLUMN_INFO[req].label),
+          unmappedColumns: unmapped,
+        });
+        continue;
+      }
+    }
+
+    // OLD-TRANSACTION sheet: informational rows that predate the 6-month NCRP
+    // window. They carry no recoverable money and must never enter the canonical
+    // `rows` the analyzer reads (that would inflate total_transactions and skew
+    // every figure). Materialise them into the separate `oldTransactions` array,
+    // record the sheet as accepted (so the upload is NOT blocked), and move on.
+    if (category === SHEET_CATEGORY.OLD_TRANSACTION) {
+      const oldRows = materializeOldTransactionRows(aoa, headerInfo, mapping);
+      for (const r of oldRows) oldTransactions.push(r);
+      sheets.push({
+        name: sheetName,
+        accepted: true,
+        category,
+        headerRow: headerInfo.row,
+        oldTransactionRows: oldRows.length,
+        unmappedColumns: unmapped,
+      });
+      if (oldRows.length > 0) {
+        warnings.push(
+          `Sheet '${sheetName}': ${oldRows.length} old transaction(s) (>6 months) parsed ` +
+          'and excluded from all financial calculations.'
+        );
+      }
+      continue;
+    }
+
+    // CONSEQUENCE-SCOPED unknown-sheet policy. An unknown-named sheet whose
+    // rows can still be classified individually — an explicit payment-mode
+    // column, an ATM-ID column (renamed ATM/POS sheets), or a beneficiary
+    // column (renamed transfer sheets, classified HOP by account identity) —
+    // parses normally with a warning. But an unknown-named sheet carrying
+    // transaction-shaped rows (account + amount) with NONE of those signals
+    // is unclassifiable: its rows would silently drop out of cashed_out,
+    // understating cash-out and INFLATING the lien. That must fail loud.
+    // Sheets without transaction-shaped rows (cover pages, notes) keep the
+    // old skip-and-warn behaviour — refusing a whole file over a notes tab
+    // is not acceptable.
+    if (!known && dataRows > 0) {
+      const channelEvidence =
+        mapping.payment_mode !== undefined ||
+        mapping.atm_id !== undefined ||
+        mapping.beneficiary_account !== undefined;
+      if (!channelEvidence && mapping.transaction_amount !== undefined) {
+        // Count transaction-shaped rows: a recognised account value AND a
+        // recognised amount value on the same row. (beneficiary_account is
+        // unmapped in this branch, so the account column is victim_account —
+        // guaranteed mapped by the required-columns gate above.)
+        const acctIdx = mapping.victim_account;
+        const amtIdx = mapping.transaction_amount;
+        let txnShaped = 0;       // account + amount both present (any value)
+        let nonZeroShaped = 0;   // …and the amount is materially non-zero
+        for (let i = headerInfo.row + 1; i < aoa.length; i++) {
+          const row = aoa[i];
+          if (!Array.isArray(row) || row.every(isBlank)) continue;
+          if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) continue;
+          const acct = acctIdx !== undefined && acctIdx < row.length ? row[acctIdx] : null;
+          const amt = amtIdx < row.length ? row[amtIdx] : null;
+          if (!isBlank(acct) && !isBlank(amt)) {
+            txnShaped++;
+            if (Math.abs(parseAmount(amt)) > 0.01) nonZeroShaped++;
+          }
+        }
+        // Consequence-scoped relaxation: the hard block exists because
+        // unclassifiable rows would understate cashed-out funds and inflate the
+        // lien. That risk only exists for rows carrying real money. An
+        // unrecognised sheet whose transaction rows are ALL ₹0.00 (informational
+        // tabs, zero-value placeholders) cannot move any figure — warn and skip
+        // it rather than refusing the whole upload.
+        if (txnShaped > 0 && nonZeroShaped === 0) {
+          warnings.push(
+            `Sheet '${sheetName}' is not a recognised NCRP sheet name; its ${txnShaped} ` +
+            'transaction row(s) are all ₹0.00 (no financial impact) and were skipped.'
+          );
+          sheets.push({
+            name: sheetName,
+            accepted: false,
+            reason: 'unrecognised-zero-amount',
+            headerRow: headerInfo.row,
+            dataRows: txnShaped,
+            unmappedColumns: unmapped,
+          });
+          skippedSheets.push(sheetName);
+          continue;
+        }
+        if (nonZeroShaped > 0) {
+          errors.push(buildUnknownChannelError(sheetName, headerInfo.headers, nonZeroShaped));
+          sheets.push({
+            name: sheetName,
+            accepted: false,
+            reason: 'unknown-channel',
+            headerRow: headerInfo.row,
+            dataRows: nonZeroShaped,
+            unmappedColumns: unmapped,
+          });
+          continue;
+        }
+      }
+    }
+
+    const { rows: sheetRows, skipped, repeatedHeaders } = materializeSheetRows(
       aoa, headerInfo, mapping, category
     );
+
+    if (!known && sheetRows.length > 0) {
+      warnings.push(
+        `Sheet '${sheetName}' does not match any known NCRP sheet name — ` +
+        'parsed as a generic channel based on its columns.'
+      );
+    }
+    if (mergedFilled > 0) {
+      warnings.push(
+        `Sheet '${sheetName}': filled ${mergedFilled} blank cell(s) from merged regions.`
+      );
+    }
+    if (repeatedHeaders > 0) {
+      warnings.push(
+        `Sheet '${sheetName}': skipped ${repeatedHeaders} repeated header row(s).`
+      );
+    }
 
     // No Layer column on an accepted sheet that produced rows: every row was
     // defaulted to Layer 1 (see parseLayer), which flattens the layer analysis.
@@ -862,14 +1527,19 @@ function parseNcrpFile(filePath) {
     });
   }
 
-  // No sheet yielded a usable header → the file isn't a CompleteTrail export.
+  // No channel sheet was accepted. When structured errors exist they are the
+  // real story (required columns missing); otherwise the file simply isn't a
+  // CompleteTrail export. A file that ONLY carries old transactions still falls
+  // here (no canonical rows) but is not an error — surface them.
   if (acceptedSheets.length === 0) {
     return {
       rows: [],
       columnMapping: {},
-      warnings: [
+      oldTransactions,
+      warnings: errors.length > 0 || oldTransactions.length > 0 ? warnings : [
         `Could not detect a header row within the first ${HEADER_SCAN_DEPTH} rows of any sheet`,
       ],
+      errors,
       sheets,
     };
   }
@@ -912,7 +1582,7 @@ function parseNcrpFile(filePath) {
     );
   }
 
-  return { rows: allRows, columnMapping: firstMapping || {}, warnings, sheets };
+  return { rows: allRows, columnMapping: firstMapping || {}, oldTransactions, warnings, errors, sheets };
 }
 
 // ─── Validation ──────────────────────────────────────────────────────
@@ -980,14 +1650,25 @@ module.exports = {
     parseLayer,
     parseClock,
     normalizeHeader,
+    normalizeHeaderLoose,
+    normalizeSheetName,
     stripLabel,
+    canonicalizeIfsc,
     findHeaderRow,
+    forwardFillMerges,
+    isRepeatedHeaderRow,
     classifySheetCategory,
+    classifySheet,
+    detectOldTxnExtraColumns,
+    materializeOldTransactionRows,
     derivePaymentRail,
     defaultPaymentMode,
     parseAtmFromRemarks,
     SHEET_CATEGORY,
     CANONICAL_FIELDS,
     HEADER_SYNONYMS,
+    KNOWN_SHEET_NAMES,
+    REQUIRED_COLUMNS_BY_CATEGORY,
+    HEADER_SCAN_DEPTH,
   }),
 };

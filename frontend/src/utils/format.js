@@ -125,7 +125,7 @@ export function formatHours(hours) {
 }
 
 /**
- * Resolve a mule risk score (0–100) to a CSS colour from the design tokens.
+ * Resolve a mule risk score (additive; uncapped, can exceed 100) to a CSS colour from the design tokens.
  * HIGH ≥ 70 → red, MEDIUM ≥ 40 → orange, else green. Matches the backend's
  * RISK_HIGH / RISK_MEDIUM thresholds in analyzer.js.
  *

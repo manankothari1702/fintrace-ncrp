@@ -50,7 +50,9 @@ const {
   insertDraftEmail,
   upsertRepeatAccount,
   insertAuditLog,
+  findReportsByAckNo,
 } = require('../db/queries');
+const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
 const { generateReportExcel } = require('../utils/excelGenerator');
 const { generateDraftEmails } = require('../utils/emailGenerator');
@@ -285,6 +287,20 @@ function looksLikeNcrpFile(filePath) {
   return false;
 }
 
+/**
+ * Mask an account identifier for officer-facing display: keep the last 4
+ * characters, replace the rest with bullets. Short ids (≤4) are returned as-is.
+ *
+ * @param {unknown} acct
+ * @returns {string|null}
+ */
+function maskAccount(acct) {
+  const s = acct === null || acct === undefined ? '' : String(acct).trim();
+  if (s === '') return null;
+  if (s.length <= 4) return s;
+  return `${'•'.repeat(Math.min(s.length - 4, 8))}${s.slice(-4)}`;
+}
+
 /** Parse a stored account_list JSON column back to an array. @param {unknown} v */
 function parseAccountList(v) {
   if (Array.isArray(v)) return v;
@@ -475,6 +491,19 @@ function createNcrpRouter(db) {
       const existingRepeats = stmt.allRepeats.all();
       const result = await analyzeReport(reportId, txnRows, existingRepeats, { db });
 
+      // Carry the parsed old transactions (stored on the report at upload) into
+      // the analysis snapshot so the dossier's data-quality annexure can list
+      // them. They never touched any analyzer module — purely informational.
+      const reportRow = getReportById(db, reportId);
+      if (reportRow && reportRow.old_transactions) {
+        try {
+          const parsedOld = JSON.parse(reportRow.old_transactions);
+          if (Array.isArray(parsedOld) && parsedOld.length > 0) {
+            result.old_transactions = parsedOld;
+          }
+        } catch (_e) { /* malformed JSON → omit, never block analysis */ }
+      }
+
       // Case context for the per-bank letters.
       let ackNo = null;
       let complaintDate = null;
@@ -604,16 +633,101 @@ function createNcrpRouter(db) {
         return sendError(res, 400, 'PARSE_FAILED', 'Could not parse the Excel file.');
       }
 
+      // FAIL LOUD: a sheet with data whose required columns could not be
+      // confidently mapped produces structured parse errors. Refuse the whole
+      // upload — ingesting the remaining sheets would silently drop a channel
+      // and put wrong figures in front of the officer. The structured details
+      // are publicDetails so the renderer can show sheet / expected / found.
+      const parseErrors = parsed.errors || [];
+      if (parseErrors.length > 0) {
+        try { fs.unlinkSync(req.file.path); } catch (_e) { /* best effort */ }
+        const summary = parseErrors
+          .map((e) => (e.code === 'UNKNOWN_CHANNEL_WITH_TRANSACTIONS'
+            ? `[${e.sheet}] unrecognised sheet with ${e.dataRows} transaction row(s) — channel could not be determined`
+            : `[${e.sheet}] missing '${e.expectedColumn}'`))
+          .join('; ');
+        return sendError(res, 422, 'PARSE_BLOCKED',
+          `Upload blocked — the file could not be read safely: ${summary}. ` +
+          'No figures were computed. Correct the file or re-export it from NCRP, then retry.',
+          { publicDetails: true, parseErrors });
+      }
+
       const rows = parsed.rows || [];
       const warnings = parsed.warnings || [];
+      const oldTransactions = Array.isArray(parsed.oldTransactions) ? parsed.oldTransactions : [];
+
+      // Old transactions (>6 months) are informational and excluded from every
+      // figure. Surface a non-blocking banner naming the affected (masked)
+      // accounts so the officer knows they were set aside, not lost.
+      if (oldTransactions.length > 0) {
+        const maskedAccounts = [...new Set(
+          oldTransactions
+            .map((t) => maskAccount(t.account_no))
+            .filter(Boolean)
+        )];
+        warnings.push({
+          code: 'OLD_TRANSACTIONS_FOUND',
+          message: `${oldTransactions.length} old transaction(s) (>6 months) found in the ` +
+            `'Old Transaction' sheet. These are excluded from all financial calculations. ` +
+            `Account(s): ${maskedAccounts.join(', ') || '(unspecified)'}.`,
+          count: oldTransactions.length,
+          accounts: maskedAccounts,
+        });
+      }
+
+      // ── Evidentiary provenance ────────────────────────────────────────
+      // Hash the raw uploaded bytes BEFORE parsing/ingest so the digest is over
+      // the exact file the officer submitted. Failure to hash must not block an
+      // upload — provenance degrades to "not recorded" rather than losing the
+      // case. Node crypto only; no new handler.
+      const uploadedAt = new Date().toISOString();
+      const version = appVersion();
+      let sourceSha256 = null;
+      try {
+        sourceSha256 = sha256File(req.file.path);
+      } catch (_hashErr) {
+        warnings.push({
+          code: 'PROVENANCE_HASH_FAILED',
+          message: 'Could not compute the source-file hash; provenance will be incomplete.',
+        });
+      }
+
+      // Changed-source detection: if this case (same NCRP acknowledgement
+      // number) was previously ingested from a file with a DIFFERENT hash, warn
+      // the officer that the source has changed.
+      const ackNo = (() => {
+        const r = rows.find((row) => row && row.ack_no != null && String(row.ack_no).trim() !== '');
+        return r ? String(r.ack_no).trim() : null;
+      })();
+      if (sourceSha256 && ackNo) {
+        try {
+          const prior = findReportsByAckNo(db, ackNo)
+            .filter((p) => p.source_sha256 && p.source_sha256 !== sourceSha256);
+          if (prior.length > 0) {
+            const p = prior[0];
+            warnings.push({
+              code: 'SOURCE_FILE_CHANGED',
+              message: `Source changed: case ${ackNo} was previously analysed from a file with a ` +
+                `different SHA-256 (report #${p.id}, "${p.original_filename}", ` +
+                `uploaded ${p.upload_date}). The figures may differ from the earlier dossier.`,
+              ackNo,
+              previousReportId: p.id,
+              previousSha256: p.source_sha256,
+              currentSha256: sourceSha256,
+            });
+          }
+        } catch (_e) { /* detection is best-effort; never blocks ingest */ }
+      }
 
       let reportId;
       try {
         reportId = insertReport(db, {
           filename: req.file.filename,        // UUID-based storage name
           original_filename: safeOriginalName, // sanitised display name
-          upload_date: new Date().toISOString(),
+          upload_date: uploadedAt,
           analysis_status: 'pending',
+          source_sha256: sourceSha256,
+          old_transactions: oldTransactions.length > 0 ? JSON.stringify(oldTransactions) : null,
         });
 
         // Batch the inserts: INSERT_BATCH_SIZE rows per SQLite transaction.
@@ -621,10 +735,22 @@ function createNcrpRouter(db) {
         for (let i = 0; i < withReportId.length; i += INSERT_BATCH_SIZE) {
           insertManyTransactions(db, withReportId.slice(i, i + INSERT_BATCH_SIZE));
         }
+        // Audit row carries the full provenance tuple: case id (report_id), the
+        // original filename, the source SHA-256, the upload timestamp, and the
+        // FinTrace version — a tamper-evident record of what was ingested.
         insertAuditLog(db, {
           report_id: reportId,
           action: 'upload.ingested',
-          details: { filename: safeOriginalName, rowCount: rows.length },
+          details: {
+            filename: safeOriginalName,
+            rowCount: rows.length,
+            source_sha256: sourceSha256,
+            uploaded_at: uploadedAt,
+            app_version: version,
+            ack_no: ackNo,
+            source_changed: warnings.some((w) => w && w.code === 'SOURCE_FILE_CHANGED'),
+            old_transaction_count: oldTransactions.length,
+          },
         });
       } catch (_dbErr) {
         return sendError(res, 500, 'DB_ERROR', 'Failed to store report.');
@@ -635,6 +761,7 @@ function createNcrpRouter(db) {
         reportId,
         filename: safeOriginalName,
         rowCount: rows.length,
+        sourceSha256,
         warnings,
       });
 
@@ -765,6 +892,16 @@ function createNcrpRouter(db) {
     if (!report) return;
     const analysis = parseAnalysis(report);
     res.json(analysis && analysis.mule_detection ? analysis.mule_detection : []);
+  });
+
+  // GET /api/ncrp/:id/data-quality — accounts whose bank attribution needs IO
+  // review (IFSC↔text mismatch, missing/invalid IFSC, unknown prefix). Served
+  // from the analysis snapshot.
+  router.get('/ncrp/:id/data-quality', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    res.json(analysis && Array.isArray(analysis.data_quality) ? analysis.data_quality : []);
   });
 
   // GET /api/ncrp/:id/lien — lien worksheet rows.
@@ -927,6 +1064,11 @@ function createNcrpRouter(db) {
       const emails = stmt.emails.all(report.id)
         .map((e) => ({ ...e, account_list: parseAccountList(e.account_list) }));
       const layers = stmt.layers.all(report.id);
+      // Raw ledger: drives the writer-side ATM/POS exit split and the POS
+      // merchant table (same bundle field the Excel export already passes).
+      const transactions = db.prepare(
+        'SELECT * FROM ncrp_transactions WHERE report_id = ? ORDER BY transaction_date ASC, id ASC'
+      ).all(report.id);
       const ci = stmt.caseInfo.get(report.id) || {};
 
       const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
@@ -934,7 +1076,7 @@ function createNcrpRouter(db) {
       const outPath = path.join(EXPORTS_DIR, fileName);
 
       await generateReportPdf({
-        report, analysis, liens, emails, layers,
+        report, analysis, liens, emails, layers, transactions,
         ack_no: ci.ack_no ?? null,
         complaint_date: ci.complaint_date ?? null,
       }, outPath);

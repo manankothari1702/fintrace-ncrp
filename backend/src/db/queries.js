@@ -24,12 +24,27 @@ const SQL_INSERT_REPORT = `
   INSERT INTO ncrp_reports (
     filename, original_filename, upload_date,
     total_transactions, total_disputed_amount, total_layers,
-    fraud_start_date, analysis_status, analysis_json
+    fraud_start_date, analysis_status, analysis_json, source_sha256,
+    old_transactions
   ) VALUES (
     @filename, @original_filename, @upload_date,
     @total_transactions, @total_disputed_amount, @total_layers,
-    @fraud_start_date, @analysis_status, @analysis_json
+    @fraud_start_date, @analysis_status, @analysis_json, @source_sha256,
+    @old_transactions
   )
+`;
+
+// Prior reports of the SAME case (matched by NCRP acknowledgement number) whose
+// stored source hash differs from a candidate hash — drives the changed-source
+// warning on re-ingest. Joined through transactions because the ack_no lives on
+// the transaction rows, not the report.
+const SQL_FIND_REPORTS_BY_ACK = `
+  SELECT DISTINCT r.id, r.original_filename, r.upload_date, r.source_sha256
+    FROM ncrp_reports r
+    JOIN ncrp_transactions t ON t.report_id = r.id
+   WHERE t.ack_no = ?
+     AND r.source_sha256 IS NOT NULL
+   ORDER BY r.id DESC
 `;
 
 const SQL_GET_REPORT_BY_ID = `SELECT * FROM ncrp_reports WHERE id = ?`;
@@ -53,6 +68,7 @@ const SQL_INSERT_TRANSACTION = `
     transaction_date, transaction_amount, disputed_amount, utr_no,
     payment_mode, layer_no,
     atm_id, atm_location, city, state, remarks,
+    raw_beneficiary_bank, bank_source, bank_flag,
     same_day_cashout, cashout_mode
   ) VALUES (
     @report_id, @ack_no, @complaint_date,
@@ -61,6 +77,7 @@ const SQL_INSERT_TRANSACTION = `
     @transaction_date, @transaction_amount, @disputed_amount, @utr_no,
     @payment_mode, @layer_no,
     @atm_id, @atm_location, @city, @state, @remarks,
+    @raw_beneficiary_bank, @bank_source, @bank_flag,
     @same_day_cashout, @cashout_mode
   )
 `;
@@ -245,6 +262,9 @@ function normalizeTransaction(data) {
     city:                nz(data.city),
     state:               nz(data.state),
     remarks:             nz(data.remarks),
+    raw_beneficiary_bank: nz(data.raw_beneficiary_bank),
+    bank_source:         nz(data.bank_source),
+    bank_flag:           nz(data.bank_flag),
     same_day_cashout:    data.same_day_cashout ? 1 : 0,
     cashout_mode:        nz(data.cashout_mode),
   };
@@ -266,6 +286,8 @@ function normalizeTransaction(data) {
  *   fraud_start_date?: string|null,
  *   analysis_status?: 'pending'|'processing'|'complete'|'error',
  *   analysis_json?: string|null,
+ *   source_sha256?: string|null,
+ *   old_transactions?: string|null,
  * }} data
  * @returns {number} The auto-generated `id` of the new ncrp_reports row.
  */
@@ -285,9 +307,25 @@ function insertReport(db, data) {
     fraud_start_date:      nz(data.fraud_start_date),
     analysis_status:       data.analysis_status ?? 'pending',
     analysis_json:         nz(data.analysis_json),
+    source_sha256:         nz(data.source_sha256),
+    old_transactions:      nz(data.old_transactions),
   };
   const info = getOrPrepare(db, SQL_INSERT_REPORT).run(params);
   return Number(info.lastInsertRowid);
+}
+
+/**
+ * All prior reports for a case (by NCRP acknowledgement number) that carry a
+ * stored source hash. Used to detect a changed source file on re-ingest.
+ *
+ * @param {Database.Database} db
+ * @param {string} ackNo - NCRP acknowledgement number.
+ * @returns {Array<{ id: number, original_filename: string, upload_date: string,
+ *   source_sha256: string }>} Newest report first.
+ */
+function findReportsByAckNo(db, ackNo) {
+  if (ackNo === null || ackNo === undefined || String(ackNo).trim() === '') return [];
+  return getOrPrepare(db, SQL_FIND_REPORTS_BY_ACK).all(String(ackNo));
 }
 
 /**
@@ -677,6 +715,7 @@ module.exports = {
 
   // Additional helpers used by ingest + seed pipelines
   insertReport,
+  findReportsByAckNo,
   updateReportAnalysis,
   insertManyTransactions,
   insertLayerAnalysis,

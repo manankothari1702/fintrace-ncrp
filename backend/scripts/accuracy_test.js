@@ -61,20 +61,56 @@ const GOLD = {
   victim_accounts: 11,
   first_hop_accounts: 17,
   first_hop_banks: 12,
-  total_lien: 434394.61,
+  // FIX 4 (canonical-account merge): zero-padded account variants (e.g. SBI
+  // 00000044021519366 / 44021519366) now aggregate as one account. The …9366
+  // account is thereby revealed as a pass-through (received ₹10k at L2,
+  // forwarded ₹10k to L3) with no freeze-able balance, so the lien worksheet
+  // sheds that false ₹10,000: 434,394.61 → 424,394.61.
+  total_lien: 424394.61,
   on_hold: 139649,
-  cashed_out: 589429.96,
-  same_day_cashouts: 27,
+  // cashed_out: confirmed fraud proceeds withdrawn, under the v0.2.0
+  // CAP_AT_RECEIVED policy (lib/cashoutPolicy.js) — each account's cash
+  // withdrawals are capped at the disputed amount it received, since fraud
+  // proceeds cashed out cannot exceed the disputed inflow. The legacy uncapped
+  // sum was 589429.96; the cap removes ₹45,147 of own/clean money (chiefly
+  // account 50100851063711, which withdrew ₹80k but received ₹50k disputed).
+  // (CypherSOL's externally-reported ₹5.73L is not reproducible from this file
+  // under any per-account cap — per project policy we report the defensible
+  // computed value rather than reverse-engineering their opaque aggregate.)
+  cashed_out: 544282.95,
+  // recoverable_residual: victim loss not yet cashed out, frozen, or refunded.
+  // DERIVED as max(0, loss − cashed_out − on_hold − refunded) from the single
+  // capped cash-out figure, so it reconciles to 100% of the loss:
+  //   1,065,298 − 544,282.95 − 139,649.18 − 0 = 381,365.87.
+  // (Was 336,218.86 when the residual subtracted the uncapped ₹5.89L sum.)
+  recoverable_residual: 381365.87,
+  // 28, not 27: fix/disputed-reconciliation-409 corrected the exact-duplicate
+  // key to include sender + disputed amount, so a genuine same-day ATM cash-out
+  // (acct 50100851063711, UTR 270324046951, ₹20,000, 2025-12-10) that the old
+  // loose key wrongly collapsed is now retained and counted.
+  same_day_cashouts: 28,
   top_lien_account: '00000005906495023',
   top_lien_amount: 94300,
   top_mule_score: 99,
   layer1_disputed: 1065298,
   layer1_accounts: 17,
   layer2_accounts: 9,
-  email_count: 13,
+  // email_count: one Section-102 letter per distinct freeze target. v0.2.0
+  // resolves the bank from the IFSC (lib/ifscBankResolver) instead of the
+  // unreliable "Bank/FIs" text, which corrects 10 of 12 disputed accounts. The
+  // old text-based grouping wrongly merged accounts under shared labels — e.g.
+  // four accounts all labelled "Paytm" actually sit at IDBI, Canara, Kotak and
+  // Paytm; two "Bank of India" accounts are really Bandhan and Bank of Baroda.
+  // Splitting them into their true banks (so each letter freezes the right
+  // account) raises the count from 13 to 15. This is the bug fix, not drift.
+  // FIX 4 then nets it to 14: the SBI …9366 account, once its zero-padded
+  // duplicate is merged in, is a pass-through with no balance to freeze, so it
+  // is correctly no longer a Section-102 freeze target (15 → 14).
+  email_count: 14,
   fastest_cashout_hours_max: 1.0,
-  recoverable_accounts: 20,
-  total_recoverable: 434394.61,
+  // 20 → 19: the merged …9366 pass-through drops out of the lien worksheet.
+  recoverable_accounts: 19,
+  total_recoverable: 424394.61,
 };
 
 // ─── Pretty-printing ────────────────────────────────────────────────────
@@ -236,7 +272,9 @@ async function goldValidation() {
   });
 
   const topLien = liens[0] || {};
-  // The named top-mule account from the gold standard (also mule_detection[0]).
+  // The named top-mule account from the gold standard. Looked up BY NAME, not by
+  // index: with the deterministic tiebreak (score desc, then inflow desc) a
+  // higher-inflow account at the same score can sit at mule_detection[0] instead.
   const topMule = result.mule_detection.find((m) => m.account_no === '60556696585')
     || result.mule_detection[0] || {};
 
@@ -251,6 +289,10 @@ async function goldValidation() {
   checkAmount('total_lien', totalLien, GOLD.total_lien);
   checkAmount('on_hold', result.recovery_status.on_hold, GOLD.on_hold);
   checkAmount('cashed_out', result.cashout_analysis.total_cashout_amount, GOLD.cashed_out);
+  // Single-source consistency: the capped cash-out is identical on summary.cashed_out.
+  checkAmount('summary.cashed_out', s.cashed_out, GOLD.cashed_out, 'single source of truth');
+  // Recoverable residual derives from that same figure and reconciles to the loss.
+  checkAmount('recoverable_residual', s.recoverable_residual, GOLD.recoverable_residual);
   checkExact('same_day_cashouts', result.cashout_analysis.same_day_cashouts, GOLD.same_day_cashouts);
   checkExact('top_lien_account', topLien.account_no, GOLD.top_lien_account);
   checkAmount('top_lien_amount', topLien.lien_eligible_amount, GOLD.top_lien_amount);

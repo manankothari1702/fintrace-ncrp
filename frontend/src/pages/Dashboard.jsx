@@ -136,6 +136,123 @@ function RecoveryBar({ recovery }) {
   );
 }
 
+// ─── Data Quality status card (v0.2.0) ────────────────────────────────────────
+
+// Actionable flag → short officer-facing chip label.
+const DQ_ACTIONABLE_LABELS = [
+  ['INVALID_IFSC', 'Invalid IFSC'],
+  ['UNKNOWN_IFSC_PREFIX', 'Unknown IFSC prefix'],
+  ['NO_IFSC', 'Bank row missing IFSC'],
+];
+
+const DQ_STATUS_COLORS = {
+  green: 'var(--accent)',
+  amber: 'var(--accent-orange)',
+  red: 'var(--danger)',
+};
+
+/**
+ * Always-visible rigor signal with a freeze-target-scoped severity model:
+ *   green — zero actionable flags (auto-corrected mismatches and expected
+ *           wallet/cash no-IFSC rows are informational, shown separately).
+ *   amber — actionable flags exist, but none on a lien-table account.
+ *   red   — an actionable flag falls on a freeze-target account: a lien
+ *           letter is about to go to a bank that couldn't be confirmed.
+ * Flags are advisory metadata only — they never alter financial totals.
+ * Clicking drills into the affected accounts on the Data Quality page.
+ */
+function DataQualityCard({ analysis, reportId }) {
+  let dq = analysis?.data_quality_summary;
+  const legacy = !dq || dq.actionable_accounts === undefined;
+  if (legacy) {
+    // Reports analysed before the severity model: derive a coarse fallback
+    // from the row list. Severity can't be reconstructed, so any flag → amber.
+    const rows = analysis?.data_quality || [];
+    dq = {
+      flagged_accounts: rows.length,
+      actionable_accounts: rows.length,
+      actionable_counts: {},
+      informational: { auto_corrected: 0, expected_no_ifsc: 0 },
+      freeze_target_total: null,
+      freeze_target_flags: null,
+      status: rows.length === 0 ? 'green' : 'amber',
+    };
+  }
+
+  const color = DQ_STATUS_COLORS[dq.status] || DQ_STATUS_COLORS.amber;
+  const icon = dq.status === 'green' ? '✅' : dq.status === 'red' ? '⛔' : '🔎';
+
+  let headline;
+  let detail;
+  if (dq.status === 'green') {
+    headline = dq.freeze_target_total
+      ? `Data quality: clean — all ${formatNumber(dq.freeze_target_total)} freeze-target banks confirmed from IFSC`
+      : 'Data quality: clean — no actionable flags';
+    detail = 'Every lien letter targets a bank confirmed from its IFSC.';
+  } else if (dq.status === 'red') {
+    headline = `${formatNumber(dq.freeze_target_flags)} freeze-target bank(s) could not be confirmed from IFSC — verify before issuing lien letters.`;
+    detail = 'These accounts are in the lien table, but their bank rests on unverified source text. Figures are unaffected.';
+  } else {
+    headline = legacy
+      ? `${formatNumber(dq.flagged_accounts)} account(s) need bank verification — figures unaffected.`
+      : `${formatNumber(dq.actionable_accounts)} account(s) need bank verification (none are freeze targets) — figures unaffected.`;
+    detail = 'No lien-table account is affected; review when convenient.';
+  }
+
+  const info = dq.informational || {};
+  const infoParts = [];
+  if (info.auto_corrected > 0) {
+    infoParts.push(`${formatNumber(info.auto_corrected)} bank names auto-corrected from IFSC (source text disagreed)`);
+  }
+  if (info.expected_no_ifsc > 0) {
+    infoParts.push(`${formatNumber(info.expected_no_ifsc)} wallet/cash rows without IFSC (expected)`);
+  }
+
+  const chips = DQ_ACTIONABLE_LABELS.filter(([key]) => (dq.actionable_counts?.[key] || 0) > 0);
+
+  return (
+    <Link
+      to={`/data-quality${reportId ? `?reportId=${reportId}` : ''}`}
+      className="card card-pad"
+      aria-label="Open data quality details"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20,
+        borderLeft: `4px solid ${color}`,
+        textDecoration: 'none', color: 'inherit', cursor: 'pointer',
+      }}
+    >
+      <span style={{ fontSize: 24 }} aria-hidden="true">{icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <strong style={{ color }}>{headline}</strong>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{detail}</div>
+        {chips.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {chips.map(([key, label]) => (
+              <span
+                key={key}
+                style={{
+                  fontSize: 12, fontWeight: 700, padding: '2px 10px', borderRadius: 999,
+                  background: 'var(--brand-light)', color: 'var(--text)', border: '1px solid var(--border)',
+                }}
+              >
+                {label}: {formatNumber(dq.actionable_counts[key])}
+              </span>
+            ))}
+          </div>
+        )}
+        {infoParts.length > 0 && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+            ✓ {infoParts.join(' · ')}
+          </div>
+        )}
+      </div>
+      <span className="btn btn-sm btn-primary" style={{ flexShrink: 0 }}>
+        {dq.status === 'green' ? 'Details →' : 'Review →'}
+      </span>
+    </Link>
+  );
+}
+
 // ─── Milestone date card ───────────────────────────────────────────────────────
 
 function DateCard({ label, date, icon, color }) {
@@ -339,6 +456,13 @@ export default function Dashboard() {
           />
         </div>
       )}
+
+      {/* Data Quality status card (v0.2.0) — always visible near the top as a
+          rigor signal: green = every bank attribution verified from its IFSC,
+          amber = some accounts need IO review, red = pervasively poor source
+          data. Advisory only — flags never alter financial totals. Clicking
+          drills into the affected accounts. */}
+      <DataQualityCard analysis={analysis} reportId={reportId} />
 
       {/* Row 1 — headline metrics (Victim Loss is the actual loss; Trail Disputed re-counts the same money across hops). */}
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>

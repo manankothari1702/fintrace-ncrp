@@ -134,6 +134,16 @@ export const getMules = (id) => api.get(`/ncrp/${id}/mules`).then((r) => r.data)
 export const getLiens = (id) => api.get(`/ncrp/${id}/lien`).then((r) => r.data);
 
 /**
+ * Bank-attribution data-quality rows: accounts whose bank the IFSC could not
+ * silently confirm (IFSC↔text mismatch, missing/invalid IFSC, unknown prefix).
+ * @param {number} id
+ * @returns {Promise<Array<{ account_no: string, ifsc_code: string|null, bank: string,
+ *   raw_bank: string|null, bank_source: string|null, bank_flag: string, message: string }>>}
+ */
+export const getDataQuality = (id) =>
+  api.get(`/ncrp/${id}/data-quality`).then((r) => r.data);
+
+/**
  * Insert or update a lien record by account.
  * @param {number} id
  * @param {{ account_no: string, lien_status?: string, remarks?: string }} payload

@@ -19,8 +19,9 @@
  *   10. Daily Volume             — transfers vs cash-outs per day.
  *   11. Hourly Pattern           — transaction activity by hour of day.
  *   12. Bank Rankings            — per-bank received / sent / on-hold / lien.
- *   13. Geographic Hotspots      — cash-out by state + top merchants.
- *   14. Glossary                 — plain-language definitions of every term.
+ *   13. Data Quality             — accounts whose bank attribution needs review.
+ *   14. Geographic Hotspots      — cash-out by state + top merchants.
+ *   15. Glossary                 — plain-language definitions of every term.
  *
  * Returns a Buffer the route streams as an attachment. Amounts are written as
  * real numbers (not pre-formatted strings) so the recipient can sort/sum in
@@ -30,6 +31,10 @@
  */
 
 const XLSX = require('xlsx');
+const {
+  posExitRows, posMerchantAggregates, atmOnlyCashouts,
+  accountCountByTerminal, cashoutReconciliation,
+} = require('./exportViews');
 
 /** @param {unknown} v */
 function num(v) {
@@ -113,11 +118,16 @@ function generateReportExcel(bundle = {}) {
     ['Layers in trail', num(summary.total_layers)],
     ['Distinct beneficiary accounts', num(summary.total_accounts)],
     [],
+    // Recovery breakdown — these four sum to 100% of the victim loss. The
+    // "Recoverable (residual)" row is the victim loss minus the other three; it
+    // is NOT the per-account lien sum (that lives on the Lien Calculation sheet).
+    // Amounts read the single source of truth on the summary (capped cash-out);
+    // percentages come from recovery_status, which is derived from the same value.
     ['Recovery status', 'Amount [Rs.]', '% of victim loss'],
-    ['Cashed out (ATM/POS)', num(recovery.cashed_out), num(recovery.cashed_out_pct)],
-    ['On hold (frozen)', num(recovery.on_hold), num(recovery.on_hold_pct)],
-    ['Refunded', num(recovery.refunded), num(recovery.refunded_pct)],
-    ['Recoverable (lien-eligible)', num(recovery.recoverable), num(recovery.recoverable_pct)],
+    ['Cashed out (ATM/POS)', num(summary.cashed_out ?? recovery.cashed_out), num(recovery.cashed_out_pct)],
+    ['On hold (frozen)', num(summary.on_hold ?? recovery.on_hold), num(recovery.on_hold_pct)],
+    ['Refunded', num(summary.refunded ?? recovery.refunded), num(recovery.refunded_pct)],
+    ['Recoverable (residual)', num(summary.recoverable_residual ?? recovery.recoverable), num(recovery.recoverable_pct)],
     [],
     ['Key dates', ''],
     ['First fraud', tl.first_fraud_date || ''],
@@ -128,6 +138,26 @@ function generateReportExcel(bundle = {}) {
 
   // ── 2. Layer Breakdown ──────────────────────────────────────────────────
   const layers = analysis.layer_analysis || [];
+  // Feature 3 — disputed reconciliation footer: the per-layer Disputed column
+  // foots to the headline via an explicit, labelled chain (raw hop − duplicate
+  // hop legs + EXIT + OTHER + HOLD = headline). Mirrors the PDF Annexure A block.
+  const dRec = (analysis.reconciliation && analysis.reconciliation.disputed) || {};
+  const layerReconBlock = [];
+  if (dRec.total != null) {
+    layerReconBlock.push([]);
+    layerReconBlock.push(['DISPUTED RECONCILIATION TO HEADLINE TOTAL TRAIL DISPUTED']);
+    if (num(dRec.dedup_hop_adjustment) > 0.005) {
+      layerReconBlock.push(['Raw hop disputed (Money Transfer legs, incl. duplicates) [Rs.]', num(dRec.raw_hop)]);
+      layerReconBlock.push(['Less duplicate hop legs collapsed before analysis [Rs.]', -num(dRec.dedup_hop_adjustment)]);
+      layerReconBlock.push(['Net hop disputed (= sum of per-layer Disputed above) [Rs.]', num(dRec.hop)]);
+    } else {
+      layerReconBlock.push(['Hop disputed (= sum of per-layer Disputed above) [Rs.]', num(dRec.hop)]);
+    }
+    layerReconBlock.push(['Add cash-out legs (EXIT) [Rs.]', num(dRec.exit)]);
+    layerReconBlock.push(['Add other legs (OTHER) [Rs.]', num(dRec.other)]);
+    if (num(dRec.hold) > 0) layerReconBlock.push(['Add frozen / HOLD legs [Rs.]', num(dRec.hold)]);
+    layerReconBlock.push(['Total Trail Disputed (headline) [Rs.]', num(dRec.total)]);
+  }
   addSheet(wb, 'Layer Breakdown', [
     ['Layer', 'Transactions', 'Accounts', 'Banks', 'Total Amount [Rs.]', 'Disputed [Rs.]', 'Cashouts', 'Fan-out Ratio', 'Avg Fwd (hrs)', 'Top Banks'],
     ...layers.map((l) => [
@@ -137,18 +167,92 @@ function generateReportExcel(bundle = {}) {
       l.avg_forward_time_hours == null ? '' : num(l.avg_forward_time_hours),
       (l.top_banks || []).join('; '),
     ]),
+    ...layerReconBlock,
   ]);
 
   // ── 3. Lien Calculation ──────────────────────────────────────────────────
+  // The persisted lien_records rows carry only the lien amount + status — the
+  // derivation columns (layer, received, forwarded, on hold, cashed out) live
+  // on the analyzer's lien_calculation snapshot. Join the two by account so the
+  // worksheet shows HOW each lien figure was derived; the per-row Lien Eligible
+  // values and the total are read as-is, never recomputed.
   const lienRows = (liens && liens.length) ? liens : (analysis.lien_calculation || []);
+  const lienDetailByAcct = new Map(
+    (analysis.lien_calculation || []).map((l) => [String(l.account_no), l]));
+  const lienTableTotal = num(summary.lien_table_total)
+    || lienRows.reduce((s, l) => s + num(l.lien_eligible_amount ?? l.lien_amount), 0);
+  // Feature 4 — per-account audit columns + the exact formula and exclusion rule,
+  // so a reviewer can reconstruct the lien total line-by-line. The Lien Eligible
+  // values and the total are read as-is, never recomputed here.
+  const lienExcluded = Array.isArray(analysis.lien_excluded) ? analysis.lien_excluded : [];
+  const grossSumNoCap = lienRows.reduce((s, l) => {
+    const d = lienDetailByAcct.get(String(l.account_no)) || {};
+    const gb = (l.gross_balance ?? d.gross_balance);
+    return s + (gb != null ? num(gb) : num(l.lien_eligible_amount ?? l.lien_amount));
+  }, 0) + lienExcluded.reduce((s, e) => s + num(e.gross_balance), 0);
+  // The first 12 columns (0..11) are unchanged; the Feature-4 audit columns
+  // 'Disputed Fwd [Rs.]' and 'Cap / Exclusion Reason' are APPENDED (indices 12-13)
+  // so existing column-index consumers keep working. Lien Eligible stays at 10.
   addSheet(wb, 'Lien Calculation', [
-    ['Account No.', 'Bank', 'IFSC', 'Layer', 'Received [Rs.]', 'Forwarded [Rs.]', 'On Hold [Rs.]', 'Cashed Out [Rs.]', 'Lien Eligible [Rs.]', 'Status'],
-    ...lienRows.map((l) => [
-      l.account_no, l.bank_name || '', l.ifsc_code || '',
-      l.layer_no == null ? '' : `L${l.layer_no}`,
-      num(l.total_received), num(l.onward_forwarded ?? l.total_forwarded),
-      num(l.total_on_hold), num(l.total_cashed_out),
-      num(l.lien_eligible_amount ?? l.lien_amount), l.lien_status || 'pending',
+    ['Account No.', 'Bank', 'IFSC', 'Layer', 'Received [Rs.]', 'Forwarded [Rs.]', 'On Hold [Rs.]', 'Cashed Out [Rs.]', 'Gross Balance [Rs.]', 'Disputed Inflow [Rs.]', 'Lien Eligible [Rs.]', 'Status', 'Disputed Fwd [Rs.]', 'Cap / Exclusion Reason'],
+    ...lienRows.map((l) => {
+      const d = lienDetailByAcct.get(String(l.account_no)) || {};
+      const layer = l.layer_no ?? d.layer_no;
+      const received = num(l.total_received ?? d.total_received);
+      const forwarded = num(l.onward_forwarded ?? l.total_forwarded ?? d.onward_forwarded);
+      const dispFwd = num(l.disputed_forwarded ?? d.disputed_forwarded);
+      const onHold = num(l.total_on_hold ?? d.total_on_hold);
+      const cashedOut = num(l.total_cashed_out ?? d.total_cashed_out);
+      const lienEligible = num(l.lien_eligible_amount ?? l.lien_amount);
+      // Gross balance (pre-cap residue) and the disputed-inflow cap are read from
+      // the analyzer rollup, never recomputed. gross_balance falls back to the
+      // component subtraction for legacy rows; the disputed cap falls back to the
+      // value that keeps min(gross, cap) === lien for rows analysed before the
+      // field existed, so the worksheet always reconciles.
+      const grossBalance = (l.gross_balance ?? d.gross_balance) != null
+        ? num(l.gross_balance ?? d.gross_balance)
+        : Math.max(0, received - forwarded - onHold - cashedOut);
+      const disputedInflow = (l.disputed_received ?? d.disputed_received) != null
+        ? num(l.disputed_received ?? d.disputed_received)
+        : (lienEligible < grossBalance ? lienEligible : grossBalance);
+      const reason = l.excluded_reason ?? d.excluded_reason
+        ?? (grossBalance - lienEligible > 0.005 ? 'Capped at disputed inflow.' : 'No cap applied.');
+      return [
+        l.account_no, l.bank_name || '', l.ifsc_code || '',
+        layer == null ? '' : `L${layer}`,
+        received, forwarded, onHold, cashedOut,
+        grossBalance, disputedInflow,
+        lienEligible, l.lien_status || 'pending',
+        dispFwd, reason,
+      ];
+    }),
+    [],
+    // Lien-eligible total (NOT the recovery residual on the Summary sheet). Total
+    // sits under the 'Lien Eligible [Rs.]' column (index 10).
+    ['Total lien-eligible balance across flagged accounts', '', '', '', '', '', '', '', '', '', lienTableTotal, '', '', ''],
+    ['(may exceed victim loss as funds traverse multiple layers)'],
+    // Original analyzer formula footnote (kept verbatim).
+    ['Formula: Gross Balance = max(0, Received - Forwarded - On Hold - Cashed Out).'],
+    ['Lien Eligible = min(Gross Balance, Disputed Inflow): recoverable funds are capped at the account\'s disputed (fraud-attributed) inflow and floored at zero, since lien cannot exceed the fraud money that entered.'],
+    [],
+    // Feature 4 — exact reproducible formula + exclusion rule + no-cap comparison.
+    ['FORMULA (exact, per account):'],
+    ['   Gross Balance = max(0, Received - Forwarded - On Hold - Cashed Out [exits]).'],
+    ['   Lien Eligible = max(0, min(Gross Balance, Disputed Inflow)).'],
+    ['EXCLUSION RULE: the lien is capped at the account\'s DISPUTED (fraud-attributed) inflow; any gross residue above it is the account\'s own/clean funds and is excluded. Money received via OTHER settlement legs, sub-Rs.500 legs, or wallet/PA/PG ids without a resolvable IFSC carries no disputed-hop inflow, so it does not raise the cap. The "Cap / Exclusion Reason" column states the per-account effect.'],
+    [`NO-CAP COMPARISON: summing Gross Balance across all residue-bearing accounts (no disputed cap) gives the naive recoverable Rs. ${grossSumNoCap.toFixed(2)}; the disputed-inflow cap reduces it to the Lien Eligible total Rs. ${num(lienTableTotal).toFixed(2)} above.`],
+    // Accounts the cap removed entirely (gross residue > 0 but lien = 0).
+    ...(lienExcluded.length > 0 ? [
+      [],
+      ['ACCOUNTS EXCLUDED BY THE DISPUTED-INFLOW CAP (gross residue > 0 but lien = 0)'],
+      ['Account No.', 'Bank', 'Gross Balance [Rs.]', 'Disputed Inflow [Rs.]', 'Cashed Out [Rs.]', 'Reason'],
+      ...lienExcluded.map((e) => [
+        e.account_no, e.bank_name || '', num(e.gross_balance), num(e.disputed_received),
+        num(e.total_cashed_out), e.excluded_reason || '',
+      ]),
+    ] : [
+      [],
+      ['No residue-bearing account was excluded by the disputed-inflow cap (every account with a gross residue carries a lien).'],
     ]),
   ]);
 
@@ -190,6 +294,39 @@ function generateReportExcel(bundle = {}) {
     ...aggs.map((a) => [a.account_no, a.bank || '', num(a.in_degree), num(a.out_degree), num(a.total_in), num(a.total_out)]),
   ]);
 
+  // ── 6b. Circular Flows (layering loops) ──────────────────────────────────
+  // Simple directed cycles (length <= 6) in the hop graph: money that returns to
+  // an account it already passed through. "Min Loop Amount" is the thinnest edge
+  // around the loop — the most that could actually have circulated. Banks are the
+  // parser's IFSC-resolved names.
+  const cycles = Array.isArray(analysis.circular_flows) ? analysis.circular_flows : [];
+  addSheet(wb, 'Circular Flows', [
+    ['CIRCULAR FLOWS (layering loops, cycle length <= 6)'],
+    ['Cycle (account loop)', 'Length', 'Min Loop Amount [Rs.]', 'Txns', 'Banks (IFSC-resolved)'],
+    ...cycles.map((c) => [
+      (c.path || []).join(' -> ') + ((c.path && c.path.length) ? ` -> ${c.path[0]}` : ''),
+      num(c.length), num(c.amount), num(c.txns), (c.banks || []).join('; '),
+    ]),
+    ...(cycles.length === 0 ? [['No circular flows detected in the trail.']] : []),
+  ]);
+
+  // ── 6c. Account Connectivity (in-degree / aggregator analysis) ────────────
+  // Per-account fan-in / fan-out over the hop graph; collectors (in-degree >= 2)
+  // sort to the top. Banks are the parser's IFSC-resolved names.
+  const conn = analysis.connectivity || {};
+  const connAccounts = Array.isArray(conn.accounts) ? conn.accounts : [];
+  addSheet(wb, 'Account Connectivity', [
+    ['ACCOUNT CONNECTIVITY — IN-DEGREE / AGGREGATOR ANALYSIS'],
+    ['In-degree = distinct senders into the account; out-degree = distinct receivers. Collectors (in-degree >= 2) are listed first.'],
+    [],
+    ['Account No.', 'Bank (IFSC-resolved)', 'In-degree', 'Out-degree', 'Total In [Rs.]', 'Total Out [Rs.]', 'Collector'],
+    ...connAccounts.map((a) => [
+      a.account_no, a.bank || '', num(a.in_degree), num(a.out_degree),
+      num(a.total_in), num(a.total_out), a.is_collector ? 'Yes' : 'No',
+    ]),
+    ...(connAccounts.length === 0 ? [['No account-to-account edges were derived for this case.']] : []),
+  ]);
+
   // ── 7. Victim Accounts (Layer 0) ─────────────────────────────────────────
   // The victims and what each sent into the fraud network. Prefer the analysis
   // snapshot; fall back to aggregating Layer-1 victim_account legs from the
@@ -213,36 +350,70 @@ function generateReportExcel(bundle = {}) {
     ...victimRows.map((v) => [v.account_no, num(v.txn_count), num(v.amount_sent)]),
   ]);
 
-  // ── 8. ATM Exit Details ───────────────────────────────────────────────────
+  // ── 8 + 9. ATM / POS Exit Details ────────────────────────────────────────
+  // The two sheets are scoped strictly by the ledger's payment mode: ATM
+  // withdrawals only on the ATM sheet, POS merchant cash-outs only on the POS
+  // sheet — no terminal or transaction appears on both. (The analyzer's
+  // terminal aggregates bucket POS legs under ATM because POS legs carry their
+  // terminal id in the atm_id column; that classification is load-bearing for
+  // same-day-cashout detection, so the split happens here, at display time.)
   const geo = analysis.geography || {};
   const cashAnalysis = analysis.cashout_analysis || {};
-  // City/State aren't carried on top_atms; enrich from the cashout analysis
-  // (matched on ATM id) when those columns were present in the NCRP export.
-  const atmLoc = new Map();
-  for (const ac of (cashAnalysis.atm_cashouts || [])) {
-    atmLoc.set(String(ac.atm_id), { city: ac.city, state: ac.state });
+  const atmTerminals = atmOnlyCashouts(cashAnalysis.atm_cashouts || [], transactions);
+  const acctsByTerminal = accountCountByTerminal(transactions);
+  const posRows = posExitRows(transactions);
+
+  // Gross-vs-confirmed reconciliation, printed on both sheets so a reader who
+  // sums the details sees exactly why the headline differs.
+  const atmShownAmount = atmTerminals.reduce((s, a) => s + num(a.amount), 0);
+  const atmShownTxns = atmTerminals.reduce((s, a) => s + num(a.count), 0);
+  const posShownAmount = posRows.reduce((s, t) => s + num(t.transaction_amount), 0);
+  const recon = cashoutReconciliation(
+    { summary, cashout: cashAnalysis },
+    atmShownAmount + posShownAmount, atmShownTxns + posRows.length);
+  // The detail sheets show POST-dedup figures, so the gross is normally already
+  // net of the collapsed duplicates (dup_amount_shown ≈ 0). Surface the explicit
+  // "Less duplicate rows" line only when it carries real value; otherwise note
+  // the duplicates were collapsed beforehand — never a contradictory "Rs. 0.00
+  // duplicate rows" line against a non-zero collapsed-row count.
+  const hasDupValue = num(recon.dup_amount_shown) > 0.005;
+  const reconBlock = [
+    [],
+    ['CASH-OUT RECONCILIATION (ATM + POS sheets)'],
+    ['Gross withdrawals shown [Rs.]', recon.gross_shown,
+      `${recon.rows_shown} rows across the ATM and POS sheets`
+      + (recon.dup_rows_collapsed > 0 && !hasDupValue
+        ? `; already net of ${recon.dup_rows_collapsed} exact-duplicate row(s) collapsed before analysis`
+        : '')],
+  ];
+  if (hasDupValue) {
+    reconBlock.push(['Less duplicate rows included above [Rs.]', recon.dup_amount_shown,
+      `${recon.dup_rows_collapsed} duplicate ledger row(s) were collapsed during analysis`]);
   }
-  const topAtms = Array.isArray(geo.top_atms) ? geo.top_atms : [];
+  reconBlock.push(['Less excess over disputed inflow per account (cap) [Rs.]', recon.cap_excess,
+    'amounts above an account\'s disputed inflow are its own/clean funds']);
+  reconBlock.push(['Confirmed cashed out (headline) [Rs.]', recon.confirmed,
+    hasDupValue ? 'gross - duplicates - cap = confirmed' : 'gross - cap = confirmed']);
+
   addSheet(wb, 'ATM Exit Details', [
-    ['ATM ID', 'Location', 'City', 'State', 'Amount [Rs.]', 'Txns', 'Accounts'],
-    ...topAtms.map((a) => {
-      const loc = atmLoc.get(String(a.atm_id)) || {};
-      return [a.atm_id || '', a.location || '', loc.city || '', loc.state || '',
-        num(a.amount), num(a.txn_count), num(a.account_count)];
-    }),
+    ['ATM ID', 'Location', 'City', 'State', 'Gross Amount [Rs.]', 'Txns', 'Accounts'],
+    ...atmTerminals.map((a) => [
+      a.atm_id || '', a.atm_location || a.location || '', a.city || '', a.state || '',
+      num(a.amount), num(a.count ?? a.txn_count),
+      num(acctsByTerminal.get(String(a.atm_id)) ?? a.account_count),
+    ]),
+    ...reconBlock,
   ]);
 
-  // ── 9. POS Exit Details ───────────────────────────────────────────────────
   // POS cash-outs straight from the ledger. The merchant name and terminal id
   // live in the atm_location / atm_id columns for POS legs.
-  const posRows = (transactions || [])
-    .filter((t) => String(t.payment_mode || '').toUpperCase() === 'POS');
   addSheet(wb, 'POS Exit Details', [
-    ['Date', 'Account', 'Bank', 'Amount [Rs.]', 'Merchant', 'Terminal ID'],
+    ['Date', 'Account', 'Bank', 'Gross Amount [Rs.]', 'Merchant', 'Terminal ID'],
     ...posRows.map((t) => [
       fmtDate(t.transaction_date), t.beneficiary_account || '', t.beneficiary_bank || '',
       num(t.transaction_amount), t.atm_location || '', t.atm_id || '',
     ]),
+    ...reconBlock,
   ]);
 
   // ── 10. Daily Volume ──────────────────────────────────────────────────────
@@ -282,6 +453,18 @@ function generateReportExcel(bundle = {}) {
     ...hours.map((x) => [`${String(x.h).padStart(2, '0')}:00`, x.count, num(x.amount)]),
   ]);
 
+  // ── 11b. Day of Week (IST) ────────────────────────────────────────────────
+  // Feature 5 — dated legs grouped by IST weekday, plus an explicit Undated bucket
+  // so the counts foot to the full deduped leg total.
+  const dow = analysis.day_of_week || { weekdays: [], undated: { txns: 0, totalAmount: 0 } };
+  const dowWeekdays = Array.isArray(dow.weekdays) ? dow.weekdays : [];
+  addSheet(wb, 'Day of Week', [
+    ['DAY-OF-WEEK ACTIVITY (IST calendar day of each leg)'],
+    ['Weekday', 'Transactions', 'Total Amount [Rs.]'],
+    ...dowWeekdays.map((w) => [w.weekday, num(w.txns), num(w.totalAmount)]),
+    ['Undated', num(dow.undated && dow.undated.txns), num(dow.undated && dow.undated.totalAmount)],
+  ]);
+
   // ── 12. Bank Rankings ─────────────────────────────────────────────────────
   // Per-bank totals aggregated from the per-account lien calculation (which
   // carries the received / forwarded / on-hold / lien figures), with the raw
@@ -315,16 +498,58 @@ function generateReportExcel(bundle = {}) {
     ]),
   ]);
 
-  // ── 13. Geographic Hotspots ───────────────────────────────────────────────
+  // ── 13. Data Quality (bank attribution) ───────────────────────────────────
+  // Every account whose bank could not be silently confirmed from a clean IFSC:
+  // the letter uses the IFSC-derived name; the source-file text is shown for the
+  // IO to verify. Amounts are unaffected — only the bank attribution is flagged.
+  const dq = Array.isArray(analysis.data_quality) ? analysis.data_quality : [];
+  const oldTxns = Array.isArray(analysis.old_transactions) ? analysis.old_transactions : [];
+  addSheet(wb, 'Data Quality', [
+    ['BANK ATTRIBUTION — ACCOUNTS NEEDING REVIEW'],
+    [`${dq.length} account(s) flagged. The bank on each lien letter is IFSC-authoritative.`],
+    [],
+    ['Account No.', 'Resolved Bank (on letter)', 'IFSC', 'Source', 'Flag', 'Source-file Text', 'Reviewer Note'],
+    ...dq.map((d) => [
+      d.account_no || '',
+      d.bank || '',
+      d.ifsc_code || '',
+      d.bank_source || '',
+      d.bank_flag || '',
+      d.raw_bank || '(blank)',
+      d.message || '',
+    ]),
+    // Old transactions (>6 months): parsed and stored, but excluded from every
+    // financial figure. Listed here for the record.
+    ...(oldTxns.length > 0 ? [
+      [],
+      ['OLD TRANSACTIONS (EXCLUDED FROM CALCULATIONS)'],
+      [`${oldTxns.length} transaction(s) predate the 6-month NCRP window — informational only.`],
+      ['Account No.', 'Bank', 'Layer', 'Amount [Rs.]', 'Remarks'],
+      ...oldTxns.map((o) => [
+        o.account_no || '',
+        o.bank || '',
+        num(o.layer_no),
+        num(o.transaction_amount),
+        o.remarks || '',
+      ]),
+    ] : []),
+  ]);
+
+  // ── 14. Geographic Hotspots ───────────────────────────────────────────────
+  // Merchants: prefer the analyzer's view, but derive from the ledger's POS
+  // legs when it is empty (POS legs that carry a terminal id are bucketed as
+  // ATM by the analyzer, leaving top_merchants blank — see sheets 8/9).
   const byState = Array.isArray(geo.by_state) ? geo.by_state : [];
-  const merchants = Array.isArray(geo.top_merchants) ? geo.top_merchants : [];
+  const merchants = (transactions && transactions.length)
+    ? posMerchantAggregates(transactions)
+    : (Array.isArray(geo.top_merchants) ? geo.top_merchants : []);
   addSheet(wb, 'Geographic Hotspots', [
     ['CASHOUT BY STATE'],
     ['State', 'Amount [Rs.]', 'Txns', 'Share %'],
     ...byState.map((s) => [s.state || '', num(s.amount), num(s.txn_count ?? s.count), num(s.pct)]),
     [],
     ['TOP MERCHANTS (POS)'],
-    ['Merchant', 'Type', 'Amount [Rs.]', 'Txns'],
+    ['Merchant', 'Type', 'Gross Amount [Rs.]', 'Txns'],
     ...merchants.map((m) => [m.name || '', m.type || 'Merchant', num(m.amount), num(m.txn_count)]),
   ]);
 
@@ -338,8 +563,8 @@ function generateReportExcel(bundle = {}) {
     ['Lien Amount', 'Funds still recoverable in an account: money received but not yet forwarded onward, withdrawn as cash, or already on hold. Subject to the actual balance confirmed by the bank.'],
     ['On Hold', 'Amount a bank has already frozen / marked under hold for an account.'],
     ['Cashed Out', 'Disputed funds withdrawn from the network as cash via ATM or POS — generally unrecoverable.'],
-    ['Mule Score', 'A 0–100 risk score for a beneficiary account. Higher means stronger indicators of being a money-mule (high velocity, many senders, same-day in/out, fast forwarding).'],
-    ['Risk Label', 'Banded mule score: HIGH (>= 70), MEDIUM, or LOW. HIGH accounts are priority targets for lien and KYC requests.'],
+    ['Mule Score', 'Mule Risk Score — an additive weighted indicator (layer position, fan-in, velocity, same-day cashout, amount routed) used to rank and prioritise accounts within this case. Not a percentage or probability; it has no fixed maximum and a textbook mule can exceed 100. Bands: >=70 HIGH, 40-69 MEDIUM, <40 LOW.'],
+    ['Risk Label', 'Band derived from the mule risk score: HIGH (>= 70), MEDIUM (40-69), or LOW (< 40). HIGH accounts are priority targets for lien and KYC requests.'],
     ['Fan-out Ratio', 'How widely funds spread at a layer — distinct destination accounts relative to source accounts. High fan-out signals deliberate layering.'],
     ['Aggregator / Collector', 'An account that gathers funds from many senders (high in-degree) before forwarding — a hub in the money-flow network.'],
     ['Same-day In/Out', 'An account that received and forwarded funds on the same calendar day — a classic pass-through mule behaviour.'],

@@ -640,6 +640,47 @@ table.data-table tbody tr:hover {
   }
 }
 
+/* ─── Draft Emails: collapsible letter cards ──────────────────────────
+   Each letter body collapses/expands with a smooth height animation while
+   staying mounted in the DOM (the print stylesheet below reveals every
+   letter for the case file). The grid-template-rows 1fr → 0fr technique
+   animates height without measuring the content, and the chevron rotates
+   to signal state. */
+.letter-card {
+  overflow: hidden; /* clip the collapsing body to the card's rounded corners */
+}
+
+.letter-chevron {
+  display: inline-block;
+  color: var(--brand);
+  transition: transform 250ms ease;
+}
+
+.letter-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 250ms ease;
+}
+
+.letter-body.is-collapsed {
+  grid-template-rows: 0fr;
+}
+
+.letter-body > .letter-body-inner {
+  min-height: 0;      /* let the grid row shrink below the content height */
+  overflow: hidden;
+  padding: 0 18px 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* Respect reduced-motion: snap instead of animating. */
+@media (prefers-reduced-motion: reduce) {
+  .letter-chevron,
+  .letter-body {
+    transition: none;
+  }
+}
+
 /* ─── Print stylesheet ───────────────────────────────────────────────
    Optimised for the Lien worksheet and the Draft Emails letters, which
    officers print for the case file. Strips the app chrome (sidebar,
@@ -709,9 +750,16 @@ table.data-table tbody tr:hover {
   }
 
   /* Draft Emails: print every letter (even collapsed ones), each starting
-     on a fresh page so they detach cleanly into the file. */
+     on a fresh page so they detach cleanly into the file. Override the
+     screen collapse (grid 0fr + clipped inner) so the full body prints. */
+  .letter-body,
   .letter-body.is-collapsed {
     display: block !important;
+    grid-template-rows: 1fr !important;
+  }
+
+  .letter-body > .letter-body-inner {
+    overflow: visible !important;
   }
 
   .letter-card {

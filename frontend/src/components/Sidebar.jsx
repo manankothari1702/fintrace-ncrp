@@ -15,7 +15,7 @@ import { NavLink } from 'react-router-dom';
 
 import { useReportContext } from '../context/ReportContext.jsx';
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.3.0';
 
 const NAV_ITEMS = [
   { to: '/upload', icon: '📤', label: 'Upload' },
@@ -24,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/money-flow', icon: '🕸️', label: 'Money Flow' },
   { to: '/mules', icon: '🎯', label: 'Mule Accounts' },
   { to: '/lien', icon: '💰', label: 'Lien Tracker' },
+  { to: '/data-quality', icon: '🔎', label: 'Data Quality' },
   { to: '/transactions', icon: '📋', label: 'Transactions' },
   { to: '/emails', icon: '✉️', label: 'Draft Emails' },
   { to: '/timeline', icon: '📅', label: 'Timeline' },

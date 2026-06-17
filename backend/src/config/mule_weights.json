@@ -9,5 +9,6 @@
   "multiChannel": 8,
   "fanIn": 8,
   "highCashoutRatio": 15,
-  "sameDayInOut": 17
+  "sameDayInOut": 17,
+  "inDegreeCollector": 6
 }
