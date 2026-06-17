@@ -1,12 +1,12 @@
 # FinTrace v0.2.0 — Cross-Artifact Validation Report
 
-Generated: 2026-06-15T11:19:41.966Z
+Generated: 2026-06-17T10:50:40.523Z
 
 Read-only verification: the analyzer + exporters were run on the two available case files and every figure was extracted from THREE sources — the summary JSON, the generated PDF (text), and the generated Excel (cells) — and asserted to agree.
 
 > Coverage note: only two case files exist (145 + 170). These results confirm the fixes on those two cases and are **not** release-grade coverage.
 
-**Cross-artifact assertions:** 66 passed, 0 failed.
+**Cross-artifact assertions:** 121 passed, 0 failed.
 **Existing suites:** 4/4 passed.
 
 Overall: ✅ **ALL CHECKS PASS**
@@ -40,33 +40,32 @@ PDF text extraction: reliable ✅
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | no letter contradicts an account's IFSC (14 IFSC-bearing accounts checked) | all consistent |
+| ✅ PASS | no letter contradicts an account's IFSC (13 IFSC-bearing accounts checked) | all consistent |
 | ✅ PASS | account 00000005906495023 letter bank is Central Bank of India | letter="Central Bank of India" canonical="Central Bank of India" ifsc=CBIN0282138 |
 | ✅ PASS | account 252000590337 letter bank is Suryoday Small Finance Bank | letter="Suryoday Small Finance Bank" canonical="Suryoday Small Finance Bank" ifsc=SURY0000011 |
 | ✅ PASS | account 100219234781 letter bank is IndusInd Bank | letter="IndusInd Bank" canonical="IndusInd Bank" ifsc=INDB0001080 |
 | ✅ PASS | account 159079012694 letter bank is IndusInd Bank | letter="IndusInd Bank" canonical="IndusInd Bank" ifsc=INDB0000421 |
 | ✅ PASS | account 14751050003336 letter bank is HDFC Bank | letter="HDFC Bank" canonical="HDFC Bank" ifsc=HDFC0001475 |
 | ✅ PASS | account 002261100000025 letter bank is Yes Bank | letter="Yes Bank" canonical="Yes Bank" ifsc=YESB0YBLUPI |
-| ✅ PASS | account 00000044021519366 letter bank is State Bank of India | letter="State Bank of India" canonical="State Bank of India" ifsc=SBIN0064933 |
 | ✅ PASS | account 890073000000688 letter bank is South Indian Bank | letter="South Indian Bank" canonical="South Indian Bank" ifsc=SIBL0000890 |
 | ✅ PASS | account 92250100008713 letter bank is Bank of Baroda (group) | letter="Bank of Baroda (including Vijaya Bank and Dena Bank)" canonical="Bank of Baroda (including Vijaya Bank and Dena Bank)" ifsc=BARB0DBLJAT |
 | ✅ PASS | account 20200131158023 letter bank is Bandhan Bank | letter="Bandhan Bank" canonical="Bandhan Bank" ifsc=BDBL0002532 |
 | ✅ PASS | NO "Union Bank" letter addresses account 00000005906495023 | none |
 | ✅ PASS | NO "Jio Payments" letter addresses account 252000590337 | none |
-| ✅ PASS | letter count == 15 | got 15 |
-| ✅ PASS | per-letter amounts sum to lien_table_total 4,34,394.61 | 4,34,394.61 |
+| ✅ PASS | letter count == 14 | got 14 |
+| ✅ PASS | per-letter amounts sum to lien_table_total 4,24,394.61 | 4,24,394.61 |
 
 ### C. Data-quality flags
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | summary.bank_flags_count > 0 | 45 |
-| ✅ PASS | bank_flags_count == data_quality rows | 45 vs 45 |
-| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 45 vs 45 |
-| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=45 vs 45 |
+| ✅ PASS | summary.bank_flags_count > 0 | 44 |
+| ✅ PASS | bank_flags_count == data_quality rows | 44 vs 44 |
+| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 44 vs 44 |
+| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=44 vs 44 |
 | ✅ PASS | every flag is one of the 4 known flag values | all valid |
 | ✅ PASS | every data-quality row is semantically consistent with its flag | all consistent |
-| ✅ PASS | every letter with a flagged account carries the Annexure-H reviewer note | notes=14 vs letters-with-flag=14 |
+| ✅ PASS | every letter with a flagged account carries the Annexure-H reviewer note | notes=13 vs letters-with-flag=13 |
 
 ### D. Duplicate-row dedup
 
@@ -82,9 +81,36 @@ PDF text extraction: reliable ✅
 | Result | Check | Detail |
 |---|---|---|
 | ✅ PASS | victim_loss unchanged (1,065,298.00) | 10,65,298.00 |
-| ✅ PASS | lien_table_total unchanged (434,394.61) | 4,34,394.61 |
+| ✅ PASS | lien_table_total unchanged (434,394.61) | 4,24,394.61 |
 | ✅ PASS | layers unchanged (7) | 7 |
 | ✅ PASS | total transactions unchanged (151) | 151 |
+
+### F. Headline <-> annexure reconciliation
+
+| Result | Check | Detail |
+|---|---|---|
+| ✅ PASS | reconciliation.disputed parts (hop+exit+hold+other) == total | 22,07,182.22 vs 22,07,182.22 |
+| ✅ PASS | reconciliation.disputed.total == headline total_disputed_amount | 22,07,182.22 vs 22,07,182.22 |
+| ✅ PASS | Sum of Annexure-A per-layer Disputed == reconciliation.disputed.hop | 15,24,475.23 vs 15,24,475.23 |
+| ✅ PASS | raw_hop - dedup_hop_adjustment + exit + hold + other == total (byte-exact) | 22,07,182.22 vs 22,07,182.22 |
+| ✅ PASS | raw_hop - dedup_hop_adjustment == net hop disputed | 15,24,475.23 vs 15,24,475.23 |
+| ✅ PASS | Excel "Total trail disputed" cell == summary headline (byte-identical) | 22,07,182.22 vs 22,07,182.22 |
+| ✅ PASS | PDF shows Total Trail Disputed Rs. 22,07,182.22 (byte-identical) | searched "Rs. 22,07,182.22" |
+| ✅ PASS | reconciliation.transactions dated + undated == unique | 138+7 vs 145 |
+| ✅ PASS | reconciliation.transactions unique + duplicates == raw_legs | 145+6 vs 151 |
+| ✅ PASS | reconciliation.transactions.raw_legs == headline total_transactions | 151 vs 151 |
+| ✅ PASS | PDF Annexure A shows the EXIT/OTHER reconciliation rows |  |
+| ✅ PASS | PDF Annexure G shows the Undated row (when undated rows exist) | undated=7 |
+
+### G. Canonical account merge (zero-padded variants)
+
+| Result | Check | Detail |
+|---|---|---|
+| ✅ PASS | no zero-padded account variants split across lien rows | all canonical |
+| ✅ PASS | no zero-padded account variants split across data-quality rows | all canonical |
+| ✅ PASS | SBI …9366 appears once in data quality (zero-padded duplicate merged) | 1 row(s) |
+| ✅ PASS | SBI …9366 keeps the valid-IFSC attribution (SBIN0064933 / IFSC_TEXT_MISMATCH) | ifsc=SBIN0064933 flag=IFSC_TEXT_MISMATCH |
+| ✅ PASS | SBI …9366 pass-through carries no lien (money traced downstream) | 0 lien row(s) |
 
 ## Case 170
 
@@ -94,36 +120,60 @@ PDF text extraction: reliable ✅
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | summary.cashed_out == ground truth | 38,841.78 vs 38,841.78 |
-| ✅ PASS | cashout_analysis.total_cashout_amount == summary.cashed_out | 38,841.78 vs 38,841.78 |
-| ✅ PASS | recovery_status.cashed_out == summary.cashed_out | 38,841.78 vs 38,841.78 |
-| ✅ PASS | Excel Summary cash-out cell == summary.cashed_out | 38,841.78 vs 38,841.78 |
-| ✅ PASS | PDF exec-summary shows cash-out Rs. 38,841.78 | searched "Rs. 38,841.78" |
+| ✅ PASS | summary.cashed_out == ground truth | 40,041.78 vs 40,041.78 |
+| ✅ PASS | cashout_analysis.total_cashout_amount == summary.cashed_out | 40,041.78 vs 40,041.78 |
+| ✅ PASS | recovery_status.cashed_out == summary.cashed_out | 40,041.78 vs 40,041.78 |
+| ✅ PASS | Excel Summary cash-out cell == summary.cashed_out | 40,041.78 vs 40,041.78 |
+| ✅ PASS | PDF exec-summary shows cash-out Rs. 40,041.78 | searched "Rs. 40,041.78" |
 | ✅ PASS | summary reconciliation cashed+hold+refund+residual == victim_loss | 15,48,900.00 vs 15,48,900.00 |
-| ✅ PASS | recoverable_residual is derived max(0, loss-cashed-hold-refund) | 8,30,900.04 |
+| ✅ PASS | recoverable_residual is derived max(0, loss-cashed-hold-refund) | 8,29,700.04 |
 | ✅ PASS | Excel reconciliation cashed+hold+refund+residual == victim_loss | 15,48,900.00 vs 15,48,900.00 |
 | ✅ PASS | Excel victim_loss == ground truth | 15,48,900.00 |
 | ✅ PASS | Excel on_hold == ground truth | 6,79,158.18 |
 | ✅ PASS | Excel refunded == ground truth | 0.00 |
-| ✅ PASS | Excel recoverable_residual == ground truth | 8,30,900.04 |
+| ✅ PASS | Excel recoverable_residual == ground truth | 8,29,700.04 |
 
 ### B. Bank attribution = IFSC-authoritative
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | no letter contradicts an account's IFSC (610 IFSC-bearing accounts checked) | all consistent |
+| ✅ PASS | no letter contradicts an account's IFSC (584 IFSC-bearing accounts checked) | all consistent |
 
 ### C. Data-quality flags
 
 | Result | Check | Detail |
 |---|---|---|
-| ✅ PASS | summary.bank_flags_count > 0 | 1141 |
-| ✅ PASS | bank_flags_count == data_quality rows | 1141 vs 1141 |
-| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 1141 vs 1141 |
-| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=1141 vs 1141 |
+| ✅ PASS | summary.bank_flags_count > 0 | 1108 |
+| ✅ PASS | bank_flags_count == data_quality rows | 1108 vs 1108 |
+| ✅ PASS | Excel Data Quality sheet rows == data_quality rows | 1108 vs 1108 |
+| ✅ PASS | PDF Data Quality count == data_quality rows | pdf=1108 vs 1108 |
 | ✅ PASS | every flag is one of the 4 known flag values | all valid |
 | ✅ PASS | every data-quality row is semantically consistent with its flag | all consistent |
 | ✅ PASS | every letter with a flagged account carries the Annexure-H reviewer note | notes=51 vs letters-with-flag=51 |
+
+### F. Headline <-> annexure reconciliation
+
+| Result | Check | Detail |
+|---|---|---|
+| ✅ PASS | reconciliation.disputed parts (hop+exit+hold+other) == total | 40,13,649.11 vs 40,13,649.11 |
+| ✅ PASS | reconciliation.disputed.total == headline total_disputed_amount | 40,13,649.11 vs 40,13,649.11 |
+| ✅ PASS | Sum of Annexure-A per-layer Disputed == reconciliation.disputed.hop | 39,14,073.42 vs 39,14,073.42 |
+| ✅ PASS | raw_hop - dedup_hop_adjustment + exit + hold + other == total (byte-exact) | 40,13,649.11 vs 40,13,649.11 |
+| ✅ PASS | raw_hop - dedup_hop_adjustment == net hop disputed | 39,14,073.42 vs 39,14,073.42 |
+| ✅ PASS | Excel "Total trail disputed" cell == summary headline (byte-identical) | 40,13,649.11 vs 40,13,649.11 |
+| ✅ PASS | PDF shows Total Trail Disputed Rs. 40,13,649.11 (byte-identical) | searched "Rs. 40,13,649.11" |
+| ✅ PASS | reconciliation.transactions dated + undated == unique | 2050+112 vs 2162 |
+| ✅ PASS | reconciliation.transactions unique + duplicates == raw_legs | 2162+249 vs 2411 |
+| ✅ PASS | reconciliation.transactions.raw_legs == headline total_transactions | 2411 vs 2411 |
+| ✅ PASS | PDF Annexure A shows the EXIT/OTHER reconciliation rows |  |
+| ✅ PASS | PDF Annexure G shows the Undated row (when undated rows exist) | undated=112 |
+
+### G. Canonical account merge (zero-padded variants)
+
+| Result | Check | Detail |
+|---|---|---|
+| ✅ PASS | no zero-padded account variants split across lien rows | all canonical |
+| ✅ PASS | no zero-padded account variants split across data-quality rows | all canonical |
 
 ### Letter → Bank → IFSC (for human review)
 
@@ -137,7 +187,7 @@ PDF text extraction: reliable ✅
 | Airtel Payments Bank | 1285353305 | AIRP0000001 |
 | Airtel Payments Bank | 7489293870 | AIRP0000001 |
 | Airtel Payments Bank | 8348350972 | AIRP0000001 |
-| Airtel Payments Bank | 8105715305 | airp0000001 |
+| Airtel Payments Bank | 8105715305 | AIRP0000001 |
 | Airtel Payments Bank | 7494014481 | AIRP0000001 |
 | Airtel Payments Bank | 1285903337 | AIRP0000001 |
 | Airtel Payments Bank | 8303123440 | AIRP0000001 |
@@ -167,7 +217,7 @@ PDF text extraction: reliable ✅
 | Airtel Payments Bank | 8473966981 | AIRP0000001 |
 | Airtel Payments Bank | 6266887507 | AIRP0000001 |
 | Airtel Payments Bank | 9123288013 | AIRP0000001 |
-| Airtel Payments Bank | 9105131367 | airp0000001 |
+| Airtel Payments Bank | 9105131367 | AIRP0000001 |
 | Axis Bank | 925010037467392 | UTIB0000005 |
 | Axis Bank | 924020028168727 | UTIB0003235 |
 | Axis Bank | 101012901334 | UTIB0000101 |
@@ -177,8 +227,8 @@ PDF text extraction: reliable ✅
 | Axis Bank | 917010036824210 | UTIB0001558 |
 | Axis Bank | 925020030818864 | UTIB0000301 |
 | Axis Bank | 925020023701504 | UTIB0005320 |
-| Axis Bank | 924020011123146 | utib0002073 |
-| Axis Bank | 917020056871251 | utib0000846 |
+| Axis Bank | 924020011123146 | UTIB0002073 |
+| Axis Bank | 917020056871251 | UTIB0000846 |
 | Axis Bank | 916010080949133 | UTIB0001839 |
 | Axis Bank | 924010072198122 | UTIB0005398 |
 | Axis Bank | 924020007330961 | UTIB0000022 |
@@ -197,9 +247,9 @@ PDF text extraction: reliable ✅
 | Axis Bank | 921010000978812 | UTIB0003562 |
 | Axis Bank | 925020022598657 | UTIB0004388 |
 | Axis Bank | 887001023029944 | UTIB0SVAUB1 |
-| Axis Bank | 918010095570270 | utib0003022 |
+| Axis Bank | 918010095570270 | UTIB0003022 |
 | Axis Bank | 925010007276100 | UTIB0002195 |
-| Axis Bank | 925010038305110 | utib0000730 |
+| Axis Bank | 925010038305110 | UTIB0000730 |
 | Axis Bank | 925010034356220 | UTIB0004514 |
 | Axis Bank | 10001291013360 | UTIB0000100 |
 | Axis Bank | 922010032711790 | UTIB0002002 |
@@ -214,7 +264,7 @@ PDF text extraction: reliable ✅
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 84340100000516 | BARB0VJKLUR |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 94631500004235 | BARB0BUPGBX |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 50318100015972 | BARB0PATFAT |
-| Bank of Baroda (including Vijaya Bank and Dena Bank) | 11130200000310 | barb0petcoi |
+| Bank of Baroda (including Vijaya Bank and Dena Bank) | 11130200000310 | BARB0PETCOI |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 393156889832 | BARB0RAWATB |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | 39060100008427 | BARB0KRIBHA |
 | Bank of Baroda (including Vijaya Bank and Dena Bank) | XXXXXXXX125989 | BARB0BUPGBX |
@@ -257,14 +307,13 @@ PDF text extraction: reliable ✅
 | Bank of India | 913210110003081 | BKID0009132 |
 | Bank of India | 478318210005614 | BKID0004783 |
 | Bank of India | 479210510001567 | BKID0004792 |
-| Bank of India | 760918210033976 | bkid0007609 |
-| Bank of Maharashtra | 60552238835 | mahb0001689 |
-| Bank of Maharashtra | 60554329742 | mahb0001551 |
+| Bank of India | 760918210033976 | BKID0007609 |
+| Bank of Maharashtra | 60552238835 | MAHB0001689 |
+| Bank of Maharashtra | 60554329742 | MAHB0001551 |
 | Bank of Maharashtra | 60547942997 | MAHB0000010 |
 | Bank of Maharashtra | 60547774599 | MAHB0001433 |
 | CSB Bank | 0843020000022 | CSBK0000355 |
 | CSB Bank | 619010168908 | CSBK0000619 |
-| CSB Bank | 838020537493 | CSBK0000838 |
 | Canara Bank | 110105480977 | CNRB0000033 |
 | Canara Bank | 110019993003 | CNRB0004532 |
 | Canara Bank | 110196266800 | CNRB0001194 |
@@ -316,7 +365,7 @@ PDF text extraction: reliable ✅
 | HDFC Bank | 50100709027010 | HDFC0001765 |
 | HDFC Bank | 57500001372151 | HDFC0MERUPI |
 | HDFC Bank | 50100676669680 | HDFC0006225 |
-| HDFC Bank | 50100835369852 | hdfc0001202 |
+| HDFC Bank | 50100835369852 | HDFC0001202 |
 | HDFC Bank | 00030310016252 | HDFC0MERUPI |
 | HDFC Bank | 99992233778889 | HDFC0001068 |
 | HDFC Bank | 50100120418080 | HDFC0000973 |
@@ -335,7 +384,7 @@ PDF text extraction: reliable ✅
 | HSBC Bank | 074243007006 | HSBC0560002 |
 | ICICI Bank | 006001028732 | ICIC0000060 |
 | ICICI Bank | 039305007322 | ICIC0DC0099 |
-| ICICI Bank | 184601506773 | icic0001846 |
+| ICICI Bank | 184601506773 | ICIC0001846 |
 | ICICI Bank | 031405006035 | ICIC0002449 |
 | ICICI Bank | 256105004604 | ICIC0002561 |
 | ICICI Bank | 007601583245 | ICIC0000076 |
@@ -431,7 +480,7 @@ PDF text extraction: reliable ✅
 | Jammu and Kashmir Bank | 0210040800003584 | JAKA0KISHEN |
 | Jammu and Kashmir Bank | 1238040800002011 | JAKA0ESANIK |
 | Jammu and Kashmir Bank | 0138021360000019 | JAKA0SOGAAM |
-| Jammu and Kashmir Bank | 0044020100000577 | jaka0dooroo |
+| Jammu and Kashmir Bank | 0044020100000577 | JAKA0DOOROO |
 | Jammu and Kashmir Bank | 0036021360000289 | JAKA0BEERWA |
 | Jammu and Kashmir Bank | 0120010100001030 | JAKA0SHIMLA |
 | Jammu and Kashmir Bank | 0012041000001277 | JAKA0FOREST |
@@ -461,7 +510,7 @@ PDF text extraction: reliable ✅
 | Kotak Mahindra Bank | 3546613444 | KKBK0007676 |
 | Kotak Mahindra Bank | 5747286946 | KKBK0002798 |
 | Kotak Mahindra Bank | 4749355216 | KKBK0005935 |
-| Kotak Mahindra Bank | 3912936467 | kkbk0004335 |
+| Kotak Mahindra Bank | 3912936467 | KKBK0004335 |
 | Kotak Mahindra Bank | 3448865422 | KKBK0000958 |
 | Kotak Mahindra Bank | 5945800456 | KKBK0001752 |
 | Kotak Mahindra Bank | 6348908008 | KKBK0000285 |
@@ -504,7 +553,7 @@ PDF text extraction: reliable ✅
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 1312010262798 | PUNB0131220 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 86002724057 | PUNB0PGB003 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 7871001700007055 | PUNB0787100 |
-| Punjab National Bank (including Oriental Bank of Commerce and Un | 3550001700011982 | punb0355000 |
+| Punjab National Bank (including Oriental Bank of Commerce and Un | 3550001700011982 | PUNB0355000 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 1645201700148450 | PUNB0164520 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0033201700106973 | PUNB0003320 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0601010933162 | PUNB0060120 |
@@ -516,10 +565,10 @@ PDF text extraction: reliable ✅
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 07712413000040 | PUNB0077110 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0199000109120150 | PUNB0019900 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 3285001507003150 | PUNB0328500 |
-| Punjab National Bank (including Oriental Bank of Commerce and Un | 9234001700134785 | punb0923400 |
+| Punjab National Bank (including Oriental Bank of Commerce and Un | 9234001700134785 | PUNB0923400 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0001001500040294 | PUNB0000100 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 2679001700181585 | PUNB0267900 |
-| Punjab National Bank (including Oriental Bank of Commerce and Un | 0367201700139348 | punb0036720 |
+| Punjab National Bank (including Oriental Bank of Commerce and Un | 0367201700139348 | PUNB0036720 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 0155000104323882 | PUNB0015500 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 1610001700016595 | PUNB0161000 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 2238001700246049 | PUNB0223800 |
@@ -538,7 +587,7 @@ PDF text extraction: reliable ✅
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 1429100100006336 | PUNB0142910 |
 | Punjab National Bank (including Oriental Bank of Commerce and Un | 4757001700064283 | PUNB0475700 |
 | Punjab Sind Bank | 11931000006146 | PSIB0021193 |
-| Punjab Sind Bank | 05041000019261 | psib0000504 |
+| Punjab Sind Bank | 05041000019261 | PSIB0000504 |
 | RBL Bank | 409002200157 | RATN0000049 |
 | RBL Bank | 2541109900110192 | RATN0000990 |
 | RBL Bank | 2541109900110151 | RATN000RAPL |
@@ -553,77 +602,45 @@ PDF text extraction: reliable ✅
 | Slice Small Finance Bank | 00000033129302435 | PHONEPE |
 | Slice Small Finance Bank | 00000041604276809 | PAYTM |
 | Slice Small Finance Bank | 9692464349@ybl | — |
-| State Bank of India | 00000035098279705 | SBIN0040103 |
-| State Bank of India | 00000044662078932 | SBIN0018542 |
-| State Bank of India | 00000044623264028 | SBIN0004596 |
-| State Bank of India | 00000030881707273 | SBIN0000631 |
 | State Bank of India | 43701572916 | SBIN0005944 |
 | State Bank of India | 00000041812481448 | SBIN0014617 |
-| State Bank of India | 00000033568063040 | SBIN0005639 |
-| State Bank of India | 00000037172117703 | SBIN0020240 |
-| State Bank of India | 00000042496030527 | SBIN0004191 |
-| State Bank of India | 00000044599857158 | SBIN0031565 |
-| State Bank of India | 00000037212681587 | SBIN0032248 |
+| State Bank of India | 00000030881707273 | SBIN0000631 |
 | State Bank of India | 00000034251351109 | SBIN0005381 |
 | State Bank of India | 00000042218024309 | SBIN0009550 |
 | State Bank of India | 00000035866142180 | SBIN0060308 |
-| State Bank of India | 00000044471381297 | SBIN0000051 |
-| State Bank of India | 00000041692053323 | SBIN0010932 |
 | State Bank of India | 36086662742 | SBIN0000206 |
 | State Bank of India | 00000038705770343 | SBIN0000085 |
-| State Bank of India | 00000041387563671 | SBIN0000221 |
-| State Bank of India | 00000039665583601 | SBIN0011326 |
 | State Bank of India | 34916994228 | SBIN0014257 |
-| State Bank of India | 00000020151167366 | SBIN0006093 |
-| State Bank of India | 00000044666320459 | SBIN0013250 |
-| State Bank of India | 00000041744872573 | SBIN0011387 |
-| State Bank of India | 00000042585553604 | SBIN0003624 |
-| State Bank of India | 00000033055437475 | SBIN0011026 |
 | State Bank of India | 00000064166422701 | SBIN0018714 |
-| State Bank of India | 00000010697801627 | SBIN0002095 |
 | State Bank of India | 00000057065001213 | SBIN0070859 |
-| State Bank of India | 00000042987900642 | SBIN0013420 |
 | State Bank of India | 35918809556 | SBIN0000106 |
 | State Bank of India | 42015311189 | SBIN0002925 |
+| State Bank of India | 00000041387563671 | SBIN0000221 |
 | State Bank of India | 41675085969 | SBIN0018428 |
 | State Bank of India | 40246322599 | SBIN0005243 |
 | State Bank of India | 40870617820 | SBIN0031058 |
 | State Bank of India | 34231232277 | SBIN0007786 |
 | State Bank of India | 35442380262 | SBIN0008176 |
-| State Bank of India | 00000041593344086 | SBIN0004659 |
-| State Bank of India | 00000034727655100 | SBIN0009631 |
-| State Bank of India | 00000039245634372 | SBIN0002643 |
 | State Bank of India | 00000034011002913 | SBIN0002934 |
 | State Bank of India | 35339465816 | SBIN0013331 |
-| State Bank of India | 00000011189062200 | SBIN0000084 |
-| State Bank of India | 61216826530 | sbin0004509 |
+| State Bank of India | 61216826530 | SBIN0004509 |
 | State Bank of India | 00000035261666304 | SBIN0014066 |
-| State Bank of India | 00000033575353741 | SBIN0006375 |
-| State Bank of India | 00000043323592332 | SBIN0014154 |
-| State Bank of India | 00000062308245432 | SBIN0020236 |
 | State Bank of India | 41943554101 | SBIN0060324 |
 | State Bank of India | 00000061275239359 | SBIN0032471 |
 | State Bank of India | 4899221162097 | SBIN0016209 |
 | State Bank of India | 32173463408 | SBIN0001460 |
-| State Bank of India | 00000020250154422 | SBIN0002720 |
 | State Bank of India | 00000030702831162 | SBIN0012009 |
-| State Bank of India | 00000042379038522 | SBIN0005931 |
 | State Bank of India | 00000038336280268 | SBIN0008088 |
-| State Bank of India | 00000035799650880 | SBIN0012370 |
-| State Bank of India | 00000041547419627 | SBIN0005390 |
 | State Bank of India | 44588848613 | SBIN0002563 |
-| State Bank of India | 00000039840840999 | SBIN0031058 |
 | State Bank of India | 20012206854301 | STCB0000065 |
-| State Bank of India | 00000033538795966 | SBIN0015532 |
+| State Bank of India | 00000043323592332 | SBIN0014154 |
 | State Bank of India | 00000043796748620 | SBIN0000082 |
-| State Bank of India | 00000040635949562 | SBIN0001026 |
+| State Bank of India | 00000042585553604 | SBIN0003624 |
 | State Bank of India | XXXXXX0329 | SBIN0005477 |
 | State Bank of India | 40622407160 | SBIN0013270 |
 | State Bank of India | 41357849522 | SBIN0008256 |
-| State Bank of India | 00000042527498222 | SBIN0060022 |
 | State Bank of India | 00000043403378667 | SBIN0010139 |
 | State Bank of India | 39406840747 | SBIN0010729 |
-| State Bank of India | 00000044670677356 | SBIN0012352 |
 | State Bank of India | 35316508042 | SBIN0001433 |
 | State Bank of India | 00000097014087114 | SBIN0RRMIGB |
 | State Bank of India | 41528477138 | SBIN0016515 |
@@ -631,7 +648,6 @@ PDF text extraction: reliable ✅
 | State Bank of India | 39961394800 | SBIN0000130 |
 | State Bank of India | 00000044465356100 | SBIN0000385 |
 | State Bank of India | 00000038441806642 | SBIN0008462 |
-| State Bank of India | 00000044508732941 | SBIN0005652 |
 | State Bank of India | 41397493554 | SBIN0006398 |
 | State Bank of India | 43893879527 | SBIN0002592 |
 | State Bank of India | 42326880834 | SBIN0000368 |
@@ -642,15 +658,10 @@ PDF text extraction: reliable ✅
 | State Bank of India | 97006911767 | SBIN0RRMIGB |
 | State Bank of India | 37448536517 | SBIN0005427 |
 | State Bank of India | 00000044402787481 | SBIN0018168 |
-| State Bank of India | 00000031243289197 | SBIN0010859 |
 | State Bank of India | 00000061293941641 | SBIN0031414 |
 | State Bank of India | 00000043620129033 | SBIN0050098 |
-| State Bank of India | 00000040610587905 | SBIN0020116 |
 | State Bank of India | 00000040442873087 | SBIN0005807 |
-| State Bank of India | 00000042053078698 | SBIN0003339 |
-| State Bank of India | 00000038891454481 | SBIN0011245 |
 | State Bank of India | 00000044354183051 | SBIN0000230 |
-| State Bank of India | 00000041797461583 | SBIN0000021 |
 | State Bank of India | 36694405137 | SBIN0060311 |
 | State Bank of India | 00000033039750455 | SBIN0002556 |
 | State Bank of India | 00000036569657316 | SBIN0000069 |
@@ -661,20 +672,25 @@ PDF text extraction: reliable ✅
 | State Bank of India | 00000043325086980 | SBIN0016106 |
 | State Bank of India | 00000031327365359 | SBIN0002550 |
 | State Bank of India | 00000061077384006 | SBIN0031085 |
-| State Bank of India | 44033882293 | sbin0004314 |
+| State Bank of India | 00000044670677356 | SBIN0012352 |
+| State Bank of India | 44033882293 | SBIN0004314 |
 | State Bank of India | 41457561788 | SBIN0003618 |
 | State Bank of India | 00000042290367021 | SBIN0010936 |
 | State Bank of India | 00000031992563383 | SBIN0012404 |
 | State Bank of India | 35636430329 | SBIN0005477 |
+| State Bank of India | 00000039665583601 | SBIN0011326 |
 | State Bank of India | 31645416063 | SBIN0006510 |
 | State Bank of India | 00000041496576186 | SBIN0064259 |
-| State Bank of India | 33485505175 | sbin0011058 |
+| State Bank of India | 33485505175 | SBIN0011058 |
 | State Bank of India | 00000044288339457 | SBIN0017331 |
+| State Bank of India | 00000040635949562 | SBIN0001026 |
 | State Bank of India | 00000032306501561 | SBIN0000905 |
 | State Bank of India | 40431893085 | SBIN0009287 |
 | State Bank of India | 00000036933369244 | SBIN0007416 |
 | State Bank of India | 00000043807839698 | SBIN0002585 |
 | State Bank of India | 67333007749 | SBIN0070166 |
+| State Bank of India | 00000033538795966 | SBIN0015532 |
+| State Bank of India | 00000044623264028 | SBIN0004596 |
 | State Bank of India | 40728863087 | SBIN0005390 |
 | State Bank of India | 42699350059 | SBIN0007484 |
 | State Bank of India | 10669707764 | SBIN0010188 |
@@ -685,11 +701,13 @@ PDF text extraction: reliable ✅
 | State Bank of India | 00000020234293717 | SBIN0002825 |
 | State Bank of India | 00000030235295459 | SBIN0003747 |
 | State Bank of India | 00000044633894933 | SBIN0007626 |
+| State Bank of India | 00000042527498222 | SBIN0060022 |
 | State Bank of India | 00000033375408532 | SBIN0006790 |
 | State Bank of India | 00000020205357289 | SBIN0006112 |
 | State Bank of India | 00000044548544644 | SBIN0064812 |
 | State Bank of India | 00000031930669257 | SBIN0010858 |
 | State Bank of India | 00000044674610514 | SBIN0001963 |
+| State Bank of India | 00000039840840999 | SBIN0031058 |
 | State Bank of India | 00000031889973557 | SBIN0007104 |
 | State Bank of India | 00000044423242591 | SBIN0007865 |
 | State Bank of India | 00000041139415334 | SBIN0012404 |
@@ -698,19 +716,25 @@ PDF text extraction: reliable ✅
 | State Bank of India | 00000039503559367 | SBIN0009170 |
 | State Bank of India | 00000084005424634 | SBIN0RRVCGB |
 | State Bank of India | 00000061175480628 | SBIN0031054 |
+| State Bank of India | 00000042379038522 | SBIN0005931 |
 | State Bank of India | 10456453968 | SBIN0003370 |
 | State Bank of India | 00000043380288947 | SBIN0020952 |
 | State Bank of India | 00000035934621520 | SBIN0000968 |
-| State Bank of India | 40521691951 | sbin0011003 |
+| State Bank of India | 00000037172117703 | SBIN0020240 |
+| State Bank of India | 40521691951 | SBIN0011003 |
+| State Bank of India | 00000033055437475 | SBIN0011026 |
 | State Bank of India | 00000041601745628 | SBIN0003370 |
 | State Bank of India | 00000020325802962 | SBIN0016371 |
+| State Bank of India | 00000037212681587 | SBIN0032248 |
 | State Bank of India | 00000033168841960 | SBIN0005624 |
-| State Bank of India | 34344309298 | sbin0002084 |
+| State Bank of India | 34344309298 | SBIN0002084 |
 | State Bank of India | 30873602475 | SBIN0007902 |
 | State Bank of India | 20110024619 | SBIN0004275 |
+| State Bank of India | 00000062308245432 | SBIN0020236 |
+| State Bank of India | 00000042987900642 | SBIN0013420 |
 | State Bank of India | 44412705315 | SBIN0000001 |
 | Suryoday Small Finance Bank | 10000590180106 | SURY0BK0000 |
-| Suryoday Small Finance Bank | 251000252719 | sury0bk0000 |
+| Suryoday Small Finance Bank | 251000252719 | SURY0BK0000 |
 | Suryoday Small Finance Bank | 251013106580 | SURY0000011 |
 | Tamilnad Mercantile Bank | 181100050320563 | TMBL0000181 |
 | Telangana State Co-operative Apex Bank | 204022010005794 | TSAB0020040 |
@@ -759,13 +783,45 @@ PDF text extraction: reliable ✅
 | Yes Bank | 019861100000013 | YESB0000198 |
 | Yes Bank | 001677900000042 | YESB0000016 |
 
-**170 cash-out reconciliation:** 38,841.78 cashed + 6,79,158.18 on-hold + 0.00 refunded + 8,30,900.04 residual = 15,48,900.00 (victim_loss 15,48,900.00)
+**170 cash-out reconciliation:** 40,041.78 cashed + 6,79,158.18 on-hold + 0.00 refunded + 8,29,700.04 residual = 15,48,900.00 (victim_loss 15,48,900.00)
+
+## Case 512
+
+### Gold-standard figure pins (summary / lien / old-txn / Annexure H)
+
+| Result | Check | Detail |
+|---|---|---|
+| ✅ PASS | case acknowledgement number is 32709250080512 | 32709250080512 |
+| ✅ PASS | summary.victimLoss == 61,000.00 | 61,000.00 |
+| ✅ PASS | summary.totalDisputed == 2,03,524.16 | 2,03,524.16 |
+| ✅ PASS | summary.totalTransactions == 154 (raw headline) | 154 |
+| ✅ PASS | summary.uniqueTransactions == 154 (deduped raw legs) | reconciliation.transactions.unique=154; raw=154, dups=0 |
+| ✅ PASS | summary.cashedOut == 0.00 | 0.00 |
+| ✅ PASS | summary.onHold == 34,775.68 | 34,775.68 |
+| ✅ PASS | summary.recoverable == 26,224.32 | 26,224.32 |
+| ✅ PASS | summary.layers == 8 | 8 |
+| ✅ PASS | summary.distinctAccounts == 87 | 87 |
+| ✅ PASS | disputed reconciliation foots byte-exact (raw_hop - dedup + exit + hold + other == total) | 2,03,524.16 vs 2,03,524.16 |
+| ✅ PASS | disputed.total == headline 2,03,524.16 | 2,03,524.16 |
+| ✅ PASS | disputed.raw_hop == 1,96,215.28 | 1,96,215.28 |
+| ✅ PASS | disputed.hop (net) == 1,96,215.28 | 1,96,215.28 |
+| ✅ PASS | disputed.other == 7,308.88 | 7,308.88 |
+| ✅ PASS | dedup_hop_adjustment == 0 (no exact-duplicate hop leg; ₹409.56 leg is unique) | 0.00 |
+| ✅ PASS | lienTable.length == 49 | 49 |
+| ✅ PASS | sum(lienTable.lienAmount) == 32,375.01 | 32,375.01 |
+| ✅ PASS | every lien row reconstructs lien = max(0, min(grossBalance, disputedInflow)) with audit columns | 49 rows reconcile line-by-line |
+| ✅ PASS | no-cap naive == lien total + cap excess + excluded gross (== 71,463.12) | 71,463.12 (lien 32,375.01 + cap-excess 39,088.11 + excluded 0.00) |
+| ✅ PASS | oldTransactions.length == 1 | 1 |
+| ✅ PASS | oldTransactions[0].account == '43619403919' | 43619403919 |
+| ✅ PASS | oldTransactions[0].amount == 0 | 0 |
+| ✅ PASS | Annexure H: no two data-quality rows share the same masked account | 83 rows, all distinct |
+| ✅ PASS | Annexure H: every resolved IFSC is canonical uppercase (no lowercase) | all canonical |
 
 ## Existing test suites
 
 | Result | Suite | Summary |
 |---|---|---|
-| ✅ PASS | `npx jest` | Test Suites: 14 passed, 14 total \| Tests:       254 passed, 254 total |
+| ✅ PASS | `npx jest` | Test Suites: 18 passed, 18 total \| Tests:       303 passed, 303 total |
 | ✅ PASS | `node backend/scripts/accuracy_test.js` | Final score: 30/30 checks passed |
 | ✅ PASS | `node backend/scripts/consistency_test.js` | 4/4 consistency checks passed |
 | ✅ PASS | `node backend/scripts/security_audit.js` | Final security score: 10/10 \| Verdict: all attack vectors contained. ✅ |

@@ -55,6 +55,7 @@ const CREATE_TABLES = Object.freeze([
       CHECK (analysis_status IN ('pending','processing','complete','error')),
     analysis_json          TEXT,
     source_sha256          TEXT,
+    old_transactions       TEXT,
     created_at             TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
 
@@ -217,6 +218,12 @@ const COLUMN_MIGRATIONS = Object.freeze([
   // its exact source (stamped into the PDF dossier + audit_log).
   { table: 'ncrp_reports', column: 'source_sha256',
     ddl: 'ALTER TABLE ncrp_reports ADD COLUMN source_sha256 TEXT' },
+
+  // v0.3.1 — "Old Transaction" sheet support. JSON array of transactions that
+  // predate the 6-month NCRP window; parsed and stored for the data-quality
+  // annexure but excluded from every financial figure.
+  { table: 'ncrp_reports', column: 'old_transactions',
+    ddl: 'ALTER TABLE ncrp_reports ADD COLUMN old_transactions TEXT' },
 ]);
 
 /**

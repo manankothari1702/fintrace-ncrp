@@ -36,6 +36,9 @@ dayjs.extend(utc);
 const MULE_WEIGHTS = require('../config/mule_weights.json');
 const { updateTransactionCashout } = require('../db/queries');
 const { computeCashedOut, POLICIES: CASHOUT_POLICIES } = require('../lib/cashoutPolicy');
+const { detectCycles } = require('../analysis/cycleDetector');
+const { analyzeConnectivity } = require('../analysis/connectivity');
+const { dayOfWeekBreakdown } = require('../analysis/dayOfWeek');
 
 /**
  * Cash-out counting policy (FinTrace v0.2.0). Fraud proceeds cashed out cannot
@@ -145,6 +148,28 @@ function layerOf(v) {
   if (Number.isInteger(v)) return v;
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Canonical IFSC shape (4 letters, '0', 6 alphanumerics). */
+const VALID_IFSC = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+/**
+ * Canonical account-identity key for de-duplicating rollup / data-quality
+ * entries. The SAME bank account can appear zero-padded on one row and bare on
+ * another (e.g. "00000044021519366" vs "44021519366"); both denote one account
+ * and must aggregate once. We therefore strip leading zeros — but ONLY for
+ * all-digit account numbers. Non-numeric identifiers (wallet / PG / PA labels
+ * such as "NA", "Paytm", UPI handles) are returned verbatim and case-preserved,
+ * so distinct placeholders (e.g. "NA" vs "Na") are never wrongly merged.
+ *
+ * @param {unknown} acc
+ * @returns {string}
+ */
+function canonicalAccountKey(acc) {
+  const s = String(acc ?? '').trim();
+  if (!s) return s;
+  if (/^\d+$/.test(s)) return s.replace(/^0+/, '') || '0';
+  return s;
 }
 
 /**
@@ -272,12 +297,26 @@ function classifyRowKind(t) {
 }
 
 /**
- * Collapse rows that are the SAME money appearing on more than one channel
- * sheet — identical (beneficiary_account, transaction_date, transaction_amount,
- * utr_no). NCRP routinely re-lists one leg across sheets; without this collapse
- * the same rupees are counted two or three times in every aggregate. Rows
- * missing a UTR are never merged (the composite key would be too loose), and the
- * first occurrence of each key is kept.
+ * Collapse rows that are an EXACT-DUPLICATE ledger row — the SAME money listed
+ * twice (the same leg re-listed across channel sheets, or repeated within one
+ * sheet). A row is a duplicate only when EVERY material field matches:
+ * sender (victim_account), beneficiary_account, transaction_date,
+ * transaction_amount, disputed_amount and utr_no. NCRP routinely re-lists one
+ * leg; without this collapse the same rupees are counted two or three times in
+ * every aggregate. Rows missing a UTR are never merged (the composite key would
+ * be too loose), and the first occurrence of each key is kept.
+ *
+ * Both `victim_account` (the sender) and `disputed_amount` are part of the key
+ * on purpose. UTR is NOT unique-per-transaction in these files — one UTR can
+ * fan out to several distinct transfers (different sender/beneficiary/amount)
+ * and one transfer can be apportioned across layers with DIFFERENT disputed
+ * amounts. Keying on (beneficiary|date|amount|utr) alone silently dropped genuine
+ * legs whose only difference from a sibling was the sender or the disputed
+ * amount — e.g. case 32709's ₹409.56 hop (a UTR-563707902816 / ₹1400 leg whose
+ * twin carried disputed ₹18.64) and case …145's ₹20,000 ATM cash-out (a
+ * UTR-270324046951 leg whose siblings carried disputed ₹9,963.48 and ₹20,000).
+ * Including sender + disputed keeps those distinct legs and collapses only
+ * byte-identical duplicates.
  *
  * @param {ReadonlyArray<Record<string, unknown>>} rows - Enriched rows.
  * @returns {{ rows: Array<Record<string, unknown>>, removed: number }}
@@ -288,10 +327,17 @@ function dedupeRows(rows) {
   let removed = 0;
   for (const r of rows) {
     const utr = str(r.utr_no);
-    // Only merge when a UTR is present AND the row carries an amount — a shared
-    // batch reference with no amount/date is too weak a key to collapse on.
+    // Only merge when a UTR is present — a row with no UTR has no reliable
+    // transaction identity, so the composite key would be too loose to collapse.
     if (utr) {
-      const key = `${str(r.beneficiary_account) || ''}|${str(r.transaction_date) || ''}|${num(r.transaction_amount)}|${utr}`;
+      const key = [
+        str(r.victim_account) || '',
+        str(r.beneficiary_account) || '',
+        str(r.transaction_date) || '',
+        num(r.transaction_amount),
+        num(r.disputed_amount),
+        utr,
+      ].join('|');
       if (seen.has(key)) { removed += 1; continue; }
       seen.add(key);
     }
@@ -623,10 +669,11 @@ function buildAccountRollup(txns) {
 
   /** @type {Map<string, any>} */
   const accounts = new Map();
-  const ensure = (acct, seed = {}) => {
-    if (!accounts.has(acct)) {
-      accounts.set(acct, {
-        account_no: acct,
+  const ensure = (acctRaw, seed = {}) => {
+    const key = canonicalAccountKey(acctRaw);
+    if (!accounts.has(key)) {
+      accounts.set(key, {
+        account_no: acctRaw,
         bank_name: null,
         ifsc_code: null,
         bank_source: null,
@@ -645,6 +692,7 @@ function buildAccountRollup(txns) {
         total_cashed_out: 0,
         total_on_hold: 0,
         disputed_received: 0,
+        disputed_forwarded: 0,
         disputed_cashed_out: 0,
         firstReceiptMs: null,
         firstExitMs: null,
@@ -654,15 +702,31 @@ function buildAccountRollup(txns) {
         homeStates: new Set(),
       });
     }
-    const a = accounts.get(acct);
-    if (!a.bank_name && seed.bank) a.bank_name = seed.bank;
-    if (!a.ifsc_code && seed.ifsc) a.ifsc_code = seed.ifsc;
+    const a = accounts.get(key);
+    // Display the most complete representation; the key already collapses zero-
+    // padded variants of one account so their figures aggregate once rather than
+    // splitting into two suspects (and two lien letters).
+    if (String(acctRaw).length > String(a.account_no).length) a.account_no = acctRaw;
     // Bank-attribution provenance (v0.2.0): captured from the first row that
     // carried a resolved beneficiary bank, so lien letters and the data-quality
-    // view can footnote how the name was derived and what the source said.
-    if (!a.bank_source && seed.bankSource) a.bank_source = seed.bankSource;
-    if (!a.bank_flag && seed.bankFlag) a.bank_flag = seed.bankFlag;
-    if (!a.raw_bank && seed.rawBank) a.raw_bank = seed.rawBank;
+    // view can footnote how the name was derived and what the source said. A row
+    // bearing a VALID IFSC is authoritative, so it upgrades a first-seen
+    // attribution that lacked one (and clears a stale NO_IFSC flag).
+    const seedValid = VALID_IFSC.test(String(seed.ifsc || '').trim().toUpperCase());
+    const curValid = VALID_IFSC.test(String(a.ifsc_code || '').trim().toUpperCase());
+    if (seedValid && !curValid) {
+      if (seed.bank) a.bank_name = seed.bank;
+      a.ifsc_code = seed.ifsc;
+      a.bank_source = seed.bankSource || a.bank_source;
+      a.bank_flag = seed.bankFlag || null;
+      a.raw_bank = seed.rawBank || a.raw_bank;
+    } else {
+      if (!a.bank_name && seed.bank) a.bank_name = seed.bank;
+      if (!a.ifsc_code && seed.ifsc) a.ifsc_code = seed.ifsc;
+      if (!a.bank_source && seed.bankSource) a.bank_source = seed.bankSource;
+      if (!a.bank_flag && seed.bankFlag) a.bank_flag = seed.bankFlag;
+      if (!a.raw_bank && seed.rawBank) a.raw_bank = seed.rawBank;
+    }
     return a;
   };
   const touchLast = (a, ms) => {
@@ -731,10 +795,12 @@ function buildAccountRollup(txns) {
   for (const t of txns) {
     if (t.row_kind !== ROW_KIND.HOP) continue;
     const sender = str(t.victim_account);
-    if (!sender || !accounts.has(sender)) continue;
-    const a = accounts.get(sender);
+    const senderKey = canonicalAccountKey(sender);
+    if (!sender || !accounts.has(senderKey)) continue;
+    const a = accounts.get(senderKey);
     const ms = toMs(t.transaction_date);
     a.onward_forwarded += num(t.transaction_amount);
+    a.disputed_forwarded += num(t.disputed_amount); // Feature 4: disputed pushed onward (audit column)
     if (ms !== null && (a.firstForwardMs === null || ms < a.firstForwardMs)) a.firstForwardMs = ms;
     touchLast(a, ms);
   }
@@ -763,6 +829,7 @@ function buildAccountRollup(txns) {
     a.total_on_hold = round(a.total_on_hold);
     a.lien_eligible_amount = round(lien);
     a.disputed_received = round(a.disputed_received);
+    a.disputed_forwarded = round(a.disputed_forwarded);
     a.disputed_cashed_out = round(a.disputed_cashed_out);
     a.total_received = round(a.total_received);
 
@@ -806,6 +873,12 @@ const MULE_BONUS = Object.freeze({
   fanIn: num(MULE_WEIGHTS.fanIn) || 8,                   // collects from two or more upstream accounts
   highCashoutRatio: num(MULE_WEIGHTS.highCashoutRatio) || 15, // withdrew as cash ≥ 90% of what it received
   sameDayInOut: num(MULE_WEIGHTS.sameDayInOut) || 17,    // money in and money out on the same calendar day
+  // Feature 2 — graduated in-degree (fan-in) signal. `fanIn` above is binary
+  // (one flat bonus at ≥ 2 senders); this ADDS points for the DEGREE of fan-in
+  // beyond that — `inDegreeCollector` points per distinct sender above the 2nd —
+  // so a 10-sender collector outranks a 2-sender one. Fires only at in-degree ≥ 3,
+  // leaving every existing ≤2-sender account's score unchanged. Uncapped, as today.
+  inDegreeCollector: num(MULE_WEIGHTS.inDegreeCollector) || 6,
 });
 
 /**
@@ -901,6 +974,17 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
       bonus += MULE_BONUS.fanIn;
       reasons.push(`Receives from ${a.senders.size} accounts`);
     }
+    // Graduated in-degree (Feature 2): the COUNT of distinct senders (in-degree)
+    // fed in as an additive signal — `inDegreeCollector` points per sender beyond
+    // the 2nd — so a high-fan-in collector ranks above a minimal one. in-degree
+    // here is a.senders.size, the same distinct-sender measure connectivity.js and
+    // the cycle/aggregator graph use, so the score and the aggregator table agree.
+    const extraSenders = Math.max(0, a.senders.size - 2);
+    if (extraSenders > 0) {
+      const inDegreePts = MULE_BONUS.inDegreeCollector * extraSenders;
+      bonus += inDegreePts;
+      reasons.push(`High fan-in collector: in-degree ${a.senders.size} (+${inDegreePts})`);
+    }
     if (cashoutRatio >= 0.9) {
       bonus += MULE_BONUS.highCashoutRatio;
       reasons.push(`High cashout ratio (${Math.round(cashoutRatio * 100)}% of received)`);
@@ -935,7 +1019,14 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
     });
   }
 
-  return results.sort((a, b) => b.mule_score - a.mule_score);
+  // Deterministic ranking: highest score first, then larger disputed inflow (a
+  // bigger mule outranks a smaller one at equal score), then account number — so
+  // equal scores never reorder run-to-run (the score is uncapped points, ties
+  // are common). See note on the uncapped scale in the function header.
+  return results.sort((a, b) =>
+    (b.mule_score - a.mule_score) ||
+    (num(b.total_received) - num(a.total_received)) ||
+    String(a.account_no).localeCompare(String(b.account_no)));
 }
 
 // ─── Module 4 — lien calculation ───────────────────────────────────────
@@ -970,6 +1061,22 @@ function lienCalculation(rollup) {
     const onward = num(a.onward_forwarded);
     const hold = num(a.total_on_hold);
     const exits = num(a.total_cashed_out);
+    const lien = num(a.lien_eligible_amount);
+    // gross_balance (pre-cap residue) and disputed_received (the cap) are read
+    // straight from the rollup — never recomputed. lien = max(0, min(gross_balance,
+    // disputed_received)). When the gross residue exceeds the disputed inflow the
+    // cap bites: the excess is the account's own/clean (non-disputed) funds and is
+    // EXCLUDED from the lien. `excluded_reason` (Feature 4) makes that delta
+    // reviewable per account; `disputed_forwarded` is surfaced as an audit column.
+    const grossBal = a.gross_balance != null
+      ? num(a.gross_balance)
+      : Math.max(0, received - onward - hold - exits);
+    const capExcess = round(grossBal - lien);
+    const excludedReason = capExcess > 0.005
+      ? `Capped at disputed inflow: gross residue ${formatINR(grossBal)} exceeds disputed inflow ` +
+        `${formatINR(num(a.disputed_received))}; ${formatINR(capExcess)} is non-disputed (own/clean) ` +
+        `funds and is excluded from the lien.`
+      : 'Full gross residue is within the disputed inflow — no cap applied.';
     rows.push({
       account_no: a.account_no,
       bank_name: a.bank_name,
@@ -983,24 +1090,53 @@ function lienCalculation(rollup) {
       onward_forwarded: onward,
       total_on_hold: hold,
       total_cashed_out: exits,
-      // Derivation columns surfaced for the worksheet (PRESENTATION ONLY — both
-      // values are already computed in buildAccountRollup; nothing is recomputed
-      // or altered here). gross_balance is the pre-cap residue and
-      // disputed_received is the cap, so the export can show exactly why
-      // lien_eligible_amount = min(gross_balance, disputed_received), floored at 0.
-      gross_balance: a.gross_balance != null
-        ? num(a.gross_balance)
-        : Math.max(0, received - onward - hold - exits),
+      gross_balance: grossBal,
       disputed_received: num(a.disputed_received),
-      lien_eligible_amount: a.lien_eligible_amount,
+      disputed_forwarded: num(a.disputed_forwarded), // Feature 4 audit column
+      cap_excess: capExcess,                          // gross_balance − lien (excluded as non-disputed)
+      excluded_reason: excludedReason,
+      lien_eligible_amount: lien,
       note:
         `Received ${formatINR(received)}; forwarded ${formatINR(onward)} onward, ` +
         `${formatINR(exits)} withdrawn as cash, ${formatINR(hold)} already on hold. ` +
-        `${formatINR(a.lien_eligible_amount)} remains unaccounted-for — ` +
+        `${formatINR(lien)} remains unaccounted-for — ` +
         `request lien (subject to available balance at bank).`,
     });
   }
   return rows.sort((a, b) => b.lien_eligible_amount - a.lien_eligible_amount);
+}
+
+/**
+ * Accounts EXCLUDED from the lien worksheet that nonetheless carry a positive
+ * gross residue (received − forwarded − on-hold − exits) — i.e. the disputed-
+ * inflow cap floored their lien to zero. Listed (Feature 4) so a reviewer can see
+ * every account the cap removed and why; the no-cap "naive" total is exactly
+ * Σ lien + Σ (these accounts' gross residue) + Σ cap_excess of the liened rows.
+ *
+ * @param {Map<string, any>} rollup - Output of buildAccountRollup.
+ * @returns {Array<{ account_no: string, bank_name: string|null,
+ *   gross_balance: number, disputed_received: number, total_cashed_out: number,
+ *   excluded_reason: string }>}
+ */
+function lienExclusions(rollup) {
+  const out = [];
+  for (const a of rollup.values()) {
+    const grossBal = num(a.gross_balance);
+    if (grossBal <= 0.005) continue;            // no residue to recover anyway
+    if (num(a.lien_eligible_amount) > 0.005) continue; // it IS on the lien table
+    out.push({
+      account_no: a.account_no,
+      bank_name: a.bank_name,
+      ifsc_code: a.ifsc_code,
+      gross_balance: round(grossBal),
+      disputed_received: num(a.disputed_received),
+      total_cashed_out: num(a.total_cashed_out),
+      excluded_reason:
+        `Excluded from lien: gross residue ${formatINR(grossBal)} but disputed inflow ` +
+        `${formatINR(num(a.disputed_received))} — the residue is non-disputed (own/clean) funds.`,
+    });
+  }
+  return out.sort((a, b) => b.gross_balance - a.gross_balance);
 }
 
 // ─── Data-quality review (v0.2.0 — bank attribution) ────────────────────
@@ -1048,13 +1184,28 @@ function dataQuality(txns) {
   for (const t of txns) {
     const flag = str(t.bank_flag);
     if (!flag) continue;
-    const acct = str(t.beneficiary_account) || str(t.victim_account);
-    if (!acct || byAccount.has(acct)) continue;
+    const acctRaw = str(t.beneficiary_account) || str(t.victim_account);
+    if (!acctRaw) continue;
+    const key = canonicalAccountKey(acctRaw);
+    const ifsc = str(t.ifsc_code);
+    const rowValid = VALID_IFSC.test(String(ifsc || '').trim().toUpperCase());
+    const existing = byAccount.get(key);
+    // One row per real account. Zero-padded variants collapse onto one key; when
+    // two variants disagree, the row bearing a VALID IFSC wins — it is
+    // authoritative and its IFSC_TEXT_MISMATCH is the actionable flag, not the
+    // duplicate's NO_IFSC. Always keep the most complete account representation.
+    if (existing) {
+      const exValid = VALID_IFSC.test(String(existing.ifsc_code || '').trim().toUpperCase());
+      if (String(acctRaw).length > String(existing.account_no).length) existing.account_no = acctRaw;
+      if (!(rowValid && !exValid)) continue; // keep existing unless this row upgrades to a valid IFSC
+    }
     const bank = str(t.beneficiary_bank) || 'Unknown';
     const raw = str(t.raw_beneficiary_bank);
-    byAccount.set(acct, {
-      account_no: acct,
-      ifsc_code: str(t.ifsc_code),
+    const displayAcct = existing && String(existing.account_no).length > String(acctRaw).length
+      ? existing.account_no : acctRaw;
+    byAccount.set(key, {
+      account_no: displayAcct,
+      ifsc_code: ifsc,
       bank,
       raw_bank: raw,
       bank_source: str(t.bank_source),
@@ -1693,18 +1844,29 @@ function keyFindings(results) {
     findings.push(`Victim loss of ${formatINR(results.victim_loss)} entered the laundering network${tail}`);
   }
 
-  // 1. Cashout urgency.
+  // 1. Cashout urgency — the confirmed total and its share of the victim loss,
+  //    kept SEPARATE from the fastest single extraction. The fastest figure is
+  //    one withdrawal's victim-debit-to-cash-out gap; appending it to the total
+  //    (the old wording) misread as "the whole sum left in 0.1 hours".
   if (cashout && cashout.total_cashout_amount > 0) {
+    const recov = results.recovery;
     const topState = cashout.cashout_by_state[0];
     const where = topState ? ` in ${topState.state}` : '';
-    const speed =
-      cashout.fastest_cashout_hours !== null && cashout.fastest_cashout_hours !== undefined
-        ? ` within ${round(cashout.fastest_cashout_hours, 1)} hours`
-        : '';
+    const pctOfLoss = recov && recov.cashed_out_pct != null
+      ? ` (${recov.cashed_out_pct}% of the victim loss)`
+      : '';
     findings.push(
-      `${formatINR(cashout.total_cashout_amount)} already cashed out` +
-      `${where}${speed} — immediate action needed.`
+      `${formatINR(cashout.total_cashout_amount)}${pctOfLoss} already confirmed cashed out` +
+      `${where} — immediate action needed.`
     );
+    // Fastest SINGLE extraction — a separate fact, only when it exists.
+    if (cashout.fastest_cashout_hours !== null && cashout.fastest_cashout_hours !== undefined
+      && Number.isFinite(cashout.fastest_cashout_hours)) {
+      findings.push(
+        `Fastest extraction: a single cash-out occurred just ` +
+        `${round(cashout.fastest_cashout_hours, 2)} hours after the victim debit.`
+      );
+    }
   }
 
   // 2. Same-day cashouts.
@@ -1906,6 +2068,7 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     []
   );
   const liens = runModule('lienCalculation', () => lienCalculation(rollup), []);
+  const lien_excluded = runModule('lienExclusions', () => lienExclusions(rollup), []);
   const data_quality = runModule('dataQuality', () => dataQuality(rows), []);
   const data_quality_summary = runModule(
     'dataQualitySummary',
@@ -1962,6 +2125,24 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     () => moneyFlowNetwork(rows, rollup),
     { top_edges: [], aggregators: [], circular_flows: [] }
   );
+  // Circular-flow detection (Feature 1): real simple cycles (length <= 6) in the
+  // hop graph — distinct from money_flow_network.circular_flows, which only flags
+  // single-account self-loops. detectCycles reuses the shared directed graph.
+  const circular_flows = runModule('cycleDetector', () => detectCycles(rows), []);
+  // Account connectivity / aggregator analysis (Feature 2): per-account in/out
+  // degree over the same hop graph, with collectors (in-degree >= 2) ranked.
+  const connectivity = runModule(
+    'connectivity',
+    () => analyzeConnectivity(rows),
+    { accounts: [], collectors: [], in_degree_by_account: new Map() }
+  );
+  // Day-of-week breakdown (Feature 5): dated legs grouped by IST weekday, with an
+  // explicit Undated bucket so counts foot to the full leg total.
+  const day_of_week = runModule(
+    'dayOfWeek',
+    () => dayOfWeekBreakdown(rows),
+    { weekdays: [], undated: { weekday: 'Undated', txns: 0, totalAmount: 0 } }
+  );
   const victim_accounts = runModule('victimAccounts', () => victimAccounts(rows), []);
 
   // ── Headline money figures (the "show both" model) ────────────────────
@@ -1999,6 +2180,67 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
   }, {
     hopCount: 0, benefAccounts: 0, victimLoss: 0,
     cashedOut: cappedCashedOut, cashedOutRaw: 0, onHold: 0, trailDisputed: 0,
+  });
+
+  // ── Reconciliation buckets (headline ⟷ annexure footing) ──────────────
+  // The headline counts every parsed leg, but the per-layer table (Annexure A)
+  // sums disputed_amount on HOP legs only, and the daily timeline (Annexure G)
+  // drops undated rows. Expose the residual buckets so those annexures can foot
+  // to the headline explicitly instead of silently dropping rows. Derived from
+  // the SAME deduped `rows`/`enriched` the headline + annexures use — never
+  // recomputed independently — so the parts provably sum to the headline.
+  const reconciliation = runModule('reconciliation', () => {
+    let hop = 0, exit = 0, hold = 0, other = 0;
+    for (const t of rows) {
+      const d = num(t.disputed_amount);
+      if (t.row_kind === ROW_KIND.HOP) hop += d;
+      else if (t.row_kind === ROW_KIND.EXIT) exit += d;
+      else if (t.row_kind === ROW_KIND.HOLD) hold += d;
+      else other += d;
+    }
+    // Raw hop disputed BEFORE de-dup — every "Money Transfer to" leg, including
+    // exact-duplicate rows (Feature 3). `dedup_hop_adjustment` is the disputed
+    // value carried by the collapsed EXACT-duplicate hop legs (byte-identical on
+    // sender/beneficiary/date/amount/disputed/utr; see {@link dedupeRows}), so the
+    // reconciliation foots literally: raw_hop − dedup_hop_adjustment + exit + hold
+    // + other === headline. (Net hop = raw_hop − dedup_hop_adjustment === the
+    // per-layer Disputed column total.) The de-dup gap is a labelled line, never a
+    // silent rounding. On gold case 080512 the adjustment is 0 (no exact-duplicate
+    // hop leg — the two ₹500 legs differ by timestamp, the ₹409.56 leg is unique).
+    let rawHop = 0;
+    for (const t of enriched) {
+      if (t.row_kind === ROW_KIND.HOP) rawHop += num(t.disputed_amount);
+    }
+    let undatedCount = 0;
+    let undatedAmount = 0;
+    for (const t of rows) {
+      if (istDayKey(t.transaction_date) !== null) continue;
+      undatedCount += 1;
+      undatedAmount += num(t.transaction_amount);
+    }
+    return {
+      disputed: {
+        raw_hop: round(rawHop),                                   // Money Transfer legs incl. duplicates
+        dedup_hop_adjustment: round(round(rawHop) - round(hop)),   // disputed on collapsed duplicate hop legs
+        hop: round(hop), exit: round(exit), hold: round(hold), other: round(other),
+        // total === hop+exit+hold+other (rounded) === raw_hop − dedup_hop_adjustment + exit + hold + other
+        total: money.trailDisputed,
+      },
+      transactions: {
+        dated: rows.length - undatedCount,
+        undated: undatedCount,
+        undated_amount: round(undatedAmount),
+        unique: rows.length,                   // deduped legs (annexure footing)
+        duplicates: duplicateCount,            // exact-duplicate rows removed
+        raw_legs: enriched.length,             // === headline total_transactions
+      },
+    };
+  }, {
+    disputed: { raw_hop: 0, dedup_hop_adjustment: 0, hop: 0, exit: 0, hold: 0, other: 0, total: 0 },
+    transactions: {
+      dated: 0, undated: 0, undated_amount: 0,
+      unique: rows.length, duplicates: duplicateCount, raw_legs: enriched.length,
+    },
   });
 
   const recovery_status = runModule(
@@ -2077,10 +2319,12 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     report_id: reportId,
     generated_at: new Date().toISOString(),
     summary,
+    reconciliation,
     layer_analysis: layers,
     cashout_analysis: cashout,
     mule_detection: mules,
     lien_calculation: liens,
+    lien_excluded,
     data_quality,
     data_quality_summary,
     repeat_accounts: repeats,
@@ -2088,6 +2332,14 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     timeline_summary,
     geography,
     money_flow_network,
+    circular_flows,
+    // Connectivity (Feature 2): full per-account in/out-degree table + the ranked
+    // collector subset. `aggregators` is the collector list surfaced at the top
+    // level for the summary JSON, the Excel "Account Connectivity" sheet, and the
+    // PDF "Top Aggregator Accounts" table.
+    connectivity: { accounts: connectivity.accounts, collectors: connectivity.collectors },
+    aggregators: connectivity.collectors,
+    day_of_week,
     recovery_status,
     investigation_roadmap,
     victim_accounts,
@@ -2106,6 +2358,7 @@ module.exports = {
   cashoutAnalysis,
   muleDetection,
   lienCalculation,
+  lienExclusions,
   repeatAccountDetection,
   timelineAnalysis,
   timelineSummary,
@@ -2124,6 +2377,7 @@ module.exports = {
     enrichTransactions,
     dedupeRows,
     buildAccountRollup,
+    canonicalAccountKey,
     formatINR,
     istDayKey,
     diffHours,

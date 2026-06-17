@@ -24,11 +24,13 @@ const SQL_INSERT_REPORT = `
   INSERT INTO ncrp_reports (
     filename, original_filename, upload_date,
     total_transactions, total_disputed_amount, total_layers,
-    fraud_start_date, analysis_status, analysis_json, source_sha256
+    fraud_start_date, analysis_status, analysis_json, source_sha256,
+    old_transactions
   ) VALUES (
     @filename, @original_filename, @upload_date,
     @total_transactions, @total_disputed_amount, @total_layers,
-    @fraud_start_date, @analysis_status, @analysis_json, @source_sha256
+    @fraud_start_date, @analysis_status, @analysis_json, @source_sha256,
+    @old_transactions
   )
 `;
 
@@ -285,6 +287,7 @@ function normalizeTransaction(data) {
  *   analysis_status?: 'pending'|'processing'|'complete'|'error',
  *   analysis_json?: string|null,
  *   source_sha256?: string|null,
+ *   old_transactions?: string|null,
  * }} data
  * @returns {number} The auto-generated `id` of the new ncrp_reports row.
  */
@@ -305,6 +308,7 @@ function insertReport(db, data) {
     analysis_status:       data.analysis_status ?? 'pending',
     analysis_json:         nz(data.analysis_json),
     source_sha256:         nz(data.source_sha256),
+    old_transactions:      nz(data.old_transactions),
   };
   const info = getOrPrepare(db, SQL_INSERT_REPORT).run(params);
   return Number(info.lastInsertRowid);

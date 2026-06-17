@@ -224,6 +224,23 @@ function trimOrNull(value) {
 }
 
 /**
+ * Canonicalise an IFSC cell. A syntactically valid IFSC (4 letters, '0', 6
+ * alphanumerics) is uppercased to its canonical form so the dossier never
+ * prints a lowercase code (some NCRP exports carry "jiop0000001"). Malformed /
+ * non-IFSC values are returned verbatim so the INVALID_IFSC flag still shows
+ * the operator exactly what the source file held.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function canonicalizeIfsc(value) {
+  const s = trimOrNull(value);
+  if (s === null) return null;
+  const up = s.toUpperCase();
+  return /^[A-Z]{4}0[A-Z0-9]{6}$/.test(up) ? up : s;
+}
+
+/**
  * Strip a leading "Label :- " / "Label : " prefix from a cell, returning the
  * trailing value with internal whitespace collapsed.
  *
@@ -523,7 +540,28 @@ const SHEET_CATEGORY = Object.freeze({
   AEPS: 'AEPS',
   HOLD: 'HOLD',
   OTHER: 'OTHER',
+  // Banks flag transactions older than the 6-month NCRP reporting window in a
+  // separate "Old Transaction" tab. These rows are informational / reference
+  // only: they carry no recoverable money (typically ₹0.00) and are excluded
+  // from every financial figure. The parser routes them to a dedicated
+  // `oldTransactions` array, never into the canonical `rows` the analyzer reads.
+  OLD_TRANSACTION: 'OLD_TRANSACTION',
 });
+
+/**
+ * Extra columns that appear ONLY on the "Old Transaction" sheet (not part of the
+ * canonical NCRP schema). Keyed by their loose-normalised header
+ * ({@link normalizeHeaderLoose}) so spacing / punctuation drift still matches.
+ * `pifsc_code` is used for IFSC-authoritative bank resolution when present.
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const OLD_TXN_EXTRA_ALIASES = new Map([
+  ['ptrans', 'parent_txn'],       // parent transaction reference
+  ['paccountno', 'parent_account'], // parent account reference
+  ['pifsccode', 'pifsc_code'],    // IFSC for the old-transaction account
+  ['pisnodal', 'pis_nodal'],      // nodal-account flag
+]);
 
 /**
  * Classify a sheet by its name into a disbursement channel.
@@ -533,6 +571,9 @@ const SHEET_CATEGORY = Object.freeze({
  */
 function classifySheetCategory(sheetName) {
   const n = String(sheetName || '').toLowerCase();
+  // Tested before the cashout/transfer keywords: an "Old Transaction" tab must
+  // never be mistaken for a money channel — it contributes no financial figure.
+  if (/old\s*transaction/.test(n)) return SHEET_CATEGORY.OLD_TRANSACTION;
   if (/withdrawal\s*through\s*atm|\batm\b/.test(n)) return SHEET_CATEGORY.ATM;
   if (/withdrawal\s*through\s*pos|\bpos\b/.test(n)) return SHEET_CATEGORY.POS;
   if (/aeps/.test(n)) return SHEET_CATEGORY.AEPS;
@@ -575,6 +616,9 @@ const KNOWN_SHEET_NAMES = new Map([
   ['others', SHEET_CATEGORY.OTHER],
   ['others less then 500', SHEET_CATEGORY.OTHER],
   ['others less than 500', SHEET_CATEGORY.OTHER],
+  // Transactions older than the 6-month NCRP window (singular + plural variants).
+  ['old transaction', SHEET_CATEGORY.OLD_TRANSACTION],
+  ['old transactions', SHEET_CATEGORY.OLD_TRANSACTION],
 ]);
 
 /**
@@ -834,6 +878,10 @@ const REQUIRED_COLUMNS_BY_CATEGORY = Object.freeze({
   [SHEET_CATEGORY.AEPS]:     Object.freeze(['account', 'transaction_amount']),
   [SHEET_CATEGORY.HOLD]:     Object.freeze(['account', 'transaction_amount']),
   [SHEET_CATEGORY.OTHER]:    Object.freeze(['account']),
+  // Old transactions are informational; only an account identifier is required.
+  // Amount is intentionally NOT required — these rows are typically ₹0.00 and
+  // never feed a financial figure.
+  [SHEET_CATEGORY.OLD_TRANSACTION]: Object.freeze(['account']),
 });
 
 /** Officer-facing labels + example headers for each required column. */
@@ -1035,7 +1083,7 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
     // beneficiary bank or IFSC and are left untouched (null) rather than being
     // stamped "Unknown".
     const rawBeneficiaryBank = trimOrNull(get('beneficiary_bank'));
-    const ifscCode = trimOrNull(get('ifsc_code'));
+    const ifscCode = canonicalizeIfsc(get('ifsc_code'));
     let beneficiary_bank = rawBeneficiaryBank;
     let raw_beneficiary_bank = null;
     let bank_source = null;
@@ -1083,6 +1131,89 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
   return { rows, skipped, repeatedHeaders };
 }
 
+/**
+ * Map the "Old Transaction" sheet's extra columns (ptrans / paccountno /
+ * pifsc_code / pisnodal) to their canonical index, by loose-normalised header.
+ *
+ * @param {ReadonlyArray<unknown>} headers
+ * @returns {Record<string, number>} field → column index.
+ */
+function detectOldTxnExtraColumns(headers) {
+  const out = {};
+  if (!Array.isArray(headers)) return out;
+  for (let i = 0; i < headers.length; i++) {
+    const key = normalizeHeaderLoose(headers[i]);
+    const field = OLD_TXN_EXTRA_ALIASES.get(key);
+    if (field && out[field] === undefined) out[field] = i;
+  }
+  return out;
+}
+
+/**
+ * Build OLD-TRANSACTION records from a single worksheet's array-of-arrays.
+ *
+ * These are NOT canonical transactions: they predate the 6-month NCRP window
+ * and are excluded from every financial figure. We keep them in a separate,
+ * lighter shape (no analyzer-derived fields) so the dossier can list them in the
+ * data-quality annexure and the UI can warn that they were skipped. The bank is
+ * still IFSC-resolved (using the sheet's `pifsc_code` when present) so the note
+ * names the right institution.
+ *
+ * @param {ReadonlyArray<ReadonlyArray<unknown>>} aoa
+ * @param {{ row: number, headers: ReadonlyArray<unknown> }} headerInfo
+ * @param {Record<string, number>} mapping
+ * @returns {Array<Object>}
+ */
+function materializeOldTransactionRows(aoa, headerInfo, mapping) {
+  const extra = detectOldTxnExtraColumns(headerInfo.headers);
+  const out = [];
+
+  const cell = (row, idx) => (idx === undefined || idx >= row.length ? null : row[idx]);
+
+  for (let i = headerInfo.row + 1; i < aoa.length; i++) {
+    const row = aoa[i];
+    if (!Array.isArray(row) || row.every(isBlank)) continue;
+    if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) continue;
+
+    const account =
+      trimOrNull(cell(row, mapping.beneficiary_account)) ||
+      trimOrNull(cell(row, mapping.victim_account));
+    const ackNo = trimOrNull(cell(row, mapping.ack_no));
+
+    // No account and no acknowledgement number → summary / blank row, not a
+    // real old-transaction entry.
+    if (account === null && ackNo === null) continue;
+
+    const rawBank = trimOrNull(cell(row, mapping.beneficiary_bank));
+    // Prefer the old-transaction sheet's own pifsc_code; fall back to a standard
+    // IFSC column if one happens to be mapped. Canonicalised to uppercase.
+    const ifsc = canonicalizeIfsc(cell(row, extra.pifsc_code)) || canonicalizeIfsc(cell(row, mapping.ifsc_code));
+    const resolved = (ifsc || rawBank)
+      ? resolveBank({ rawBank, ifsc, account })
+      : { bank: rawBank, ifsc: null, source: null, flag: null, rawBank };
+
+    out.push({
+      ack_no: ackNo,
+      account_no: account,
+      bank: resolved.bank || rawBank,
+      raw_bank: rawBank,
+      ifsc_code: ifsc,
+      bank_source: resolved.source,
+      bank_flag: resolved.flag,
+      layer_no: parseLayer(cell(row, mapping.layer_no)),
+      transaction_date: parseDate(cell(row, mapping.transaction_date)),
+      transaction_amount: parseAmount(cell(row, mapping.transaction_amount)),
+      utr_no: trimOrNull(cell(row, mapping.utr_no)),
+      remarks: trimOrNull(cell(row, mapping.remarks)),
+      parent_txn: trimOrNull(cell(row, extra.parent_txn)),
+      parent_account: trimOrNull(cell(row, extra.parent_account)),
+      pis_nodal: trimOrNull(cell(row, extra.pis_nodal)),
+      note: 'Predates the 6-month NCRP window — excluded from all financial calculations.',
+    });
+  }
+  return out;
+}
+
 // ─── Main entry point ────────────────────────────────────────────────
 
 /**
@@ -1113,6 +1244,7 @@ function materializeSheetRows(aoa, headerInfo, mapping, category) {
  * @returns {{
  *   rows: Array<Object>,
  *   columnMapping: Record<string, number>,
+ *   oldTransactions: Array<Object>,
  *   warnings: string[],
  *   errors: ParseError[],
  *   sheets: Array<{
@@ -1154,6 +1286,8 @@ function parseNcrpFile(filePath) {
   const errors = [];
   const sheets = [];
   const allRows = [];
+  /** @type {Array<Object>} Old-transaction records (excluded from all figures). */
+  const oldTransactions = [];
   /** @type {Record<string, number>|null} */
   let firstMapping = null;
   const acceptedSheets = [];
@@ -1248,6 +1382,31 @@ function parseNcrpFile(filePath) {
       }
     }
 
+    // OLD-TRANSACTION sheet: informational rows that predate the 6-month NCRP
+    // window. They carry no recoverable money and must never enter the canonical
+    // `rows` the analyzer reads (that would inflate total_transactions and skew
+    // every figure). Materialise them into the separate `oldTransactions` array,
+    // record the sheet as accepted (so the upload is NOT blocked), and move on.
+    if (category === SHEET_CATEGORY.OLD_TRANSACTION) {
+      const oldRows = materializeOldTransactionRows(aoa, headerInfo, mapping);
+      for (const r of oldRows) oldTransactions.push(r);
+      sheets.push({
+        name: sheetName,
+        accepted: true,
+        category,
+        headerRow: headerInfo.row,
+        oldTransactionRows: oldRows.length,
+        unmappedColumns: unmapped,
+      });
+      if (oldRows.length > 0) {
+        warnings.push(
+          `Sheet '${sheetName}': ${oldRows.length} old transaction(s) (>6 months) parsed ` +
+          'and excluded from all financial calculations.'
+        );
+      }
+      continue;
+    }
+
     // CONSEQUENCE-SCOPED unknown-sheet policy. An unknown-named sheet whose
     // rows can still be classified individually — an explicit payment-mode
     // column, an ATM-ID column (renamed ATM/POS sheets), or a beneficiary
@@ -1271,23 +1430,49 @@ function parseNcrpFile(filePath) {
         // guaranteed mapped by the required-columns gate above.)
         const acctIdx = mapping.victim_account;
         const amtIdx = mapping.transaction_amount;
-        let txnShaped = 0;
+        let txnShaped = 0;       // account + amount both present (any value)
+        let nonZeroShaped = 0;   // …and the amount is materially non-zero
         for (let i = headerInfo.row + 1; i < aoa.length; i++) {
           const row = aoa[i];
           if (!Array.isArray(row) || row.every(isBlank)) continue;
           if (isRepeatedHeaderRow(row, headerInfo.headers, mapping)) continue;
           const acct = acctIdx !== undefined && acctIdx < row.length ? row[acctIdx] : null;
           const amt = amtIdx < row.length ? row[amtIdx] : null;
-          if (!isBlank(acct) && !isBlank(amt)) txnShaped++;
+          if (!isBlank(acct) && !isBlank(amt)) {
+            txnShaped++;
+            if (Math.abs(parseAmount(amt)) > 0.01) nonZeroShaped++;
+          }
         }
-        if (txnShaped > 0) {
-          errors.push(buildUnknownChannelError(sheetName, headerInfo.headers, txnShaped));
+        // Consequence-scoped relaxation: the hard block exists because
+        // unclassifiable rows would understate cashed-out funds and inflate the
+        // lien. That risk only exists for rows carrying real money. An
+        // unrecognised sheet whose transaction rows are ALL ₹0.00 (informational
+        // tabs, zero-value placeholders) cannot move any figure — warn and skip
+        // it rather than refusing the whole upload.
+        if (txnShaped > 0 && nonZeroShaped === 0) {
+          warnings.push(
+            `Sheet '${sheetName}' is not a recognised NCRP sheet name; its ${txnShaped} ` +
+            'transaction row(s) are all ₹0.00 (no financial impact) and were skipped.'
+          );
+          sheets.push({
+            name: sheetName,
+            accepted: false,
+            reason: 'unrecognised-zero-amount',
+            headerRow: headerInfo.row,
+            dataRows: txnShaped,
+            unmappedColumns: unmapped,
+          });
+          skippedSheets.push(sheetName);
+          continue;
+        }
+        if (nonZeroShaped > 0) {
+          errors.push(buildUnknownChannelError(sheetName, headerInfo.headers, nonZeroShaped));
           sheets.push({
             name: sheetName,
             accepted: false,
             reason: 'unknown-channel',
             headerRow: headerInfo.row,
-            dataRows: txnShaped,
+            dataRows: nonZeroShaped,
             unmappedColumns: unmapped,
           });
           continue;
@@ -1342,14 +1527,16 @@ function parseNcrpFile(filePath) {
     });
   }
 
-  // No sheet was accepted. When structured errors exist they are the real
-  // story (required columns missing); otherwise the file simply isn't a
-  // CompleteTrail export.
+  // No channel sheet was accepted. When structured errors exist they are the
+  // real story (required columns missing); otherwise the file simply isn't a
+  // CompleteTrail export. A file that ONLY carries old transactions still falls
+  // here (no canonical rows) but is not an error — surface them.
   if (acceptedSheets.length === 0) {
     return {
       rows: [],
       columnMapping: {},
-      warnings: errors.length > 0 ? warnings : [
+      oldTransactions,
+      warnings: errors.length > 0 || oldTransactions.length > 0 ? warnings : [
         `Could not detect a header row within the first ${HEADER_SCAN_DEPTH} rows of any sheet`,
       ],
       errors,
@@ -1395,7 +1582,7 @@ function parseNcrpFile(filePath) {
     );
   }
 
-  return { rows: allRows, columnMapping: firstMapping || {}, warnings, errors, sheets };
+  return { rows: allRows, columnMapping: firstMapping || {}, oldTransactions, warnings, errors, sheets };
 }
 
 // ─── Validation ──────────────────────────────────────────────────────
@@ -1466,11 +1653,14 @@ module.exports = {
     normalizeHeaderLoose,
     normalizeSheetName,
     stripLabel,
+    canonicalizeIfsc,
     findHeaderRow,
     forwardFillMerges,
     isRepeatedHeaderRow,
     classifySheetCategory,
     classifySheet,
+    detectOldTxnExtraColumns,
+    materializeOldTransactionRows,
     derivePaymentRail,
     defaultPaymentMode,
     parseAtmFromRemarks,

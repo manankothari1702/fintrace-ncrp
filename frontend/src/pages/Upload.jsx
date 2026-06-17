@@ -495,9 +495,14 @@ function ParserWarnings({ warnings }) {
           const isObj = w && typeof w === 'object';
           const text = isObj ? w.message : w;
           const isSourceChanged = isObj && w.code === 'SOURCE_FILE_CHANGED';
+          const isOldTxns = isObj && w.code === 'OLD_TRANSACTIONS_FOUND';
+          let style;
+          if (isSourceChanged) style = { fontWeight: 700, color: '#8a2a00' };
+          else if (isOldTxns) style = { fontWeight: 600 };
+          const prefix = isSourceChanged ? '🔑 Source file changed — ' : (isOldTxns ? 'ℹ️ ' : '');
           return (
-            <li key={i} style={isSourceChanged ? { fontWeight: 700, color: '#8a2a00' } : undefined}>
-              {isSourceChanged ? '🔑 Source file changed — ' : ''}{text}
+            <li key={i} style={style}>
+              {prefix}{text}
             </li>
           );
         })}

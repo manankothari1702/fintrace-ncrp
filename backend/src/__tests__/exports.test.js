@@ -38,7 +38,10 @@ const GOLD_PATH = path.join(__dirname, '..', '..', '..', '32712250107145 (1).xls
 
 // Headline figures that the writer fixes must not change (gold standard).
 const HEADLINE_CASHOUT = 544282.95;
-const LIEN_TOTAL = 434394.61;
+// FIX 4 (canonical-account merge): the zero-padded duplicate of SBI account
+// …9366 merges into one pass-through account, removing a false ₹10,000 lien
+// (4,34,394.61 → 4,24,394.61). Recovery headline unchanged.
+const LIEN_TOTAL = 424394.61;
 const POS_GROSS = 113050; // 11 POS legs in the source ledger.
 const EPS = 0.02;
 
@@ -144,8 +147,10 @@ describe('ISSUE 1 — ATM/POS scoping + gross-vs-confirmed reconciliation', () =
       expect(r.header).toBe(true);
       expect(r.gross).not.toBeNull();
       expect(r.confirmed).not.toBeNull();
-      // gross - duplicates - cap = confirmed headline.
-      expect(r.gross - r.dup - r.cap).toBeCloseTo(r.confirmed, 2);
+      // gross - duplicates - cap = confirmed headline. The duplicate line is
+      // omitted when the gross is already net of dupes (MINOR B), so treat a
+      // missing dup row as 0.
+      expect(r.gross - (r.dup || 0) - r.cap).toBeCloseTo(r.confirmed, 2);
       expect(r.confirmed).toBeCloseTo(HEADLINE_CASHOUT, 2);
       // The gross shown is strictly above the headline (the whole point of the line).
       expect(r.gross).toBeGreaterThan(r.confirmed);
@@ -156,7 +161,11 @@ describe('ISSUE 1 — ATM/POS scoping + gross-vs-confirmed reconciliation', () =
     // Collapse whitespace: PDFKit line-wrapping inserts spaces at wrap points.
     const flat = pdfText.replace(/\s+/g, ' ');
     expect(flat).toContain('Reconciliation:');
-    expect(flat).toContain('gross - duplicates - cap = confirmed');
+    // Gross is already post-dedup, so the formula omits the duplicates term and
+    // the line states the dupes were collapsed beforehand (MINOR B).
+    expect(flat).toContain('gross - cap = confirmed');
+    expect(flat).toContain('already net of');
+    expect(flat).not.toMatch(/net of Rs\.\s*0\.00/i);
     expect(flat).toContain('Rs. 5,44,282.95'); // confirmed headline
   });
 });

@@ -82,6 +82,22 @@ function mask4(acc) {
 }
 
 /**
+ * Canonical account identity for node de-duplication. Some source/destination
+ * values carry a payment-channel prefix (e.g. "PhonePe -:661910110017777")
+ * while the same account also appears bare ("661910110017777"); both denote one
+ * account, so the network graph must collapse them to a single node. The account
+ * identifier is the segment after the last colon, trimmed. Purely cosmetic — the
+ * analyzer's own figures are untouched; this only governs how nodes are drawn.
+ * @param {unknown} acc
+ */
+function canonicalAcct(acc) {
+  const s = String(acc ?? '').trim();
+  const i = s.lastIndexOf(':');
+  const tail = i >= 0 ? s.slice(i + 1).trim() : s;
+  return tail || s;
+}
+
+/**
  * Compact rupee label for chart annotations (Indian Cr/L/K scale).
  * @param {unknown} value
  * @returns {string}
@@ -170,8 +186,8 @@ function buildNetworkSvg(network) {
     const L = parseLayer(e.layers);
     const a = num(e.amount);
     if (a > maxAmt) maxAmt = a;
-    const s = String(e.source);
-    const d = String(e.destination);
+    const s = canonicalAcct(e.source);
+    const d = canonicalAcct(e.destination);
     destCol.set(d, Math.min(destCol.has(d) ? destCol.get(d) : Infinity, L));
     srcCol.set(s, Math.min(srcCol.has(s) ? srcCol.get(s) : Infinity, Math.max(0, L - 1)));
     inDeg.set(d, (inDeg.get(d) || 0) + 1);
@@ -180,7 +196,7 @@ function buildNetworkSvg(network) {
     through.set(d, (through.get(d) || 0) + a);
   }
 
-  const ids = [...new Set(edges.flatMap((e) => [String(e.source), String(e.destination)]))];
+  const ids = [...new Set(edges.flatMap((e) => [canonicalAcct(e.source), canonicalAcct(e.destination)]))];
   const colOf = (id) => (destCol.has(id) ? destCol.get(id) : (srcCol.has(id) ? srcCol.get(id) : 0));
   const maxThrough = Math.max(1, ...ids.map((id) => through.get(id) || 0));
 
@@ -234,20 +250,47 @@ function buildNetworkSvg(network) {
     }
   }
 
-  // Column headers (Victim / Layer n).
+  // Column headers describe the hop by its analyzer layer number (col index ==
+  // layer number: a layer-L edge's destination sits in column L). The origin
+  // column carries the Layer-0 victim/source accounts, so it is named by its
+  // layer with the role as a parenthetical — the header states the hop, the
+  // legend states the colour/role.
   let headers = '';
   for (const c of cols) {
-    const label = c === 0 ? 'Victim' : `Layer ${c}`;
     headers += `<text x="${r2(colX(c))}" y="${top - 18}" font-size="13" font-weight="bold" `
-      + `text-anchor="middle" fill="${MUTED}">${xml(label)}</text>`;
+      + `text-anchor="middle" fill="${MUTED}">${xml(`Layer ${c}`)}</text>`;
+    if (c === originCol) {
+      headers += `<text x="${r2(colX(c))}" y="${top - 4}" font-size="11" `
+        + `text-anchor="middle" fill="${MUTED}">(Victim)</text>`;
+    }
+  }
+
+  // Non-contiguous layers: the top-10 edge set can skip whole hops (e.g. L3/L4
+  // carry no top edge), so adjacent columns may jump in layer number. Mark each
+  // such jump with a "···" between the columns and name the omitted layers, so
+  // the axis is not misread as proof those layers are empty.
+  let gapMarkup = '';
+  let hasGap = false;
+  for (let i = 0; i < cols.length - 1; i++) {
+    const lo = cols[i] + 1;
+    const hi = cols[i + 1] - 1;
+    if (hi < lo) continue;
+    hasGap = true;
+    const gx = r2((colX(cols[i]) + colX(cols[i + 1])) / 2);
+    const gy = r2(top + plotH * 0.42);
+    const range = lo === hi ? `L${lo}` : `L${lo}–L${hi}`;
+    gapMarkup += `<text x="${gx}" y="${gy}" font-size="24" font-weight="bold" `
+      + `text-anchor="middle" fill="${MUTED}">···</text>`;
+    gapMarkup += `<text x="${gx}" y="${r2(gy + 20)}" font-size="11" `
+      + `text-anchor="middle" fill="${MUTED}">${xml(range)} omitted</text>`;
   }
 
   // Edges first (under nodes). Cubic bezier with a horizontal tangent.
   let edgeMarkup = '';
   let edgeLabels = '';
   for (const e of edges) {
-    const s = pos.get(String(e.source));
-    const d = pos.get(String(e.destination));
+    const s = pos.get(canonicalAcct(e.source));
+    const d = pos.get(canonicalAcct(e.destination));
     if (!s || !d) continue;
     const x1 = s.x + s.r;
     const x2 = d.x - d.r;
@@ -281,12 +324,15 @@ function buildNetworkSvg(network) {
     + `markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse">`
     + `<path d="M0,0 L10,5 L0,10 z" fill="${EDGE}"/></marker></defs>`;
 
+  const subtitle = `Heaviest ${edges.length} transfers by amount — layers shown are those with top-10 edges`
+    + (hasGap ? '; non-adjacent layers indicated by ···' : '');
+
   return svgDoc({
     w: W,
     h: H,
     title: 'Money-Flow Network',
-    subtitle: `Heaviest ${edges.length} account-to-account transfers — edge width ∝ amount, accounts masked`,
-    body: defs + headers + edgeMarkup + nodeMarkup + edgeLabels + legend,
+    subtitle,
+    body: defs + headers + edgeMarkup + nodeMarkup + edgeLabels + gapMarkup + legend,
   });
 }
 

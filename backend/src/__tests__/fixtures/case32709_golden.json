@@ -1,0 +1,86 @@
+{
+  "_comment": "Golden fixture for case 32709250080512 (BankAction_CompleteTrail.xlsx). Every figure below was verified empirically against the real source file via the live parser + analyzer (not hand-entered). Amounts asserted with toBeCloseTo(,2); counts asserted exactly. See memory: competitor-feature-golden-discrepancies.",
+  "case": "32709250080512",
+  "sourceFile": "BankAction_CompleteTrail.xlsx",
+  "sha256": "706c9c9acbcb7758e15831329e6e1b9337c90ee3254e7529326f263883c91834",
+
+  "summary": {
+    "victimLoss": 61000,
+    "totalDisputed": 203524.16,
+    "totalTransactions": 154,
+    "uniqueHops": 103,
+    "reconUnique": 154,
+    "duplicates": 0,
+    "layers": 8,
+    "distinctBeneficiaries": 87,
+    "onHold": 34775.68,
+    "cashedOut": 0,
+    "recoverableResidual": 26224.32,
+    "oldTxnCount": 1
+  },
+
+  "feature1_cycles": {
+    "count": 3,
+    "maxLen": 6,
+    "list": [
+      { "path": ["001121711135203", "1291001500005505"], "length": 2, "amount": 5000 },
+      { "path": ["002821711455952", "1291001500005505"], "length": 2, "amount": 1000 },
+      { "path": ["52210070177031", "924010029872206"], "length": 2, "amount": 500 }
+    ],
+    "pairs": [
+      ["1291001500005505", "002821711455952"],
+      ["52210070177031", "924010029872206"],
+      ["1291001500005505", "001121711135203"]
+    ]
+  },
+
+  "feature2_connectivity": {
+    "topCollector": { "account": "995618210002076", "inDegree": 3, "outDegree": 3 },
+    "collectorsInDegreeGte2Count": 7,
+    "collectors": [
+      { "account": "995618210002076", "inDegree": 3, "outDegree": 3, "totalIn": 9000, "totalOut": 7800 },
+      { "account": "52210070177031", "inDegree": 2, "outDegree": 9, "totalIn": 25500, "totalOut": 23500 },
+      { "account": "1291001500005505", "inDegree": 2, "outDegree": 5, "totalIn": 8650, "totalOut": 61000 },
+      { "account": "9525733777", "inDegree": 2, "outDegree": 3, "totalIn": 5000, "totalOut": 8650 },
+      { "account": "133701509298", "inDegree": 2, "outDegree": 1, "totalIn": 3500, "totalOut": 1400 },
+      { "account": "4350470490", "inDegree": 2, "outDegree": 2, "totalIn": 2000, "totalOut": 1500 },
+      { "account": "paybil3066@ptybl", "inDegree": 2, "outDegree": 0, "totalIn": 1082.4, "totalOut": 0 }
+    ]
+  },
+
+  "feature3_disputedReconciliation": {
+    "rawHopInclDup": 196215.28,
+    "dedupAdjustment": 0,
+    "netHop": 196215.28,
+    "exit": 0,
+    "hold": 0,
+    "other": 7308.88,
+    "headline": 203524.16,
+    "note": "rawHopInclDup - dedupAdjustment + exit + hold + other == headline (203524.16). dedupAdjustment is 0: this case has NO exact-duplicate HOP leg. The ₹409.56 leg (src 110263475064 -> dst 702902010004986, UTR 563707902816, amount 1400) is a UNIQUE transaction and is fully counted; it shares (beneficiary,date,amount,UTR) with a distinct ₹18.64-disputed leg, so the old dedup key wrongly dropped it (see fix/disputed-reconciliation-409). The two ₹500 legs (UTR 292427997327) differ by timestamp and are kept as distinct."
+  },
+
+  "feature4_lien": {
+    "total": 32375.01,
+    "count": 49,
+    "naiveNoCap": 71463.12,
+    "naiveNoCapCount": 49,
+    "formula": "lien = max(0, min(received - forwarded - onHold - exits, disputedInflow))",
+    "note": "The disputed-inflow cap reduces the no-cap naive (71463.12) to the headline 32375.01; the per-account audit columns reconstruct the total line-by-line. (Restoring the ₹409.56 hop into account 702902010004986 shifted its capped lien, moving the table total from the pre-fix 32767.45 to 32375.01.)"
+  },
+
+  "feature5_dayOfWeek": {
+    "weekdayOrder": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+    "byWeekday": {
+      "Monday": { "txns": 52, "totalAmount": 77820.09 },
+      "Tuesday": { "txns": 13, "totalAmount": 15449.6 },
+      "Wednesday": { "txns": 10, "totalAmount": 5729.2 },
+      "Thursday": { "txns": 0, "totalAmount": 0 },
+      "Friday": { "txns": 1, "totalAmount": 1000 },
+      "Saturday": { "txns": 1, "totalAmount": 1000 },
+      "Sunday": { "txns": 66, "totalAmount": 204453.53 }
+    },
+    "undated": { "txns": 11, "totalAmount": 0 },
+    "datedTxns": 143,
+    "note": "Dated (143) + Undated (11) == 154 deduped legs. Weekday is the IST calendar day of each leg. The restored ₹409.56 leg dates to 2025-09-28 18:32 UTC == 2025-09-29 IST (Monday), so Monday gains one ₹1400 leg."
+  }
+}

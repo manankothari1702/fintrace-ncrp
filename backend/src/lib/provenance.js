@@ -55,7 +55,12 @@ function appVersion() {
     const pkg = require('../../package.json');
     if (pkg && pkg.version) return String(pkg.version);
   } catch (_e) { /* fall through */ }
-  return 'unknown';
+  if (process.env.npm_package_version && process.env.npm_package_version.trim() !== '') {
+    return process.env.npm_package_version.trim();
+  }
+  // Never surface a bare "unknown" on a court document — 'dev' makes an
+  // unversioned build obvious without reading like missing data.
+  return 'dev';
 }
 
 module.exports = { sha256File, sha256Buffer, appVersion };

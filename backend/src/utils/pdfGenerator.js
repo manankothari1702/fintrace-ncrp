@@ -110,11 +110,28 @@ function formatDate(iso) {
   return `${String(d.getUTCDate()).padStart(2, '0')} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/** Mask all but the last 4 chars of an account number. @param {unknown} acc */
+/**
+ * Mask an account identifier for display.
+ *
+ * Bank account NUMBERS (all-digit) keep their last 4 digits behind a fixed-
+ * length mask that never reveals the true length. Non-numeric identifiers (UPI
+ * VPAs like "name@bank", wallet / PG / PA handles) are operational identifiers,
+ * not account numbers: masking them to their last 4 chars collapses distinct
+ * handles that share a bank suffix (e.g. "a@ptaxis" and "b@naviaxis" → both
+ * "…axis"), hiding that they are different freeze-review targets. For those we
+ * mask only long embedded digit runs (phone/account-like) and keep the
+ * alphanumeric structure, so distinct handles never render identically.
+ *
+ * @param {unknown} acc
+ */
 function maskAccount(acc) {
   const s = String(acc ?? '').trim();
-  if (s.length <= 4) return s || '—';
-  return `${'X'.repeat(Math.min(6, s.length - 4))}${s.slice(-4)}`;
+  if (s === '') return '—';
+  if (/^\d+$/.test(s)) {
+    if (s.length <= 4) return s;
+    return `${'X'.repeat(Math.min(6, s.length - 4))}${s.slice(-4)}`;
+  }
+  return s.replace(/\d{5,}/g, (run) => `${'X'.repeat(Math.min(6, run.length - 4))}${run.slice(-4)}`);
 }
 
 /**
@@ -538,8 +555,8 @@ function renderRoadmap(doc, roadmap) {
   });
 }
 
-/** @param {PDFKit.PDFDocument} doc @param {Array<object>} layers */
-function renderLayers(doc, layers) {
+/** @param {PDFKit.PDFDocument} doc @param {Array<object>} layers @param {object} [reconciliation] */
+function renderLayers(doc, layers, reconciliation) {
   sectionHeading(doc, 'Annexure A — Layer-by-Layer Analysis');
   para(doc,
     'Each layer is one hop further from the victim. Funds typically fan out and ' +
@@ -568,10 +585,57 @@ function renderLayers(doc, layers) {
       l.avg_forward_time_hours == null ? '—' : num(l.avg_forward_time_hours).toFixed(2),
     ]),
   });
+
+  // Foot the per-layer Disputed column (HOP legs only) up to the headline Total
+  // Trail Disputed. Cash-out (EXIT) and other (OTHER) legs also carry disputed
+  // value but are not hops, so they are surfaced here rather than silently dropped.
+  const rec = reconciliation && reconciliation.disputed;
+  if (rec) {
+    doc.moveDown(0.8);
+    para(doc, 'Reconciliation to headline Total Trail Disputed', { bold: true, gap: 0.3 });
+    // Feature 3 — the block foots LITERALLY to the headline:
+    //   raw hop − duplicate hop legs collapsed + EXIT + OTHER (+ HOLD) = headline.
+    // When exact-duplicate hop legs exist the collapse is an explicit, labelled
+    // line (never a silent rounding); when none do (e.g. gold case 080512, whose
+    // ₹409.56 leg is unique) the adjustment is 0 and the hop total is stated
+    // directly. raw_hop/dedup are absent on pre-Feature-3 analyses; fall back to
+    // net-hop only so older persisted analyses still render.
+    const rawHop = rec.raw_hop != null ? num(rec.raw_hop) : num(rec.hop);
+    const dedupAdj = num(rec.dedup_hop_adjustment);
+    const reconRows = [];
+    if (dedupAdj > 0.005) {
+      reconRows.push(['Raw hop disputed (Money Transfer legs, incl. duplicates)', formatMoney(rawHop)]);
+      reconRows.push(['Less: duplicate hop legs collapsed before analysis', formatMoney(-dedupAdj)]);
+      reconRows.push(['Net hop disputed (= sum of per-layer Disputed above)', formatMoney(rec.hop)]);
+    } else {
+      reconRows.push(['Hop legs (sum of per-layer Disputed above)', formatMoney(rec.hop)]);
+    }
+    reconRows.push(['Add: Cash-out legs (EXIT) — dispositions, not hops', formatMoney(rec.exit)]);
+    reconRows.push(['Add: Other legs (OTHER) — dispositions, not hops', formatMoney(rec.other)]);
+    if (num(rec.hold) > 0) reconRows.push(['Add: Frozen / HOLD legs', formatMoney(rec.hold)]);
+    reconRows.push(['Total Trail Disputed (headline)', formatMoney(rec.total)]);
+    drawTable(doc, {
+      columns: [
+        { label: 'Reconciliation item', width: contentWidth(doc) - 150 },
+        { label: 'Disputed', width: 150, align: 'right' },
+      ],
+      rows: reconRows,
+      rowColors: reconRows.map((_, i) => (i === reconRows.length - 1 ? NAVY : INK)),
+    });
+    para(doc,
+      'Annexure A aggregates hop (account-to-account) legs by layer. The components ' +
+      'above sum exactly to the headline Total Trail Disputed; the duplicate-leg ' +
+      'adjustment is shown explicitly, so no disputed leg is omitted or double-counted.',
+      { color: MUTED, size: 8.5, gap: 0 });
+  }
 }
 
-/** @param {PDFKit.PDFDocument} doc @param {object} network - money_flow_network. */
-function renderMoneyFlow(doc, network) {
+/**
+ * @param {PDFKit.PDFDocument} doc
+ * @param {object} network - money_flow_network.
+ * @param {Array<object>} [aggregators] - analysis.aggregators (connectivity collectors).
+ */
+function renderMoneyFlow(doc, network, aggregators) {
   sectionHeading(doc, 'Annexure B — Money Flow Network');
   para(doc,
     'The heaviest account-to-account transfers in the trail (top 10 by amount), ' +
@@ -604,15 +668,94 @@ function renderMoneyFlow(doc, network) {
       asciiSafe(e.banks) || '—',
     ]),
   });
+
+  // Top Aggregator Accounts (Feature 2) — collectors with in-degree >= 2, the
+  // classic mule-collector hubs, ranked by fan-in. Lives inside Annexure B.
+  const aggs = Array.isArray(aggregators) ? aggregators.slice(0, 10) : [];
+  if (aggs.length > 0) {
+    doc.moveDown(0.6);
+    para(doc, 'Top Aggregator Accounts (collectors — in-degree >= 2)', { bold: true, gap: 0.3 });
+    para(doc,
+      'Accounts that gather funds from many distinct senders before forwarding — ' +
+      'hub nodes in the network. In-degree = distinct senders; out-degree = distinct ' +
+      'receivers. Bank names are IFSC-resolved.', { color: MUTED, size: 8.5, gap: 0.5 });
+    drawTable(doc, {
+      fontSize: 8.5,
+      columns: [
+        { label: '#', width: 24, align: 'center' },
+        { label: 'Account (masked)', width: 110 },
+        { label: 'Bank', width: contentWidth(doc) - 419 },
+        { label: 'In-deg', width: 50, align: 'right' },
+        { label: 'Out-deg', width: 55, align: 'right' },
+        { label: 'Total In', width: 90, align: 'right' },
+        { label: 'Total Out', width: 90, align: 'right' },
+      ],
+      rows: aggs.map((a, i) => [
+        i + 1, maskAccount(a.account_no), asciiSafe(a.bank) || '—',
+        formatCount(a.in_degree), formatCount(a.out_degree),
+        formatMoney(a.total_in), formatMoney(a.total_out),
+      ]),
+    });
+  }
+}
+
+/**
+ * Circular-flow section (Feature 1) — placed after Money Flow Network. Real
+ * simple loops (length <= 6) where money returns to an account it already passed
+ * through; a strong layering indicator. Not lettered, so it never shifts the
+ * Annexure A–H sequence.
+ *
+ * @param {PDFKit.PDFDocument} doc
+ * @param {Array<object>} cycles - analysis.circular_flows
+ */
+function renderCircularFlows(doc, cycles) {
+  sectionHeading(doc, 'Circular Flows — Layering Loops');
+  para(doc,
+    'Money that returns to an account it already passed through (simple loops of up ' +
+    'to six accounts). Legitimate funds do not circle back, so a cycle is a strong ' +
+    'layering indicator. "Loop amount" is the thinnest leg of the loop — the most ' +
+    'that could actually have circulated around it. Account numbers are masked; ' +
+    'bank names are IFSC-resolved.', { gap: 0.8 });
+
+  const list = Array.isArray(cycles) ? cycles.slice(0, 10) : [];
+  if (list.length === 0) {
+    para(doc, 'No circular flows were detected in this trail.', { color: MUTED });
+    return;
+  }
+
+  drawTable(doc, {
+    fontSize: 8.5,
+    columns: [
+      { label: '#', width: 24, align: 'center' },
+      { label: 'Cycle (masked account loop)', width: contentWidth(doc) - 320 },
+      { label: 'Len', width: 38, align: 'center' },
+      { label: 'Loop Amount', width: 95, align: 'right' },
+      { label: 'Txns', width: 40, align: 'right' },
+      { label: 'Banks', width: 123 },
+    ],
+    rows: list.map((c, i) => {
+      const path = Array.isArray(c.path) ? c.path : [];
+      const loop = path.map(maskAccount).join(' -> ') + (path.length ? ` -> ${maskAccount(path[0])}` : '');
+      return [
+        i + 1, loop, formatCount(c.length), formatMoney(c.amount),
+        formatCount(c.txns), asciiSafe((c.banks || []).join(', ')) || '—',
+      ];
+    }),
+  });
+
+  para(doc,
+    `${formatCount(list.length)} circular flow(s) detected — recommend priority review of the looping accounts.`,
+    { bold: true, gap: 0, size: 9 });
 }
 
 /** @param {PDFKit.PDFDocument} doc @param {Array<object>} mules */
 function renderMules(doc, mules) {
   sectionHeading(doc, 'Annexure C — Top Mule Accounts');
   para(doc,
-    'Accounts ranked by mule risk score (higher = stronger mule indicators). ' +
-    'HIGH-risk accounts are the priority targets for lien and KYC requests. ' +
-    'Account numbers are masked for the report.',
+    'Accounts ranked by mule risk score — an uncapped points total (a textbook ' +
+    'mule trips every signal and can exceed 100); higher = stronger indicators. ' +
+    'Ties break by larger inflow. HIGH-risk accounts are the priority targets ' +
+    'for lien and KYC requests. Account numbers are masked for the report.',
     { gap: 0.8 });
 
   const top = (mules || []).slice(0, 10);
@@ -684,6 +827,19 @@ function renderLien(doc, liens) {
   para(doc,
     '(May exceed the victim loss as funds traverse multiple layers — this is the freezable ' +
     'per-account balance, not the recoverable residual reported in the Executive Summary.)',
+    { gap: 0.6, size: 8, color: MUTED });
+
+  // Feature 4 — the exact per-account formula + exclusion rule, printed here so a
+  // reviewer can reconstruct the total. Full per-account audit columns (incl.
+  // Disputed Forwarded and the cap reason) are in the Excel "Lien Calculation" sheet.
+  para(doc, 'Per-account formula & exclusion rule', { bold: true, gap: 0.2, size: 9 });
+  para(doc,
+    'Gross Balance = max(0, Received - Forwarded - On Hold - Cashed Out). ' +
+    'Lien = max(0, min(Gross Balance, Disputed Inflow)). ' +
+    'EXCLUDED: any gross residue above an account\'s disputed (fraud-attributed) inflow — its ' +
+    'own/clean funds; and money received via OTHER settlement legs, sub-Rs.500 legs, or ' +
+    'wallet/PA/PG ids without a resolvable IFSC, which carry no disputed-hop inflow and so ' +
+    'cannot raise the cap. Per-account audit columns are in the Excel Lien Calculation sheet.',
     { gap: 0, size: 8, color: MUTED });
 }
 
@@ -711,13 +867,18 @@ function renderCashout(doc, cashout, view) {
     para(doc, 'ATM withdrawal locations (gross amounts, highest value first):', { bold: true, gap: 0.5 });
     drawTable(doc, {
       fontSize: 8.5,
+      // Give the amount a fixed, generous right-aligned column so rupee values
+      // and the "Gross Amount" header never wrap mid-number; the narrow ID/City/
+      // State/Hits columns are fixed too, and Location absorbs the remaining
+      // width (long addresses wrap to multiple lines rather than squeezing the
+      // numbers). Widths sum to exactly contentWidth.
       columns: [
-        { label: 'ATM ID', width: 80 },
-        { label: 'Location', width: 150 },
-        { label: 'City', width: 80 },
-        { label: 'State', width: 80 },
-        { label: 'Gross Amount', width: contentWidth(doc) - 460, align: 'right' },
-        { label: 'Hits', width: 30, align: 'right' },
+        { label: 'ATM ID', width: 72 },
+        { label: 'Location', width: contentWidth(doc) - 336, align: 'left' },
+        { label: 'City', width: 68 },
+        { label: 'State', width: 62 },
+        { label: 'Gross Amount', width: 100, align: 'right' },
+        { label: 'Hits', width: 34, align: 'right' },
       ],
       rows: atmTerminals.map((a) => [
         a.atm_id || '—',
@@ -737,15 +898,28 @@ function renderCashout(doc, cashout, view) {
   // and the POS merchant table (section 9) gets the gross figure; this line
   // shows exactly how that reconciles to the confirmed headline.
   if (recon && (recon.rows_shown > 0 || recon.confirmed > 0)) {
+    // The detail tables show POST-dedup figures, so the gross shown is normally
+    // already net of the collapsed duplicates (dup_amount_shown ≈ 0). In that
+    // case we must NOT subtract a "Rs. 0.00 duplicate rows" term (it reads as a
+    // contradiction with the non-zero collapsed-row count); we state instead
+    // that the gross is already net of them. Only when the detail tables truly
+    // carry duplicate value do we show the explicit "- duplicates" term.
+    const hasDupValue = num(recon.dup_amount_shown) > 0.005;
+    const dupNote = recon.dup_rows_collapsed > 0
+      ? (hasDupValue
+        ? `, net of ${formatMoney(recon.dup_amount_shown)} across ` +
+          `${formatCount(recon.dup_rows_collapsed)} duplicate ledger row(s)`
+        : ` (already net of ${formatCount(recon.dup_rows_collapsed)} exact-duplicate ` +
+          `ledger row(s) collapsed before analysis)`)
+      : '';
+    const formula = hasDupValue ? 'gross - duplicates - cap = confirmed' : 'gross - cap = confirmed';
     para(doc,
       `Reconciliation: gross withdrawals shown (ATM table above + POS merchants in section 9): ` +
-      `${formatMoney(recon.gross_shown)} (${formatCount(recon.rows_shown)} rows). ` +
-      `Confirmed cashed out: ${formatMoney(recon.confirmed)} — net of ` +
-      `${formatMoney(recon.dup_amount_shown)} duplicate rows ` +
-      `(${formatCount(recon.dup_rows_collapsed)} duplicate ledger row(s) collapsed during analysis) ` +
-      `and ${formatMoney(recon.cap_excess)} capped at disputed inflow per account ` +
+      `${formatMoney(recon.gross_shown)} across ${formatCount(recon.rows_shown)} row(s)${dupNote}. ` +
+      `Confirmed cashed out: ${formatMoney(recon.confirmed)} — less ` +
+      `${formatMoney(recon.cap_excess)} capped at disputed inflow per account ` +
       `(amounts above an account's disputed inflow are its own/clean funds): ` +
-      `gross - duplicates - cap = confirmed.`,
+      `${formula}.`,
       { gap: 0.9, size: 8.5, color: MUTED });
   }
 
@@ -829,8 +1003,8 @@ function renderGeography(doc, geography, posMerchants) {
   }
 }
 
-/** @param {PDFKit.PDFDocument} doc @param {Array<object>} timeline */
-function renderTimeline(doc, timeline) {
+/** @param {PDFKit.PDFDocument} doc @param {Array<object>} timeline @param {object} [reconciliation] */
+function renderTimeline(doc, timeline, reconciliation, dayOfWeek) {
   sectionHeading(doc, 'Annexure G — Timeline Summary');
   para(doc, 'Daily money movement across the fraud trail (IST calendar days).',
     { gap: 0.8 });
@@ -840,18 +1014,58 @@ function renderTimeline(doc, timeline) {
     return;
   }
 
+  // Daily rows are dated transactions only; undated rows have no calendar day so
+  // they cannot sit on the timeline — list them as a single "Undated" row so the
+  // visible count foots to the unique-transaction total.
+  const tx = reconciliation && reconciliation.transactions;
+  const rows = timeline.map((t) => [
+    formatDate(t.date),
+    formatCount(t.transaction_count),
+    formatMoney(t.total_amount),
+  ]);
+  if (tx && tx.undated > 0) {
+    rows.push(['Undated', formatCount(tx.undated), formatMoney(tx.undated_amount)]);
+  }
+
   drawTable(doc, {
     columns: [
       { label: 'Date', width: 160 },
       { label: 'Transactions', width: 130, align: 'right' },
       { label: 'Total Amount', width: contentWidth(doc) - 290, align: 'right' },
     ],
-    rows: timeline.map((t) => [
-      formatDate(t.date),
-      formatCount(t.transaction_count),
-      formatMoney(t.total_amount),
-    ]),
+    rows,
   });
+
+  if (tx) {
+    const uniqueTotal = num(tx.dated) + num(tx.undated);
+    para(doc,
+      `Rows above sum to ${formatCount(uniqueTotal)} unique transactions ` +
+      `(${formatCount(tx.dated)} dated + ${formatCount(tx.undated)} undated). ` +
+      `A further ${formatCount(tx.duplicates)} exact-duplicate ledger row(s) were ` +
+      `removed before analysis; counting those, the raw ledger holds ` +
+      `${formatCount(tx.raw_legs)} legs — the headline Total Transactions.`,
+      { color: MUTED, size: 8.5, gap: 0 });
+  }
+
+  // Feature 5 — small day-of-week table (IST weekday of each leg).
+  if (dayOfWeek && Array.isArray(dayOfWeek.weekdays) && dayOfWeek.weekdays.length) {
+    doc.moveDown(0.8);
+    para(doc, 'Activity by day of week (IST)', { bold: true, gap: 0.4 });
+    const dRows = dayOfWeek.weekdays.map((w) => [
+      w.weekday, formatCount(w.txns), formatMoney(w.totalAmount),
+    ]);
+    if (dayOfWeek.undated && dayOfWeek.undated.txns > 0) {
+      dRows.push(['Undated', formatCount(dayOfWeek.undated.txns), formatMoney(dayOfWeek.undated.totalAmount)]);
+    }
+    drawTable(doc, {
+      columns: [
+        { label: 'Weekday', width: 160 },
+        { label: 'Transactions', width: 130, align: 'right' },
+        { label: 'Total Amount', width: contentWidth(doc) - 290, align: 'right' },
+      ],
+      rows: dRows,
+    });
+  }
 }
 
 /** @param {PDFKit.PDFDocument} doc @param {string[]} findings */
@@ -891,9 +1105,14 @@ function flagLabel(flag) {
   }
 }
 
-/** @param {PDFKit.PDFDocument} doc @param {Array<object>} dataQuality */
-function renderDataQuality(doc, dataQuality) {
+/**
+ * @param {PDFKit.PDFDocument} doc
+ * @param {Array<object>} dataQuality
+ * @param {Array<object>} [oldTransactions] - rows >6 months old, excluded from figures
+ */
+function renderDataQuality(doc, dataQuality, oldTransactions = []) {
   const list = Array.isArray(dataQuality) ? dataQuality : [];
+  const oldTxns = Array.isArray(oldTransactions) ? oldTransactions : [];
   doc.addPage();
   sectionHeading(doc, 'Annexure H — Bank Attribution — Data Quality Review');
 
@@ -902,41 +1121,70 @@ function renderDataQuality(doc, dataQuality) {
       'Every account resolved cleanly: the bank name on each lien letter was ' +
       'derived from a valid IFSC that agreed with the source file. No accounts ' +
       'require manual bank verification.', { color: MUTED });
-    return;
+  } else {
+    para(doc,
+      `${formatCount(list.length)} account(s) below need the investigating officer to ` +
+      'confirm the freeze target. The bank printed on each lien letter is taken from ' +
+      "the account's IFSC (authoritative); where the source file's text disagreed or " +
+      'no usable IFSC was present, it is listed here for review. The financial amounts ' +
+      'are unaffected — only the bank attribution is flagged.', { gap: 0.8 });
+
+    drawTable(doc, {
+      fontSize: 8,
+      columns: [
+        { label: '#', width: 22, align: 'center' },
+        { label: 'Account (masked)', width: 96 },
+        { label: 'Resolved bank (letter)', width: 120 },
+        { label: 'IFSC', width: 76 },
+        { label: 'Flag', width: 64 },
+        { label: 'Source-file text', width: contentWidth(doc) - 378 },
+      ],
+      rows: list.map((d, i) => [
+        i + 1,
+        maskAccount(d.account_no),
+        d.bank || '—',
+        d.ifsc_code || '—',
+        flagLabel(d.bank_flag),
+        d.raw_bank || '(blank)',
+      ]),
+    });
+
+    para(doc,
+      'Action: for "IFSC vs text" rows the letter already uses the IFSC-derived bank — ' +
+      'verify and dispatch. For "No IFSC" / "Invalid IFSC" rows (wallets / PA / PG ids) ' +
+      'confirm the correct nodal entity. For "Unknown prefix" rows the IFSC bank map ' +
+      'should be extended.', { gap: 0.8, size: 8, color: MUTED });
   }
 
-  para(doc,
-    `${formatCount(list.length)} account(s) below need the investigating officer to ` +
-    'confirm the freeze target. The bank printed on each lien letter is taken from ' +
-    "the account's IFSC (authoritative); where the source file's text disagreed or " +
-    'no usable IFSC was present, it is listed here for review. The financial amounts ' +
-    'are unaffected — only the bank attribution is flagged.', { gap: 0.8 });
+  // Old transactions (>6 months): parsed and recorded, but excluded from every
+  // financial figure — listed so the file is fully accounted for.
+  if (oldTxns.length > 0) {
+    para(doc,
+      `Old Transactions (excluded from calculations) — ${formatCount(oldTxns.length)} ` +
+      'transaction(s) in the source file predate the 6-month NCRP window. They are ' +
+      'informational only and contribute to no victim-loss, cash-out, lien, or mule ' +
+      'figure in this dossier.', { gap: 0.8 });
 
-  drawTable(doc, {
-    fontSize: 8,
-    columns: [
-      { label: '#', width: 22, align: 'center' },
-      { label: 'Account (masked)', width: 96 },
-      { label: 'Resolved bank (letter)', width: 120 },
-      { label: 'IFSC', width: 76 },
-      { label: 'Flag', width: 64 },
-      { label: 'Source-file text', width: contentWidth(doc) - 378 },
-    ],
-    rows: list.map((d, i) => [
-      i + 1,
-      maskAccount(d.account_no),
-      d.bank || '—',
-      d.ifsc_code || '—',
-      flagLabel(d.bank_flag),
-      d.raw_bank || '(blank)',
-    ]),
-  });
-
-  para(doc,
-    'Action: for "IFSC vs text" rows the letter already uses the IFSC-derived bank — ' +
-    'verify and dispatch. For "No IFSC" / "Invalid IFSC" rows (wallets / PA / PG ids) ' +
-    'confirm the correct nodal entity. For "Unknown prefix" rows the IFSC bank map ' +
-    'should be extended.', { gap: 0, size: 8, color: MUTED });
+    drawTable(doc, {
+      fontSize: 8,
+      columns: [
+        { label: '#', width: 22, align: 'center' },
+        { label: 'Account (masked)', width: 110 },
+        { label: 'Bank', width: 150 },
+        { label: 'Layer', width: 44, align: 'center' },
+        { label: 'Amount', width: 80, align: 'right' },
+        { label: 'Remarks', width: contentWidth(doc) - 406 },
+      ],
+      rows: oldTxns.map((o, i) => [
+        i + 1,
+        maskAccount(o.account_no),
+        o.bank || '—',
+        o.layer_no == null ? '—' : o.layer_no,
+        formatMoney(o.transaction_amount),
+        o.remarks || '—',
+      ]),
+    });
+  }
 }
 
 /**
@@ -1138,7 +1386,12 @@ function generateReportPdf(data, outputPath) {
       sha256: report.source_sha256 ?? (data && data.source_sha256) ?? null,
       filename: report.original_filename ?? (data && data.source_filename) ?? null,
       ingestedAt: report.upload_date ?? (data && data.upload_date) ?? null,
-      version: (data && data.app_version) || appVersion(),
+      // A persisted app_version of "unknown" (older uploads, before the version
+      // was wired in) must not mask the real version — treat it as absent so
+      // appVersion() fills in.
+      version: (data && typeof data.app_version === 'string' && data.app_version.trim()
+        && data.app_version.trim().toLowerCase() !== 'unknown')
+        ? data.app_version.trim() : appVersion(),
     };
 
     const doc = new PDFDocument({
@@ -1212,15 +1465,16 @@ function generateReportPdf(data, outputPath) {
 
       // ── Annexure (bulky tables, behind a divider page) ─────────────────
       doc.addPage(); renderAnnexureDivider(doc);
-      doc.addPage(); renderLayers(doc, layerRows);
-      doc.addPage(); renderMoneyFlow(doc, analysis.money_flow_network || {});
+      doc.addPage(); renderLayers(doc, layerRows, analysis.reconciliation);
+      doc.addPage(); renderMoneyFlow(doc, analysis.money_flow_network || {}, analysis.aggregators || []);
+      doc.addPage(); renderCircularFlows(doc, analysis.circular_flows || []);
       doc.addPage(); renderMules(doc, analysis.mule_detection || []);
       doc.addPage(); renderLien(doc, liens);
       doc.addPage(); renderCashout(doc, cashoutView, { atmTerminals, recon: cashoutRecon });
       doc.addPage(); renderGeography(doc, geoView, posMerchants);
-      doc.addPage(); renderTimeline(doc, analysis.timeline || []);
+      doc.addPage(); renderTimeline(doc, analysis.timeline || [], analysis.reconciliation, analysis.day_of_week);
       // Annexure H — bank-attribution data-quality review (adds its own page).
-      renderDataQuality(doc, analysis.data_quality || []);
+      renderDataQuality(doc, analysis.data_quality || [], analysis.old_transactions || []);
 
       // Draft emails (adds its own pages). Pass the flagged accounts so each
       // letter can carry a reviewer note where its bank was IFSC-corrected.

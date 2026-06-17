@@ -31,7 +31,11 @@ const GOLD_PATH = path.join(__dirname, '..', '..', '..', '32712250107145 (1).xls
 
 // Gold-standard figures the layout change must not touch.
 const HEADLINE_CASHOUT = 'Rs. 5,44,282.95';
-const LIEN_TOTAL = 'Rs. 4,34,394.61';
+// FIX 4 (canonical-account merge): the zero-padded duplicate of SBI account
+// …9366 merges into one pass-through account (received ₹10k, forwarded ₹10k),
+// which carries no freeze-able balance — so the lien worksheet drops that false
+// ₹10,000, 4,34,394.61 → 4,24,394.61. The recovery headline is unchanged.
+const LIEN_TOTAL = 'Rs. 4,24,394.61';
 
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -168,7 +172,12 @@ describe('PDF dossier — visual section + annexure', () => {
   test('financial figures and the reconciliation are unchanged', () => {
     expect(pdfFlat).toContain(HEADLINE_CASHOUT);
     expect(pdfFlat).toContain(LIEN_TOTAL);
-    expect(pdfFlat).toContain('gross - duplicates - cap = confirmed');
+    // Gross shown is already post-dedup, so the reconciliation states the
+    // duplicates were collapsed beforehand rather than subtracting a Rs. 0.00
+    // term (the old contradictory wording — MINOR B).
+    expect(pdfFlat).toContain('gross - cap = confirmed');
+    expect(pdfFlat).toContain('already net of');
+    expect(pdfFlat).not.toMatch(/net of Rs\.\s*0\.00/i);
     expect(pdfFlat).toContain('Top merchants (POS cashouts');
   });
 

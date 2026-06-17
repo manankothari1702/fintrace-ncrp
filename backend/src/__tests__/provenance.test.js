@@ -173,7 +173,22 @@ describe('PDF dossier carries the source hash', () => {
 
     // Item 3 — the hash is embedded in the PDF metadata (Keywords).
     expect(pdf.toString('latin1')).toContain(`source-sha256:${hash}`);
+
+    // MINOR C — the FinTrace version is stamped on the dossier (cover + footer),
+    // never the bare "unknown" / "vunknown" older builds printed.
+    expect(flat).toContain(`FinTrace v${appVersion()}`);
+    expect(flat).not.toMatch(/vunknown|FinTrace version:\s*unknown/i);
   }, 30000);
+});
+
+// ─── Version string is always resolvable (MINOR C) ───────────────────────────
+describe('appVersion()', () => {
+  test('resolves to a real version, never the bare "unknown"', () => {
+    const v = appVersion();
+    expect(typeof v).toBe('string');
+    expect(v.trim()).not.toBe('');
+    expect(v.toLowerCase()).not.toBe('unknown');
+  });
 });
 
 // ─── 4. Changed-source warning ───────────────────────────────────────────────

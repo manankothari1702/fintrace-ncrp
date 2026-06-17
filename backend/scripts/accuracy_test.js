@@ -61,7 +61,12 @@ const GOLD = {
   victim_accounts: 11,
   first_hop_accounts: 17,
   first_hop_banks: 12,
-  total_lien: 434394.61,
+  // FIX 4 (canonical-account merge): zero-padded account variants (e.g. SBI
+  // 00000044021519366 / 44021519366) now aggregate as one account. The …9366
+  // account is thereby revealed as a pass-through (received ₹10k at L2,
+  // forwarded ₹10k to L3) with no freeze-able balance, so the lien worksheet
+  // sheds that false ₹10,000: 434,394.61 → 424,394.61.
+  total_lien: 424394.61,
   on_hold: 139649,
   // cashed_out: confirmed fraud proceeds withdrawn, under the v0.2.0
   // CAP_AT_RECEIVED policy (lib/cashoutPolicy.js) — each account's cash
@@ -79,7 +84,11 @@ const GOLD = {
   //   1,065,298 − 544,282.95 − 139,649.18 − 0 = 381,365.87.
   // (Was 336,218.86 when the residual subtracted the uncapped ₹5.89L sum.)
   recoverable_residual: 381365.87,
-  same_day_cashouts: 27,
+  // 28, not 27: fix/disputed-reconciliation-409 corrected the exact-duplicate
+  // key to include sender + disputed amount, so a genuine same-day ATM cash-out
+  // (acct 50100851063711, UTR 270324046951, ₹20,000, 2025-12-10) that the old
+  // loose key wrongly collapsed is now retained and counted.
+  same_day_cashouts: 28,
   top_lien_account: '00000005906495023',
   top_lien_amount: 94300,
   top_mule_score: 99,
@@ -94,10 +103,14 @@ const GOLD = {
   // Paytm; two "Bank of India" accounts are really Bandhan and Bank of Baroda.
   // Splitting them into their true banks (so each letter freezes the right
   // account) raises the count from 13 to 15. This is the bug fix, not drift.
-  email_count: 15,
+  // FIX 4 then nets it to 14: the SBI …9366 account, once its zero-padded
+  // duplicate is merged in, is a pass-through with no balance to freeze, so it
+  // is correctly no longer a Section-102 freeze target (15 → 14).
+  email_count: 14,
   fastest_cashout_hours_max: 1.0,
-  recoverable_accounts: 20,
-  total_recoverable: 434394.61,
+  // 20 → 19: the merged …9366 pass-through drops out of the lien worksheet.
+  recoverable_accounts: 19,
+  total_recoverable: 424394.61,
 };
 
 // ─── Pretty-printing ────────────────────────────────────────────────────
@@ -259,7 +272,9 @@ async function goldValidation() {
   });
 
   const topLien = liens[0] || {};
-  // The named top-mule account from the gold standard (also mule_detection[0]).
+  // The named top-mule account from the gold standard. Looked up BY NAME, not by
+  // index: with the deterministic tiebreak (score desc, then inflow desc) a
+  // higher-inflow account at the same score can sit at mule_detection[0] instead.
   const topMule = result.mule_detection.find((m) => m.account_no === '60556696585')
     || result.mule_detection[0] || {};
 

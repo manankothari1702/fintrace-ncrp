@@ -287,6 +287,20 @@ function looksLikeNcrpFile(filePath) {
   return false;
 }
 
+/**
+ * Mask an account identifier for officer-facing display: keep the last 4
+ * characters, replace the rest with bullets. Short ids (≤4) are returned as-is.
+ *
+ * @param {unknown} acct
+ * @returns {string|null}
+ */
+function maskAccount(acct) {
+  const s = acct === null || acct === undefined ? '' : String(acct).trim();
+  if (s === '') return null;
+  if (s.length <= 4) return s;
+  return `${'•'.repeat(Math.min(s.length - 4, 8))}${s.slice(-4)}`;
+}
+
 /** Parse a stored account_list JSON column back to an array. @param {unknown} v */
 function parseAccountList(v) {
   if (Array.isArray(v)) return v;
@@ -477,6 +491,19 @@ function createNcrpRouter(db) {
       const existingRepeats = stmt.allRepeats.all();
       const result = await analyzeReport(reportId, txnRows, existingRepeats, { db });
 
+      // Carry the parsed old transactions (stored on the report at upload) into
+      // the analysis snapshot so the dossier's data-quality annexure can list
+      // them. They never touched any analyzer module — purely informational.
+      const reportRow = getReportById(db, reportId);
+      if (reportRow && reportRow.old_transactions) {
+        try {
+          const parsedOld = JSON.parse(reportRow.old_transactions);
+          if (Array.isArray(parsedOld) && parsedOld.length > 0) {
+            result.old_transactions = parsedOld;
+          }
+        } catch (_e) { /* malformed JSON → omit, never block analysis */ }
+      }
+
       // Case context for the per-bank letters.
       let ackNo = null;
       let complaintDate = null;
@@ -627,6 +654,26 @@ function createNcrpRouter(db) {
 
       const rows = parsed.rows || [];
       const warnings = parsed.warnings || [];
+      const oldTransactions = Array.isArray(parsed.oldTransactions) ? parsed.oldTransactions : [];
+
+      // Old transactions (>6 months) are informational and excluded from every
+      // figure. Surface a non-blocking banner naming the affected (masked)
+      // accounts so the officer knows they were set aside, not lost.
+      if (oldTransactions.length > 0) {
+        const maskedAccounts = [...new Set(
+          oldTransactions
+            .map((t) => maskAccount(t.account_no))
+            .filter(Boolean)
+        )];
+        warnings.push({
+          code: 'OLD_TRANSACTIONS_FOUND',
+          message: `${oldTransactions.length} old transaction(s) (>6 months) found in the ` +
+            `'Old Transaction' sheet. These are excluded from all financial calculations. ` +
+            `Account(s): ${maskedAccounts.join(', ') || '(unspecified)'}.`,
+          count: oldTransactions.length,
+          accounts: maskedAccounts,
+        });
+      }
 
       // ── Evidentiary provenance ────────────────────────────────────────
       // Hash the raw uploaded bytes BEFORE parsing/ingest so the digest is over
@@ -680,6 +727,7 @@ function createNcrpRouter(db) {
           upload_date: uploadedAt,
           analysis_status: 'pending',
           source_sha256: sourceSha256,
+          old_transactions: oldTransactions.length > 0 ? JSON.stringify(oldTransactions) : null,
         });
 
         // Batch the inserts: INSERT_BATCH_SIZE rows per SQLite transaction.
@@ -701,6 +749,7 @@ function createNcrpRouter(db) {
             app_version: version,
             ack_no: ackNo,
             source_changed: warnings.some((w) => w && w.code === 'SOURCE_FILE_CHANGED'),
+            old_transaction_count: oldTransactions.length,
           },
         });
       } catch (_dbErr) {
