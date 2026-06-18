@@ -159,8 +159,13 @@ The installer:
 After install, launch FinTrace NCRP from the Start Menu and verify:
 
 - [ ] The splash window appears, then the main window opens within ~5 s.
-- [ ] Uploading `backend/sample_ncrp.xlsx` (test file) succeeds.
-- [ ] Generated PDFs land in `%APPDATA%\FinTrace NCRP\exports\`.
+- [ ] Uploading a real NCRP CompleteTrail export succeeds (e.g. one of the
+      reference files in the repo root, `32712250107145 (1).xlsx`). The bundled
+      `sample_ncrp.xlsx` was retired — the validation harness now runs against the
+      real gold cases.
+- [ ] Exporting the PDF dossier and the Excel workbook each opens a native
+      "Save As" dialog, and the saved files land where you chose (a copy is also
+      kept in `%APPDATA%\FinTrace NCRP\exports\`).
 - [ ] SQLite file exists at `%APPDATA%\FinTrace NCRP\fintrace.db`.
 - [ ] No browser console errors (open via Ctrl+Shift+I — DevTools are
       available in unpacked builds; disable in production by removing

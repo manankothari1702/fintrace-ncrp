@@ -10,6 +10,8 @@
 | Owner | Architecture / Engineering |
 | Audience | Engineering, QA, UX, Investigating Officers (IO), Cyber Crime Cell stakeholders |
 
+> **As-built pointer (added 2026-06-18).** This SRS remains the **v1.0 requirements baseline** dated 2026-05-26 and is intentionally not re-litigated here. Where the shipped product (currently **v0.3.0**) diverges from this forward design — language (JavaScript, not TypeScript), **Electron 33** (not 28), 7 SQLite tables, an uncapped 11-signal mule score, the CypherSOL gross-balance lien formula, a 19-sheet Excel workbook, and a visual PDF dossier — the authoritative description is **[SDD.md](SDD.md) v2.1 (as-built)**. Read the SDD for what exists; read this SRS for the original intent and acceptance criteria.
+
 ---
 
 ## 1. Executive Summary
@@ -28,7 +30,7 @@ Investigating Officers (IOs) handling cyber-financial fraud cases currently:
 
 ### 1.3 Solution Overview
 A single signed Windows `.exe` installer (built via `electron-builder`) that ships:
-- An **Electron 28** desktop shell.
+- An **Electron** desktop shell (Electron 33 as built).
 - A **React 18 + Vite** UI.
 - An **embedded Node.js + Express** backend bound to `127.0.0.1:3847` (loopback only, never exposed to LAN).
 - An **embedded SQLite** database (via `better-sqlite3`, WAL mode) stored under the user's `%APPDATA%`.

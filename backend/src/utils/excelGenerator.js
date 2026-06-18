@@ -13,15 +13,19 @@
  *    4. Suspected Mules          — scored accounts with suspicion reasons.
  *    5. Transactions             — the full raw ledger (every parsed leg).
  *    6. Money Flow Network       — heaviest account→account edges + collectors.
- *    7. Victim Accounts (Layer 0)— the victims and what each lost.
- *    8. ATM Exit Details         — ATM withdrawal hotspots.
- *    9. POS Exit Details         — POS / merchant cash-outs.
- *   10. Daily Volume             — transfers vs cash-outs per day.
- *   11. Hourly Pattern           — transaction activity by hour of day.
- *   12. Bank Rankings            — per-bank received / sent / on-hold / lien.
- *   13. Data Quality             — accounts whose bank attribution needs review.
- *   14. Geographic Hotspots      — cash-out by state + top merchants.
- *   15. Glossary                 — plain-language definitions of every term.
+ *    7. Circular Flows           — accounts that route money back to themselves.
+ *    8. Account Connectivity     — per-account in/out-degree + ranked collectors.
+ *    9. Victim Accounts (Layer 0)— the victims and what each lost.
+ *   10. ATM Exit Details         — ATM withdrawal hotspots.
+ *   11. POS Exit Details         — POS / merchant cash-outs.
+ *   12. Daily Volume             — transfers vs cash-outs per day.
+ *   13. Hourly Pattern           — transaction activity by hour of day.
+ *   14. Day of Week              — activity by day of the week.
+ *   15. Bank Rankings            — per-bank received / sent / on-hold / lien.
+ *   16. Data Quality             — accounts whose bank attribution needs review.
+ *   17. Parse Audit              — parse warnings, suspected duplicates, old txns.
+ *   18. Geographic Hotspots      — cash-out by state + top merchants.
+ *   19. Glossary                 — plain-language definitions of every term.
  *
  * Returns a Buffer the route streams as an attachment. Amounts are written as
  * real numbers (not pre-formatted strings) so the recipient can sort/sum in

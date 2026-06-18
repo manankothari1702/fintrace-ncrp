@@ -1,6 +1,6 @@
 # FinTrace v0.2.0 — Cross-Artifact Validation Report
 
-Generated: 2026-06-17T10:50:40.523Z
+Generated: 2026-06-18T11:15:23.279Z
 
 Read-only verification: the analyzer + exporters were run on the two available case files and every figure was extracted from THREE sources — the summary JSON, the generated PDF (text), and the generated Excel (cells) — and asserted to agree.
 
@@ -821,7 +821,7 @@ PDF text extraction: reliable ✅
 
 | Result | Suite | Summary |
 |---|---|---|
-| ✅ PASS | `npx jest` | Test Suites: 18 passed, 18 total \| Tests:       303 passed, 303 total |
+| ✅ PASS | `npx jest` | Test Suites: 20 passed, 20 total \| Tests:       366 passed, 366 total |
 | ✅ PASS | `node backend/scripts/accuracy_test.js` | Final score: 30/30 checks passed |
 | ✅ PASS | `node backend/scripts/consistency_test.js` | 4/4 consistency checks passed |
 | ✅ PASS | `node backend/scripts/security_audit.js` | Final security score: 10/10 \| Verdict: all attack vectors contained. ✅ |

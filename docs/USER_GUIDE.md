@@ -30,7 +30,7 @@ contact MINT support — details are in [Section J](#j-contact--mint-support).
 - [E. How to read the Mule Score](#e-how-to-read-the-mule-score)
 - [F. Using the Lien Tracker](#f-using-the-lien-tracker)
 - [G. Sending the Draft Emails](#g-sending-the-draft-emails)
-- [H. Generating and printing the PDF report](#h-generating-and-printing-the-pdf-report)
+- [H. Generating reports (PDF dossier & Excel workbook)](#h-generating-reports-pdf-dossier--excel-workbook)
 - [I. Frequently Asked Questions](#i-frequently-asked-questions)
 - [J. Contact — MINT support](#j-contact--mint-support)
 
@@ -111,8 +111,12 @@ are *information*, not errors. Common notes and what they mean:
 |---|---|
 | "Combined N rows from M sheets" | FinTrace merged the bank-transfer, ATM, POS, AEPS, etc. sheets into one trail. This is normal and good. |
 | "Skipped N sheet(s) without recognizable NCRP columns" | A sheet (often a summary or cover sheet) had no transaction data, so it was ignored. Normal. |
-| "N duplicate row(s) detected…" | The same transaction appears in more than one channel sheet of the NCRP export. **This is normal NCRP portal behaviour and does not mean your file is bad.** |
+| "N duplicate row(s) detected…" | The same transaction appears in more than one channel sheet of the NCRP export. FinTrace counts these once and notes the duplicates separately. **This is normal NCRP portal behaviour and does not mean your file is bad.** |
+| "Matched column/sheet '…' by similarity" | A column or sheet was named slightly differently from the usual NCRP heading (a typo, an extra word, a new portal label), so FinTrace matched it by closeness instead of an exact name. It tells you exactly which heading it used so you can confirm. |
+| "N transaction(s) older than 6 months excluded" | Transactions dated more than six months back are kept aside and **left out of every figure** (they are listed separately in the report for reference). Normal. |
 | "Skipped N row(s) with no account identifiers" | Blank or total rows in the sheet were ignored. Normal. |
+
+All of these notes are also written into the report itself — in the PDF's Data Quality annexure and the Excel **Parse Audit** sheet — so there is a permanent record of exactly how your file was read.
 
 If a file genuinely cannot be read (for example it isn't an NCRP export at all),
 FinTrace tells you clearly and does not create a half-finished report.
@@ -289,36 +293,56 @@ Nodal Officer email** before sending. Use the official channel:
 
 ---
 
-## H. Generating and printing the PDF report
+## H. Generating reports (PDF dossier & Excel workbook)
 
 FinTrace produces a complete **investigation dossier** as a PDF — suitable for the
-case file, for senior officers, and for court.
+case file, for senior officers, and for court — and a detailed **Excel workbook**
+for analysts who want to sort and total the numbers themselves.
 
-### To generate it
+### To generate them
 
 - From the **Upload** screen, find the case under **Previous Reports** and click
   the **⬇ PDF** button, **or**
-- Open the case and use the PDF download.
+- Open the case **Dashboard** and use the **Export PDF** / **Export Excel** buttons.
 
-The PDF opens / downloads in a few seconds. It is also saved on your computer
-under your user data folder (see the FAQ for the exact location).
+When you export, FinTrace shows a normal Windows **"Save As" window** so you choose
+exactly where the file goes. If you press **Cancel**, nothing is written. A copy is
+also kept on your computer under your user data folder (see the FAQ for the exact
+location), so you can always find it again.
 
-### What's inside
+### What's inside the PDF dossier
 
-The dossier runs to several pages, each section on its own page:
+The dossier opens with the important things first, then keeps the bulky tables
+together at the back as a labelled **Annexure**:
 
-1. **Cover** — case number, date, headline figures, and a sign-off block for the
-   Case Officer.
+1. **Cover** — case number, date, headline figures, a **Source & Provenance** block
+   (the file name and a unique fingerprint — SHA-256 — of the exact file you
+   uploaded), and a sign-off block for the Case Officer.
 2. **Executive Summary** — the key figures at a glance.
-3. **Layer-by-Layer Analysis**.
-4. **Top Mule Accounts** (account numbers are partly masked for safety).
-5. **Lien-Eligible Amounts** — the recovery worksheet.
-6. **Cashout Analysis** — ATM hot-spots, same-day cash-outs, state spread.
-7. **Timeline** — money movement day by day.
-8. **Key Findings & Recommended Actions**.
-9. **Draft Lien-Request Emails** — every bank letter, ready to copy.
+3. **Visual Summary** — charts of the money-flow network, the layer breakdown, and
+   the daily volume, drawn straight into the PDF so they print cleanly.
+4. **Investigation Roadmap** — a prioritised P0–P3 action list.
+5. **Key Findings & Recommended Actions**.
+6. **Annexure A–H** — the full supporting tables: Layer analysis, Money-flow
+   network, Top mule accounts (account numbers partly masked), Lien-eligible
+   amounts, Cashout analysis, Geographic hotspots, Timeline, and the Data-Quality
+   review (including any duplicate and old-transaction notes).
+7. **Draft Lien-Request Letters** — every per-bank letter, ready to copy.
 
-Every page is footed with *"Generated by FinTrace NCRP | MINT"* and a page number.
+Every page is footed with *"Generated by FinTrace NCRP | MINT"*, the file
+fingerprint, and a page number — so any printed page can be traced back to the
+exact source file it came from. If you later upload a **different** file for the
+same case, FinTrace warns you that the source changed.
+
+### What's inside the Excel workbook
+
+The `.xlsx` workbook has one sheet per investigative view — Summary, Layer
+Breakdown, Lien Calculation, Suspected Mules, the full Transactions ledger, Money
+Flow Network, Circular Flows, Account Connectivity, Victim Accounts, ATM and POS
+exit details, Daily Volume, Hourly Pattern, Day of Week, Bank Rankings, Data
+Quality, **Parse Audit** (exactly how your file was read), Geographic Hotspots, and
+a plain-language Glossary. Amounts are written as real numbers so you can sort and
+sum them in Excel.
 
 ### Printing the Lien Tracker and Emails screens
 
@@ -378,6 +402,18 @@ it. Then mark it **Sent** in the app.
 FinTrace analyses the file exactly as the NCRP portal produced it; it does not
 edit the source data. If the source file is wrong, correct it at the portal and
 re-export, then upload the corrected file as a new report.
+
+**11. Why were some transactions "excluded as older than 6 months"?**
+Transactions dated more than six months back are set aside and left out of every
+figure, so the analysis reflects the live, actionable trail. They are not deleted —
+they are listed separately (in the PDF Data-Quality annexure and the Excel
+**Parse Audit** sheet) so you can still see them.
+
+**12. The cover and footer show a long code (a "fingerprint"). What is it?**
+That is a SHA-256 fingerprint of the exact Excel file you uploaded. It lets anyone
+confirm later that a report was produced from that specific file and that the file
+had not been altered — useful for the case file and for court. If you upload a
+different file for the same case, FinTrace warns you that the source changed.
 
 ---
 

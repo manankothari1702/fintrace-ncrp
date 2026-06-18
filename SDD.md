@@ -4,21 +4,22 @@
 | Field | Value |
 |---|---|
 | Document ID | FINTRACE-SDD-001 |
-| Version | 2.0 (as-built) |
-| Status | Updated — reflects code through v0.2.0 work |
-| Date | 2026-06-11 |
+| Version | 2.1 (as-built) |
+| Status | Updated — reflects code through v0.3.0 |
+| Date | 2026-06-18 |
 | Owner | Architecture / Engineering |
 | Related | FINTRACE-SRS-001 (v1.0) |
 | Audience | Engineering, QA, Tech Leads |
 
-> **As-built note (v2.0):** This revision reconciles the original forward design (v1.0, 2026-05-26) with the code that actually shipped. Where the implementation diverged from the design, this document now describes **what is built**, and flags any remaining aspirational items inline with **🔭 Planned**. The biggest deltas from v1.0:
+> **As-built note (v2.1):** This revision reconciles the original forward design (v1.0, 2026-05-26) with the code that actually shipped through **v0.3.0**. Where the implementation diverged from the design, this document describes **what is built**, and flags any remaining aspirational items inline with **🔭 Planned**. Most of the v2.0 "🔭 Planned" items have since shipped (visual PDF charts + annexure split, the v0.3.0 version bump). The biggest deltas from v1.0:
 > - **Language is JavaScript (CommonJS), not TypeScript.** Backend files are `.js`; frontend is React `.jsx`. There is no `tsconfig`/`.ts` layer.
 > - **Analysis runs in-process** on the Express side via `setImmediate(...)` after the upload returns `202` — there is **no separate worker thread**. `better-sqlite3` is synchronous, so the pipeline is plain synchronous JS scheduled off the request.
 > - **Express is embedded in the Electron main process** (same process, not a spawned subprocess).
 > - **7 SQLite tables** ship (see §3); the v1.0 `accounts`, `quarantined_rows`, `settings`, `banks`, `findings`, `lien_status_history` tables were not built. Lien uses the **CypherSOL gross-balance formula**; mule scoring uses **11 signals and is uncapped**.
-> - **Frontend has 10 pages** (not 21), uses **HashRouter + React Context** (not BrowserRouter + Zustand), and gained a new **Data Quality** page in v0.2.0.
-> - **Outputs:** a **15-sheet Excel workbook** and a **12-page PDF dossier**, plus per-bank lien-request letters.
-> - **Version lag:** all three `package.json` files still read `0.1.0` even though the feature set is at v0.2.0 (capped cash-out, IFSC-authoritative bank attribution, data-quality flags). Bumping to `0.2.0` is outstanding.
+> - **Frontend has 10 pages** (not 21), uses **HashRouter + React Context** (not BrowserRouter + Zustand), and includes a **Data Quality** page.
+> - **Outputs:** a **19-sheet Excel workbook** and a **visual PDF dossier** (charts rasterised SVG→PNG + Annexure A–H), plus per-bank lien-request letters. In packaged builds every export routes through a **native OS "Save As" dialog** (preload `showSaveDialog`/`saveExportAs`).
+> - **v0.3.0 features now built:** visual PDF dossier with rasterised charts; **evidentiary provenance** (source-file SHA-256 → case record + audit log + PDF + changed-source warning, `lib/provenance.js`); **self-healing fuzzy parser** (`parsers/parseFuzzy.js`, a 3rd resolution tier behind exact + loose); **suspected-duplicate flagging** (non-destructive, with raw/deduped reconciliation); **Old Transaction** exclusion (>6 months, preserved separately); and supplementary analyses (`analysis/{hopGraph,cycleDetector,connectivity,dayOfWeek}.js`).
+> - **Version:** all three `package.json` files now read **0.3.0** (the v0.1.0/v0.2.0 version lag is resolved).
 
 > **Design override note:** Although `FR-01` in the SRS quotes 250 MB as the rejection threshold, this SDD treats **50 MB as the enforced upload size limit** at every system boundary (drag-drop validator, multipart parser, IPC bridge, Express middleware). This is the binding constraint for implementation.
 
@@ -79,9 +80,9 @@ flowchart LR
 |---|---|---|
 | **Electron Main (`electron/main.js`)** | App lifecycle, window creation, native dialogs, IPC handlers, and **booting the Express app in-process**. | Only the main process has full Node privileges; UI sandbox must not. |
 | **Renderer (React/Vite)** | Presentation, charts, tables, user input. No filesystem, no Node APIs. | Hardened with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`. |
-| **Preload (`electron/preload.js`)** | Narrow typed IPC surface (`window.fintrace.getVersion/openFile/openPdf/savePdfCopy/openExportsFolder`). Whitelisted channels only. | Bridges renderer ↔ main without leaking `ipcRenderer` itself. |
+| **Preload (`electron/preload.js`)** | Narrow typed IPC surface (`window.fintrace.getVersion/openPdf/openFile/openExportsFolder/savePdfCopy/showSaveDialog/saveExportAs`). Whitelisted channels only (double-checked on the main side). | Bridges renderer ↔ main without leaking `ipcRenderer` itself. `showSaveDialog` + `saveExportAs` back the native "Save As" export flow. |
 | **Express app (`backend/src/server.js` + `routes/ncrp.js`)** | REST API. Owns business logic: parsing, analysis, lien math, PDF/Excel/email generation. Bound to `127.0.0.1:3847`. | Renderer talks to it over `axios` exactly as if it were a remote API — keeps logic testable in isolation (Jest + supertest). |
-| **Analysis pipeline (`analyzers/analyzer.js`)** | CPU-bound work: 8-module forensic analysis on the parsed ledger. Invoked **in-process via `setImmediate`** after the upload responds `202`. | `better-sqlite3` is synchronous; deferring with `setImmediate` keeps the upload response non-blocking without the complexity of a worker thread. |
+| **Analysis pipeline (`analyzers/analyzer.js` + `analysis/*`)** | CPU-bound work: a fault-isolated multi-module forensic analysis on the parsed ledger (layers, cashout, mule, lien, data-quality, money-flow/circular/connectivity, timeline, geography, recovery, roadmap, repeats). Invoked **in-process via `setImmediate`** after the upload responds `202`. | `better-sqlite3` is synchronous; deferring with `setImmediate` keeps the upload response non-blocking without the complexity of a worker thread. |
 | **SQLite (better-sqlite3)** | All durable case state (WAL mode, `synchronous=NORMAL`, `foreign_keys=ON`, `cache_size=-10000`). | Single-file, zero-admin, transactionally safe. |
 | **File System** | Raw uploads (kept for re-parse / audit) and generated exports (PDF, `.xlsx`). | All under `app.getPath('userData')` — per-user, not world-readable. |
 
@@ -91,7 +92,7 @@ flowchart LR
 
 ### 2.1 File Upload Flow (drag-drop → DB insert → analysis trigger)
 
-Highlights the **3-stage upload validation** (size → magic bytes → NCRP content tokens), the **50 MB enforced limit**, and **row deduplication** (the parser collapses identical rows across sheets and returns warnings; there is no separate quarantine table).
+Highlights the **3-stage upload validation** (size → magic bytes → NCRP content tokens), the **50 MB enforced limit**, **evidentiary provenance** (a SHA-256 of the raw file is computed before parsing and recorded on the case record + audit log; a changed-source warning fires on re-ingest), and **row deduplication** (the parser collapses identical rows across sheets and returns warnings; there is no separate quarantine table). Header/sheet resolution is a **3-tier resolver** — exact → loose (normalized synonyms) → **self-healing fuzzy** (max Dice/Levenshtein ≥ 85%, `parsers/parseFuzzy.js`); the happy path is byte-identical and any fuzzy resolution is surfaced as a `parse_warning`. Transactions older than 6 months are split off as **Old Transactions** (excluded from all figures, preserved for reference).
 
 ```mermaid
 sequenceDiagram
@@ -122,7 +123,7 @@ sequenceDiagram
         R->>E: poll GET /api/ncrp/:id (until status='complete')
 
         A->>DB: UPDATE ncrp_reports SET status='processing'
-        A->>A: analyzeReport() — 8 modules<br/>(layers → cashout → mule → lien →<br/>data-quality → timeline → geography → repeats)
+        A->>A: analyzeReport() — multi-module pipeline<br/>(layers → cashout → mule → lien → data-quality →<br/>money-flow/circular/connectivity → timeline →<br/>geography → recovery → roadmap → repeats)
         A->>DB: INSERT layer_analysis, lien_records,<br/>repeat_accounts; write analysis_json blob
         A->>DB: UPDATE ncrp_reports SET<br/>status='complete', totals, fraud_start_date
         A->>DB: INSERT audit_log (analysis complete)
@@ -209,9 +210,9 @@ flowchart TD
     REST --> DONE([Write analysis_json → status='complete'])
 ```
 
-The analyzer returns one object — `{ summary, layer_analysis, cashout_analysis, mule_detection, lien_calculation, data_quality, timeline, geography, repeat_accounts, recovery_status, errors }` — which is serialized to the `analysis_json` column. `summary.cashed_out + on_hold + refunded + recoverable_residual` reconciles to victim loss (verified by `consistency_test.js`).
+The analyzer returns one object — `{ summary, reconciliation, layer_analysis, cashout_analysis, mule_detection, lien_calculation, lien_excluded, data_quality, data_quality_summary, repeat_accounts, timeline, timeline_summary, geography, money_flow_network, circular_flows, connectivity, aggregators, day_of_week, recovery_status, investigation_roadmap, victim_accounts, key_findings, errors }` — which is serialized to the `analysis_json` column. `summary.cashed_out + on_hold + refunded + recoverable_residual` reconciles to victim loss (verified by `consistency_test.js`); `reconciliation` carries the raw-vs-deduped hop figures including any collapsed exact-duplicate legs.
 
-### 2.3 PDF Report Flow (12-page dossier)
+### 2.3 PDF Report Flow (visual dossier)
 
 ```mermaid
 sequenceDiagram
@@ -227,22 +228,22 @@ sequenceDiagram
     U->>R: Click "Export PDF"
     R->>E: GET /api/ncrp/:id/pdf?mode=file
     E->>DB: Read ncrp_reports.analysis_json + rows
-    E->>PK: doc.pipe(stream)
-    loop For each of 12 sections
-        PK->>PK: Cover → Exec Summary → Roadmap →<br/>Layers → Money Flow → Mules → Lien →<br/>Cashout → Geography → Timeline →<br/>Key Findings → Draft Emails
-        PK->>PK: Footer "Generated by FinTrace NCRP | MINT" + page x/N
+    E->>PK: renderCharts() → SVG → PNG (resvg); doc.pipe(stream)
+    loop Front matter + Annexure A–H + Emails
+        PK->>PK: Cover (+ provenance) → Exec Summary →<br/>Visual Summary (charts) → Roadmap → Key Findings →<br/>Annexure A–H (Layer, Money Flow, Mules, Lien,<br/>Cashout, Geography, Timeline, Data Quality) →<br/>Draft Lien Letters
+        PK->>PK: Footer "Generated by FinTrace NCRP | MINT"<br/>+ source SHA-256 + page x/N
     end
     alt mode=file (Electron)
         E->>FS: Write exports/report-{id}-{ts}.pdf
         E-->>R: 200 {filename}
-        R->>EM: window.fintrace.openPdf(filename)
-        EM->>EM: shell.openPath(path)
+        R->>EM: showSaveDialog() → saveExportAs() (native Save As)
+        EM->>EM: copy to chosen path / shell.openPath
     else stream (browser)
         E-->>R: 200 application/pdf (blob download)
     end
 ```
 
-> Amounts in the PDF use an ASCII `Rs.` prefix (no `₹` glyph) for font/email portability. **🔭 Planned (v1.0 design):** chart rasterization (SVG→PNG) and a size-based annexure split — the current PDFKit build renders tabular sections without embedded chart images.
+> **Visual dossier (as built):** the front matter leads with rasterised charts (money-flow network, layer breakdown, daily volume — built as SVG and converted to PNG via `@resvg/resvg-js` in `utils/charts.js`, deterministic per case), and the bulky data tables are relegated to a labelled **Annexure A–H** behind a divider page; the per-bank Section 102 lien letters follow. Amounts use an ASCII `Rs.` prefix (no `₹` glyph) for font/email portability. The cover carries a **Source & Provenance** block (filename, SHA-256, upload time, app version) and the hash repeats in every page footer and the PDF metadata. In packaged builds the renderer calls `showSaveDialog()` **before** generation completes, then `saveExportAs()` copies the file to the chosen location (cancel writes nothing).
 
 ### 2.4 Email Generation Flow (Lien Letters)
 
@@ -413,13 +414,13 @@ Daily money movement (IST calendar day).
 
 ### 3.12 `GET /api/ncrp/:id/pdf`
 
-Generate the 12-page PDF dossier. `?mode=file` writes to `exports/` and returns `{ filename }` (for Electron `openPdf`); otherwise streams `application/pdf`.
+Generate the visual PDF dossier (charts + Annexure A–H + draft lien letters, with a source-SHA-256 provenance block). `?mode=file` writes to `exports/` and returns `{ filename }` (the renderer then offers a native "Save As" via `showSaveDialog`/`saveExportAs`); otherwise streams `application/pdf`.
 
 **Errors:** `500 PDF_GENERATION_FAILED`.
 
 ### 3.13 `GET /api/ncrp/:id/excel` *(v0.2.0)*
 
-Generate the 15-sheet workbook. `?mode=file` writes to `exports/` and returns `{ filename }`; otherwise streams the `.xlsx`.
+Generate the 19-sheet workbook (§3.17). `?mode=file` writes to `exports/` and returns `{ filename }` (renderer offers native "Save As"); otherwise streams the `.xlsx`.
 
 ### 3.14 `GET /api/ncrp/:id/audit`
 
@@ -447,9 +448,11 @@ Liveness probe used by the renderer at startup. Deliberately **does not leak the
 { status: "ok", version: string, uptimeSeconds: number }
 ```
 
-### 3.17 The 15-sheet Excel workbook (`utils/excelGenerator.js`)
+### 3.17 The 19-sheet Excel workbook (`utils/excelGenerator.js`)
 
-`Summary` · `Layer Breakdown` · `Lien Calculation` · `Suspected Mules` · `Transactions` · `Money Flow Network` · `Victim Accounts (Layer 0)` · `ATM Exit Details` · `POS Exit Details` · `Daily Volume` · `Hourly Pattern` · `Bank Rankings` · `Data Quality` · `Geographic Hotspots` · `Glossary`.
+`Summary` · `Layer Breakdown` · `Lien Calculation` · `Suspected Mules` · `Transactions` · `Money Flow Network` · `Circular Flows` · `Account Connectivity` · `Victim Accounts (Layer 0)` · `ATM Exit Details` · `POS Exit Details` · `Daily Volume` · `Hourly Pattern` · `Day of Week` · `Bank Rankings` · `Data Quality` · `Parse Audit` · `Geographic Hotspots` · `Glossary`.
+
+`Circular Flows`, `Account Connectivity`, and `Day of Week` are driven by the supplementary analyses in `backend/src/analysis/`. `Parse Audit` surfaces the parser's `parse_warnings` (fuzzy sheet/column resolutions), suspected-duplicate counts, and the Old-Transaction exclusion.
 
 ### 3.18 Uniform Error Envelope
 
@@ -481,38 +484,48 @@ NCRP Project/
 │   └── preload.js                     # contextBridge — window.fintrace.* (whitelisted)
 │
 ├── backend/                           # === EXPRESS BACKEND (CommonJS) ===
-│   ├── package.json                   # express, better-sqlite3, multer, xlsx, pdfkit, dayjs, electron-log
+│   ├── package.json                   # express, better-sqlite3, multer, xlsx, pdfkit, @resvg/resvg-js, dayjs, electron-log
 │   ├── jest.config.js
-│   ├── sample_ncrp.xlsx
 │   ├── src/
 │   │   ├── server.js                  # Express app factory + CORS, binds 127.0.0.1:3847
 │   │   ├── routes/
 │   │   │   └── ncrp.js                # ALL endpoints (createNcrpRouter(db)) + /health
 │   │   ├── parsers/
-│   │   │   └── ncrpParser.js          # multi-sheet .xlsx parser, header auto-detect, IFSC resolution
+│   │   │   ├── ncrpParser.js          # multi-sheet .xlsx parser, header auto-detect, IFSC resolution, provenance + dup flagging
+│   │   │   └── parseFuzzy.js          # self-healing fuzzy sheet/column resolver (3rd tier: Dice/Levenshtein ≥85%)
 │   │   ├── analyzers/
-│   │   │   └── analyzer.js            # 8-module pipeline (entry: analyzeReport)
+│   │   │   └── analyzer.js            # multi-module pipeline (entry: analyzeReport)
+│   │   ├── analysis/                   # supplementary analyses fed into Excel/PDF
+│   │   │   ├── hopGraph.js            # account→account edge graph
+│   │   │   ├── cycleDetector.js       # circular-flow detection
+│   │   │   ├── connectivity.js        # in/out-degree + collector ranking
+│   │   │   └── dayOfWeek.js           # day-of-week activity breakdown
 │   │   ├── db/
-│   │   │   ├── schema.js              # DDL + WAL pragmas + v0.2.0 column migration
+│   │   │   ├── schema.js              # DDL + WAL pragmas + idempotent column migrations
 │   │   │   ├── queries.js             # prepared-statement helpers
 │   │   │   └── seed.js
 │   │   ├── lib/
 │   │   │   ├── cashoutPolicy.js       # CASHOUT_POLICY.CAP_AT_RECEIVED
-│   │   │   └── ifscBankResolver.js    # IFSC_BANK_MAP (100+ prefixes) + resolveBank()
+│   │   │   ├── ifscBankResolver.js    # IFSC_BANK_MAP (100+ prefixes) + resolveBank()
+│   │   │   └── provenance.js          # sha256File() + appVersion()
 │   │   ├── utils/
-│   │   │   ├── excelGenerator.js      # 15-sheet workbook
-│   │   │   ├── pdfGenerator.js        # 12-page dossier (PDFKit)
+│   │   │   ├── excelGenerator.js      # 19-sheet workbook
+│   │   │   ├── pdfGenerator.js        # visual PDF dossier (PDFKit + charts)
+│   │   │   ├── charts.js              # SVG→PNG charts for the PDF (@resvg/resvg-js)
+│   │   │   ├── exportViews.js         # shared derived views for PDF + Excel
 │   │   │   └── emailGenerator.js      # per-bank RBI/MHA lien letters
 │   │   ├── config/
 │   │   │   ├── mule_weights.json      # 11 signal weights
 │   │   │   └── header_synonyms.json   # NCRP column variant map (20+ fields)
-│   │   └── __tests__/
-│   │       ├── analyzer.test.js · ncrpParser.test.js · queries.test.js · security.test.js
-│   │       ├── cashoutPolicy.test.js · ifscBankResolver.test.js · emailGenerator.test.js
-│   │       ├── api/reports.api.test.js
-│   │       └── helpers/xlsx.js
+│   │   └── __tests__/                 # 20 Jest suites (366 tests) + fixtures/ + helpers/
+│   │       ├── analyzer.test.js · ncrpParser.test.js · parseFuzzy.test.js · parserFuzzyIntegration.test.js
+│   │       ├── parserHardening.test.js · queries.test.js · security.test.js · provenance.test.js
+│   │       ├── cashoutPolicy.test.js · ifscBankResolver.test.js · emailGenerator.test.js · charts.test.js
+│   │       ├── dataQuality.test.js · reconciliation.test.js · oldTransaction.test.js · accountMerge.test.js
+│   │       ├── channelSafety.test.js · competitorFeatures.test.js · exports.test.js
+│   │       └── api/reports.api.test.js
 │   ├── scripts/
-│   │   ├── accuracy_test.js           # vs CypherSOL gold standard (28/28)
+│   │   ├── accuracy_test.js           # vs CypherSOL gold standard (30/30)
 │   │   ├── consistency_test.js        # cross-consumer figure reconciliation
 │   │   ├── validate_v020.js (+ .report.md)  # v0.2.0 cross-artifact proof
 │   │   ├── security_audit.js          # 10-vector HTTP attack gate (10/10)
@@ -583,15 +596,17 @@ win.webContents.on('will-navigate', (e, url) => {
 ```js
 // electron/preload.js
 contextBridge.exposeInMainWorld('fintrace', {
-  getVersion:        () => ipcRenderer.invoke('app:get-version'),
-  openFile:          (p) => ipcRenderer.invoke('shell:open-file', p),
-  openPdf:           (f) => ipcRenderer.invoke('shell:open-pdf', f),
-  savePdfCopy:       (f) => ipcRenderer.invoke('dialog:save-pdf', f),
-  openExportsFolder: () => ipcRenderer.invoke('shell:open-exports'),
+  getVersion:        () => invoke('app:get-version'),
+  openPdf:           (f) => invoke('shell:open-pdf', f),
+  openFile:          (f) => invoke('shell:open-file', f),
+  openExportsFolder: () => invoke('shell:open-exports'),
+  savePdfCopy:       (f) => invoke('dialog:save-pdf', f),
+  showSaveDialog:    (o) => invoke('dialog:show-save-dialog', o),   // native Save As — call before generating
+  saveExportAs:      (f, dest) => invoke('file:save-as', f, dest),  // copy export to chosen path
 });
 ```
 
-`ipcMain.handle` is registered **only** for those channels; unknown channels throw. `window.fintrace` presence is also how the renderer (`utils/api.js → isElectron()`) decides whether exports round-trip via IPC (file://) or as browser blob downloads.
+`invoke()` rejects any channel not in a frozen `ALLOWED_CHANNELS` allow-list at the preload boundary, and `ipcMain.handle` is registered **only** for those channels on the main side (a second, authoritative whitelist check). The `dialog:show-save-dialog` + `file:save-as` pair backs the native "Save As" export flow: the dialog is parented to the focused window, and `file:save-as` validates the source name is inside `EXPORTS_DIR` and the destination is an absolute path before copying. `window.fintrace` presence is also how the renderer (`utils/api.js → isElectron()`) decides whether exports round-trip via IPC (file://) or as browser blob downloads.
 
 ### 5.3 Content Security Policy
 
@@ -618,7 +633,7 @@ The `webRequest.onBeforeRequest` guard cancels any request that is not loopback 
 ### 5.5 Additional Safeguards
 
 - **Single-instance lock** (`app.requestSingleInstanceLock`) — prevents two processes racing on the same SQLite file.
-- **Auto-updater disabled** (C-08) — `autoUpdater` is never instantiated.
+- **Auto-updater** — wired as a guarded **stub** in packaged builds only: `electron/main.js` lazily `require('electron-updater')` and, if present, calls `checkForUpdatesAndNotify()` (failures are logged, never fatal). No `publish` feed is configured yet, so it is effectively inert until a feed is added (see `BUILD_INSTRUCTIONS.md §12`). 🔭 Planned: the offline/air-gapped update flow.
 - **DevTools** — only opened when `process.env.NODE_ENV === 'development'`.
 - **Upload defense** — 3-stage validation (size, magic bytes, NCRP content tokens) plus parameterized SQL throughout (`security_audit.js` exercises 10 attack vectors: SQLi, XSS, path traversal, malformed/oversized uploads, type spoofing, rate limiting, arbitrary DB access, export smuggling, input sanitization).
 
@@ -649,7 +664,7 @@ WAL mode + `PRAGMA synchronous=NORMAL` (NFR-07) gives roughly an order of magnit
 
 ### 6.3 Why Analysis Runs Off `setImmediate`
 
-`POST /api/ncrp/upload` returns `202 Accepted` *before* the 8-module analysis runs. A 50k-row file plus full analysis can take tens of seconds; holding the HTTP socket that long invites timeouts and gives the renderer no chance to show progress. Deferring with `setImmediate` keeps the response immediate without the complexity of a worker thread. The renderer keys analysis state off `analysis_status`.
+`POST /api/ncrp/upload` returns `202 Accepted` *before* the multi-module analysis runs. A 50k-row file plus full analysis can take tens of seconds; holding the HTTP socket that long invites timeouts and gives the renderer no chance to show progress. Deferring with `setImmediate` keeps the response immediate without the complexity of a worker thread. The renderer keys analysis state off `analysis_status`.
 
 ### 6.4 Pagination Strategy for Transaction Table
 
@@ -678,7 +693,7 @@ A single error-handling middleware terminates every route; async handlers are wr
 
 ### 7.2 Analyzer Fault Isolation
 
-Each of the 8 analyzer modules is wrapped in try/catch. A module failure is appended to `result.errors` (`{ module, message }`) and the pipeline **continues** — a single bad module never aborts the whole analysis. If the pipeline throws fatally, the report row is marked `analysis_status='error'`.
+Every analyzer module is wrapped in try/catch (via `runModule`). A module failure is appended to `result.errors` (`{ module, message }`) and the pipeline **continues** — a single bad module never aborts the whole analysis. If the pipeline throws fatally, the report row is marked `analysis_status='error'`.
 
 ### 7.3 Frontend Error Boundaries
 
@@ -706,15 +721,15 @@ The build is gated by a suite of scripts in `backend/scripts/` and Jest tests in
 
 | Check | What it proves | Status |
 |---|---|---|
-| `accuracy_test.js` | Derived metrics vs CypherSOL gold standard (file …145), 8 edge cases; ±1% rupees, exact counts. | **28/28** |
+| `accuracy_test.js` | Derived metrics vs CypherSOL gold standard (file …145) + parser/analyzer edge cases; ±1% rupees, exact counts. | **30/30** |
 | `security_audit.js` | 10-vector HTTP attack gate against a real Express server on a throwaway DB. | **10/10** |
 | `consistency_test.js` | `cashed_out` is identical across summary / cashout / recovery / PDF / Excel, and the recovery split sums to 100% of victim loss (cases …145, …170). | pass |
-| `validate_v020.js` | The three v0.2.0 fixes (capped cash-out, IFSC bank attribution, data-quality flags) hold in **generated PDF text and Excel cells**, not just in memory. Writes `validate_v020.report.md`. | pass |
+| `validate_v020.js` | The v0.2.0+ fixes (capped cash-out, IFSC bank attribution, data-quality flags) hold in **generated PDF text and Excel cells**, not just in memory. Writes `validate_v020.report.md`. | **121 cross-artifact + 4/4 suites** |
 | `e2e_validate.js` | Full pipeline: parse → analyze → PDF/Excel → verify artifacts. | pass |
-| `benchmark.js` | Parse / analysis / PDF / Excel timings vs baselines on verified files. | pass |
-| Jest (`__tests__/`) | Unit + API coverage: parser, analyzer, queries, security, cashout policy, IFSC resolver, email generator, reports API (supertest). | pass |
+| `benchmark.js` | Parse / analysis / PDF / Excel timings vs CypherSOL-beating baselines on real files. | pass |
+| Jest (`__tests__/`) | Unit + API coverage: parser (incl. fuzzy + hardening), analyzer, reconciliation, data quality, old transactions, provenance, charts, exports, queries, security, cashout policy, IFSC resolver, email generator, reports API (supertest). | **366/366 across 20 suites** |
 
-> **Outstanding:** version bump to `0.2.0` across the three `package.json` files; SSE progress stream (currently polling); PDF chart rasterization + annexure split (currently tabular-only). These are tracked as 🔭 Planned items above.
+> **Done since v2.0:** the `0.2.0` → **`0.3.0`** version bump across all three `package.json` files; PDF chart rasterization + annexure split (now the visual dossier, §2.3). **Still 🔭 Planned:** SSE progress stream (the build still polls `analysis_status`); Authenticode code signing of the installer; offline/air-gapped auto-update flow.
 
 ---
 
