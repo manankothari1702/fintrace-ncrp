@@ -73,6 +73,9 @@ function reconFrom(sheet) {
     dup: find('Less duplicate rows included'),
     cap: find('Less excess over disputed inflow'),
     confirmed: find('Confirmed cashed out (headline)'),
+    pointsToDuplicates: rows.some((r) =>
+      String(r[0]).startsWith('Gross cash-exit trail')
+      || (r[2] && String(r[2]).includes('Suspected Duplicates'))),
   };
 }
 
@@ -141,32 +144,30 @@ describe('ISSUE 1 — ATM/POS scoping + gross-vs-confirmed reconciliation', () =
     expect(posHeader).toContain('Gross Amount [Rs.]');
   });
 
-  test('XLSX reconciliation line is present and arithmetically exact on both sheets', () => {
+  test('XLSX cash-out reconciliation shows the capped headline and points to Annexure I (single source)', () => {
     for (const name of ['ATM Exit Details', 'POS Exit Details']) {
       const r = reconFrom(wb.Sheets[name]);
       expect(r.header).toBe(true);
-      expect(r.gross).not.toBeNull();
+      // Single-source rule: the gross/uncapped total is NOT restated here — it
+      // lives only on the Suspected Duplicates sheet (Annexure I), so the
+      // workbook never prints two competing "uncapped cash-exit" figures.
+      expect(r.gross).toBeNull();
       expect(r.confirmed).not.toBeNull();
-      // gross - duplicates - cap = confirmed headline. The duplicate line is
-      // omitted when the gross is already net of dupes (MINOR B), so treat a
-      // missing dup row as 0.
-      expect(r.gross - (r.dup || 0) - r.cap).toBeCloseTo(r.confirmed, 2);
+      // confirmed + cap excess still reconciles to the headline cap math.
       expect(r.confirmed).toBeCloseTo(HEADLINE_CASHOUT, 2);
-      // The gross shown is strictly above the headline (the whole point of the line).
-      expect(r.gross).toBeGreaterThan(r.confirmed);
+      expect(r.pointsToDuplicates).toBe(true);
     }
   });
 
-  test('PDF carries the same reconciliation statement', () => {
+  test('PDF cash-out annexure states the capped headline and defers gross to Annexure I', () => {
     // Collapse whitespace: PDFKit line-wrapping inserts spaces at wrap points.
     const flat = pdfText.replace(/\s+/g, ' ');
-    expect(flat).toContain('Reconciliation:');
-    // Gross is already post-dedup, so the formula omits the duplicates term and
-    // the line states the dupes were collapsed beforehand (MINOR B).
-    expect(flat).toContain('gross - cap = confirmed');
-    expect(flat).toContain('already net of');
-    expect(flat).not.toMatch(/net of Rs\.\s*0\.00/i);
+    expect(flat).toContain('Confirmed cashed out:');
+    expect(flat).toContain('Annexure I');
     expect(flat).toContain('Rs. 5,44,282.95'); // confirmed headline
+    // The legacy uncapped cash-out total (Rs. 6,09,429.96) must NOT appear in
+    // the court-facing dossier — only Annexure I carries the gross trail figures.
+    expect(flat).not.toContain('6,09,429.96');
   });
 });
 

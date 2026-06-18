@@ -333,7 +333,7 @@ function SuspectedDuplicates({ data }) {
                 </tr>
               </thead>
               <tbody>
-                {groups.flatMap((g) => g.members.map((row, idx) => {
+                {groups.flatMap((g) => (g.members || []).map((row, idx) => {
                   const meta = DUP_META[row.dup_status === 'unique' && row.role === 'primary'
                     ? 'primary' : row.dup_status] || DUP_META.unique;
                   return (

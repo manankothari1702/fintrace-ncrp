@@ -371,29 +371,21 @@ function generateReportExcel(bundle = {}) {
   const recon = cashoutReconciliation(
     { summary, cashout: cashAnalysis },
     atmShownAmount + posShownAmount, atmShownTxns + posRows.length);
-  // The detail sheets show POST-dedup figures, so the gross is normally already
-  // net of the collapsed duplicates (dup_amount_shown ≈ 0). Surface the explicit
-  // "Less duplicate rows" line only when it carries real value; otherwise note
-  // the duplicates were collapsed beforehand — never a contradictory "Rs. 0.00
-  // duplicate rows" line against a non-zero collapsed-row count.
-  const hasDupValue = num(recon.dup_amount_shown) > 0.005;
+  // SINGLE source for the gross cash-exit trail + raw→deduped duplicate
+  // reconciliation is the "Suspected Duplicates" sheet. This block intentionally
+  // does NOT restate a gross/uncapped total, so the workbook never prints two
+  // competing "uncapped cash-exit" figures. It keeps only the per-account cap
+  // bridge to the confirmed headline, and points to the dedicated sheet.
   const reconBlock = [
     [],
     ['CASH-OUT RECONCILIATION (ATM + POS sheets)'],
-    ['Gross withdrawals shown [Rs.]', recon.gross_shown,
-      `${recon.rows_shown} rows across the ATM and POS sheets`
-      + (recon.dup_rows_collapsed > 0 && !hasDupValue
-        ? `; already net of ${recon.dup_rows_collapsed} exact-duplicate row(s) collapsed before analysis`
-        : '')],
+    ['Confirmed cashed out (headline) [Rs.]', recon.confirmed,
+      `${recon.rows_shown} row(s); capped per account at disputed inflow`],
+    ['Less excess over disputed inflow per account (cap) [Rs.]', recon.cap_excess,
+      'amounts above an account\'s disputed inflow are its own/clean funds'],
+    ['Gross cash-exit trail & duplicate reconciliation', '',
+      'See the "Suspected Duplicates" sheet — raw → deduped (exact + probable)'],
   ];
-  if (hasDupValue) {
-    reconBlock.push(['Less duplicate rows included above [Rs.]', recon.dup_amount_shown,
-      `${recon.dup_rows_collapsed} duplicate ledger row(s) were collapsed during analysis`]);
-  }
-  reconBlock.push(['Less excess over disputed inflow per account (cap) [Rs.]', recon.cap_excess,
-    'amounts above an account\'s disputed inflow are its own/clean funds']);
-  reconBlock.push(['Confirmed cashed out (headline) [Rs.]', recon.confirmed,
-    hasDupValue ? 'gross - duplicates - cap = confirmed' : 'gross - cap = confirmed']);
 
   addSheet(wb, 'ATM Exit Details', [
     ['ATM ID', 'Location', 'City', 'State', 'Gross Amount [Rs.]', 'Txns', 'Accounts'],
@@ -571,6 +563,8 @@ function generateReportExcel(bundle = {}) {
     ['Uncapped cash-exit trail — deduped (headline) [Rs.]', num(sdM.uncapped_trail_deduped)],
     ['Probable-duplicate impact (PENDING confirmation) [Rs.]', -num(sdM.probable_duplicate_impact)],
     ['Uncapped trail IF probables confirmed [Rs.]', num(sdM.uncapped_trail_if_probable_confirmed)],
+    [],
+    ['Note: the deduped COUNT removes exact + probable rows (cautious count); the deduped TRAIL removes exact only — probable rupees are the separate pending line. The two bases differ by design and are reconciled independently.'],
     [],
     ['UTR', 'Account', 'Date-time', 'Amount [Rs.]', 'Disputed [Rs.]', 'Terminal/Secondary', 'Classification', 'Row', 'Basis'],
     ...(sdRows.length > 0 ? sdRows : [['—', 'No suspected duplicates: every ledger row is a distinct transaction.']]),

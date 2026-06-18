@@ -172,12 +172,11 @@ describe('PDF dossier — visual section + annexure', () => {
   test('financial figures and the reconciliation are unchanged', () => {
     expect(pdfFlat).toContain(HEADLINE_CASHOUT);
     expect(pdfFlat).toContain(LIEN_TOTAL);
-    // Gross shown is already post-dedup, so the reconciliation states the
-    // duplicates were collapsed beforehand rather than subtracting a Rs. 0.00
-    // term (the old contradictory wording — MINOR B).
-    expect(pdfFlat).toContain('gross - cap = confirmed');
-    expect(pdfFlat).toContain('already net of');
-    expect(pdfFlat).not.toMatch(/net of Rs\.\s*0\.00/i);
+    // Single-source rule: the cash-out annexure states the capped headline and
+    // defers the gross/uncapped trail to Annexure I, so the dossier never prints
+    // two competing "uncapped cash-exit" figures.
+    expect(pdfFlat).toContain('Confirmed cashed out:');
+    expect(pdfFlat).toContain('Annexure I');
     expect(pdfFlat).toContain('Top merchants (POS cashouts');
   });
 

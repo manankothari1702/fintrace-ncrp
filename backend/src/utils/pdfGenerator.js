@@ -895,32 +895,19 @@ function renderCashout(doc, cashout, view) {
       'cash-outs, if any, are listed under Geographic Hotspots).', { color: MUTED, gap: 0.9 });
   }
 
-  // Gross-vs-confirmed reconciliation: a reader who sums the ATM table above
-  // and the POS merchant table (section 9) gets the gross figure; this line
-  // shows exactly how that reconciles to the confirmed headline.
+  // Confirmed-headline reconciliation. The SINGLE source for the gross cash-exit
+  // trail and its raw → deduped duplicate reconciliation is Annexure I — this
+  // block intentionally does NOT restate a gross/uncapped total, so the dossier
+  // never prints two competing "uncapped cash-exit" figures (one here, one in
+  // Annexure I). It keeps only the per-account cap bridge to the confirmed
+  // headline, and points to Annexure I for the gross figure.
   if (recon && (recon.rows_shown > 0 || recon.confirmed > 0)) {
-    // The detail tables show POST-dedup figures, so the gross shown is normally
-    // already net of the collapsed duplicates (dup_amount_shown ≈ 0). In that
-    // case we must NOT subtract a "Rs. 0.00 duplicate rows" term (it reads as a
-    // contradiction with the non-zero collapsed-row count); we state instead
-    // that the gross is already net of them. Only when the detail tables truly
-    // carry duplicate value do we show the explicit "- duplicates" term.
-    const hasDupValue = num(recon.dup_amount_shown) > 0.005;
-    const dupNote = recon.dup_rows_collapsed > 0
-      ? (hasDupValue
-        ? `, net of ${formatMoney(recon.dup_amount_shown)} across ` +
-          `${formatCount(recon.dup_rows_collapsed)} duplicate ledger row(s)`
-        : ` (already net of ${formatCount(recon.dup_rows_collapsed)} exact-duplicate ` +
-          `ledger row(s) collapsed before analysis)`)
-      : '';
-    const formula = hasDupValue ? 'gross - duplicates - cap = confirmed' : 'gross - cap = confirmed';
     para(doc,
-      `Reconciliation: gross withdrawals shown (ATM table above + POS merchants in section 9): ` +
-      `${formatMoney(recon.gross_shown)} across ${formatCount(recon.rows_shown)} row(s)${dupNote}. ` +
-      `Confirmed cashed out: ${formatMoney(recon.confirmed)} — less ` +
-      `${formatMoney(recon.cap_excess)} capped at disputed inflow per account ` +
-      `(amounts above an account's disputed inflow are its own/clean funds): ` +
-      `${formula}.`,
+      `Confirmed cashed out: ${formatMoney(recon.confirmed)} across ` +
+      `${formatCount(recon.rows_shown)} row(s), after capping each account's withdrawals at its ` +
+      `disputed inflow — ${formatMoney(recon.cap_excess)} withdrawn above disputed inflow is the ` +
+      `account's own/clean funds and is excluded. The gross cash-exit trail and its full ` +
+      `raw → deduped duplicate reconciliation are set out in Annexure I (Suspected Duplicates).`,
       { gap: 0.9, size: 8.5, color: MUTED });
   }
 
@@ -1245,7 +1232,13 @@ function renderSuspectedDuplicates(doc, suspectedDuplicates) {
     'amount, disputed amount and terminal). Probable duplicate = matches on account, ' +
     'UTR, amount and minute but differs on the disputed amount or terminal id; it is ' +
     'reported separately and is NOT folded into the headline until an investigator ' +
-    'confirms it.', { gap: 0.8, size: 8, color: MUTED });
+    'confirms it.', { gap: 0.4, size: 8, color: MUTED });
+  para(doc,
+    'Note on the two "deduped" figures: the deduped transaction COUNT removes both exact ' +
+    'and probable rows (the more cautious count), while the deduped uncapped TRAIL removes ' +
+    'exact duplicates ONLY — probable rupees are held as the separate pending line above. ' +
+    'The two bases differ by design, so the row count and the rupee total are reconciled ' +
+    'independently, not against each other.', { gap: 0.9, size: 8, color: MUTED });
 
   if (groups.length === 0) {
     para(doc, 'No suspected duplicates: every ledger row is a distinct transaction.',
