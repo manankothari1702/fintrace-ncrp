@@ -1109,10 +1109,12 @@ function flagLabel(flag) {
  * @param {PDFKit.PDFDocument} doc
  * @param {Array<object>} dataQuality
  * @param {Array<object>} [oldTransactions] - rows >6 months old, excluded from figures
+ * @param {Array<object>} [parseWarnings] - self-healing parse audit (fuzzy matches / degraded columns)
  */
-function renderDataQuality(doc, dataQuality, oldTransactions = []) {
+function renderDataQuality(doc, dataQuality, oldTransactions = [], parseWarnings = []) {
   const list = Array.isArray(dataQuality) ? dataQuality : [];
   const oldTxns = Array.isArray(oldTransactions) ? oldTransactions : [];
+  const pw = Array.isArray(parseWarnings) ? parseWarnings : [];
   doc.addPage();
   sectionHeading(doc, 'Annexure H — Bank Attribution — Data Quality Review');
 
@@ -1154,6 +1156,42 @@ function renderDataQuality(doc, dataQuality, oldTransactions = []) {
       'verify and dispatch. For "No IFSC" / "Invalid IFSC" rows (wallets / PA / PG ids) ' +
       'confirm the correct nodal entity. For "Unknown prefix" rows the IFSC bank map ' +
       'should be extended.', { gap: 0.8, size: 8, color: MUTED });
+  }
+
+  // Parser self-healing audit: sheets/columns resolved by similarity rather
+  // than an exact match, plus informational columns that were absent. Recorded
+  // so the file's interpretation is fully auditable. Amounts are unaffected.
+  if (pw.length > 0) {
+    const typeLabel = (code) => (
+      code === 'FUZZY_SHEET_MATCH' ? 'Sheet (fuzzy)'
+        : code === 'FUZZY_COLUMN_MATCH' ? 'Column (fuzzy)'
+          : 'Column missing');
+    para(doc,
+      `Parser Self-Healing Audit — ${formatCount(pw.length)} item(s). The parser could not ` +
+      'match the following sheet/column name(s) exactly; entries marked "fuzzy" were resolved ' +
+      'by name similarity (confidence shown) and entries marked "missing" degraded gracefully. ' +
+      'This records how the source file was READ — it does not change any computed amount. ' +
+      'Confirm each interpretation is correct.', { gap: 0.8, size: 8 });
+
+    drawTable(doc, {
+      fontSize: 8,
+      columns: [
+        { label: '#', width: 22, align: 'center' },
+        { label: 'Type', width: 86 },
+        { label: 'Sheet', width: 90 },
+        { label: 'Source name → field', width: 150 },
+        { label: 'Conf.', width: 38, align: 'center' },
+        { label: 'Note', width: contentWidth(doc) - 386 },
+      ],
+      rows: pw.map((w, i) => [
+        i + 1,
+        typeLabel(w.code),
+        w.sheet || '—',
+        `${w.matchedFrom || '(missing)'} → ${w.matchedTo || '—'}`,
+        w.confidence == null ? '—' : `${Math.round(w.confidence * 100)}%`,
+        w.message || '',
+      ]),
+    });
   }
 
   // Old transactions (>6 months): parsed and recorded, but excluded from every
@@ -1474,7 +1512,9 @@ function generateReportPdf(data, outputPath) {
       doc.addPage(); renderGeography(doc, geoView, posMerchants);
       doc.addPage(); renderTimeline(doc, analysis.timeline || [], analysis.reconciliation, analysis.day_of_week);
       // Annexure H — bank-attribution data-quality review (adds its own page).
-      renderDataQuality(doc, analysis.data_quality || [], analysis.old_transactions || []);
+      // Includes the parser self-healing audit (fuzzy matches / degraded columns).
+      renderDataQuality(doc, analysis.data_quality || [], analysis.old_transactions || [],
+        analysis.parse_warnings || []);
 
       // Draft emails (adds its own pages). Pass the flagged accounts so each
       // letter can carry a reviewer note where its bank was IFSC-corrected.

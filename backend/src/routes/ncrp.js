@@ -504,6 +504,18 @@ function createNcrpRouter(db) {
         } catch (_e) { /* malformed JSON → omit, never block analysis */ }
       }
 
+      // Carry the parser's self-healing audit (stored at upload) into the
+      // analysis snapshot so the Data Quality page + PDF/Excel parse-audit
+      // trail can render it. Purely informational — touched no analyzer module.
+      if (reportRow && reportRow.parse_warnings) {
+        try {
+          const parsedPw = JSON.parse(reportRow.parse_warnings);
+          if (Array.isArray(parsedPw) && parsedPw.length > 0) {
+            result.parse_warnings = parsedPw;
+          }
+        } catch (_e) { /* malformed JSON → omit, never block analysis */ }
+      }
+
       // Case context for the per-bank letters.
       let ackNo = null;
       let complaintDate = null;
@@ -654,6 +666,12 @@ function createNcrpRouter(db) {
 
       const rows = parsed.rows || [];
       const warnings = parsed.warnings || [];
+      // Structured self-healing audit (fuzzy sheet/column resolutions + degraded
+      // informational columns). Persisted on the report and folded into the
+      // analysis snapshot so the Data Quality page / PDF / Excel can surface
+      // them. Also appended to the upload-response warnings below so the officer
+      // sees them immediately — a fuzzy match is never silently accepted.
+      const parseWarnings = Array.isArray(parsed.parseWarnings) ? parsed.parseWarnings : [];
       const oldTransactions = Array.isArray(parsed.oldTransactions) ? parsed.oldTransactions : [];
 
       // Old transactions (>6 months) are informational and excluded from every
@@ -728,6 +746,7 @@ function createNcrpRouter(db) {
           analysis_status: 'pending',
           source_sha256: sourceSha256,
           old_transactions: oldTransactions.length > 0 ? JSON.stringify(oldTransactions) : null,
+          parse_warnings: parseWarnings.length > 0 ? JSON.stringify(parseWarnings) : null,
         });
 
         // Batch the inserts: INSERT_BATCH_SIZE rows per SQLite transaction.
@@ -755,6 +774,10 @@ function createNcrpRouter(db) {
       } catch (_dbErr) {
         return sendError(res, 500, 'DB_ERROR', 'Failed to store report.');
       }
+
+      // Surface the structured parse warnings on the upload banner too (they
+      // carry a `message`, which the renderer's ParserWarnings panel renders).
+      for (const pw of parseWarnings) warnings.push(pw);
 
       // Respond immediately; analysis continues in the background.
       res.status(202).json({
