@@ -10,10 +10,13 @@
  * channel is validated by name on the main side.
  *
  * Whitelisted channels (must match `main.js` ipcMain.handle registrations):
- *   • app:get-version    → returns the packaged app version string
- *   • shell:open-pdf     → opens a generated PDF in the OS PDF handler
- *   • shell:open-exports → opens the exports/ folder in the OS file manager
- *   • dialog:save-pdf    → prompts the user to save a copy of a generated PDF
+ *   • app:get-version        → returns the packaged app version string
+ *   • shell:open-pdf         → opens a generated PDF in the OS PDF handler
+ *   • shell:open-file        → opens a generated export in its OS handler
+ *   • shell:open-exports     → opens the exports/ folder in the OS file manager
+ *   • dialog:save-pdf        → prompts the user to save a copy of a generated PDF
+ *   • dialog:show-save-dialog→ native Save-As dialog; returns the chosen path
+ *   • file:save-as           → copies a generated export to the chosen path
  *
  * Any channel not in ALLOWED_CHANNELS is rejected at the preload boundary
  * before it ever reaches the main process. The main process performs a second,
@@ -34,6 +37,8 @@ const ALLOWED_CHANNELS = Object.freeze([
   'shell:open-file',
   'shell:open-exports',
   'dialog:save-pdf',
+  'dialog:show-save-dialog',
+  'file:save-as',
 ]);
 
 /**
@@ -91,4 +96,23 @@ contextBridge.exposeInMainWorld('fintrace', {
    * @returns {Promise<{ ok: true, savedTo: string } | { ok: false, error: string }>}
    */
   savePdfCopy: (fileName) => invoke('dialog:save-pdf', fileName),
+
+  /**
+   * Show a native OS "Save As" dialog and return the chosen destination. Call
+   * this FIRST, before generating anything — if the user cancels, nothing is
+   * written. The dialog is parented to the focused window (no orphaned parent).
+   * @param {{ type: 'pdf'|'excel', defaultName?: string }} opts
+   * @returns {Promise<{ canceled: true } | { canceled: false, filePath: string }>}
+   */
+  showSaveDialog: (opts) => invoke('dialog:show-save-dialog', opts),
+
+  /**
+   * Copy a generated export (in EXPORTS_DIR) to the absolute path the user
+   * picked via {@link showSaveDialog}. The main process validates the source
+   * file name and that the destination is an absolute path.
+   * @param {string} fileName - Source file name within exports/.
+   * @param {string} destPath - Absolute destination path from the save dialog.
+   * @returns {Promise<{ ok: true, savedTo: string } | { ok: false, error: string }>}
+   */
+  saveExportAs: (fileName, destPath) => invoke('file:save-as', fileName, destPath),
 });

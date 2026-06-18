@@ -24,7 +24,8 @@ import {
   uploadReport,
   listReports,
   deleteReport,
-  openReportPdf,
+  saveReportPdf,
+  suggestExportName,
   pollReportUntilDone,
   friendlyErrorMessage,
   ApiError,
@@ -73,6 +74,7 @@ export default function Upload() {
   const [reports, setReports] = useState([]);
   const [reportsLoading, setReportsLoading] = useState(true);
   const [reportsError, setReportsError] = useState(null);
+  const [savedNotice, setSavedNotice] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
   // Load (and reload) the previous-reports list from the backend.
@@ -174,13 +176,18 @@ export default function Upload() {
 
   // ── Previous-reports actions ───────────────────────────────────────────────
 
-  const handleDownloadPdf = useCallback(async (reportId) => {
-    // The backend generates the dossier on demand. In Electron it is written to
-    // the exports folder and opened via the OS handler over IPC (new windows are
-    // denied); in a browser it opens the streaming URL in a new tab.
+  const handleDownloadPdf = useCallback(async (report) => {
+    // The backend generates the dossier on demand. In Electron a native Save-As
+    // dialog asks where to put it (cancel → nothing happens); in a browser the
+    // streaming attachment is saved through the browser's own download prompt.
     setReportsError(null);
+    setSavedNotice(null);
     try {
-      await openReportPdf(reportId);
+      const suggested = suggestExportName(report, 'pdf');
+      const result = await saveReportPdf(report.id, suggested);
+      if (result && result.savedTo) {
+        setSavedNotice(`Saved to ${result.savedTo}`);
+      }
     } catch (err) {
       setReportsError(err);
     }
@@ -239,7 +246,7 @@ export default function Upload() {
             >
               📊 Dashboard
             </button>
-            <button type="button" className="btn btn-sm" disabled={!ready} onClick={() => handleDownloadPdf(r.id)}>
+            <button type="button" className="btn btn-sm" disabled={!ready} onClick={() => handleDownloadPdf(r)}>
               ⬇ PDF
             </button>
             <button
@@ -387,6 +394,19 @@ export default function Upload() {
         <h2 style={{ fontSize: 16 }}>Previous Reports</h2>
         <p className="subtitle">Earlier uploads and their analysis status.</p>
       </header>
+      {savedNotice && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 12, padding: '10px 14px',
+            background: 'rgba(46, 160, 67, 0.12)', border: '1px solid var(--success, #2ea043)',
+            borderRadius: 'var(--radius)', color: 'var(--success, #2ea043)',
+            fontSize: 13, fontWeight: 600, wordBreak: 'break-all',
+          }}
+        >
+          ✓ {savedNotice}
+        </div>
+      )}
       {reportsError ? (
         <ErrorAlert
           error={reportsError}

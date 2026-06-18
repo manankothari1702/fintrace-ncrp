@@ -449,6 +449,68 @@ function registerIpcHandlers() {
       return { ok: false, error: 'Could not write the file.' };
     }
   });
+
+  // dialog:show-save-dialog — prompt the user for an export destination BEFORE
+  // anything is generated or written. Returns the chosen absolute path, or
+  // { canceled: true } if the user pressed Cancel / Esc (the renderer then does
+  // nothing — no generation, no file). The dialog is parented to the focused
+  // BrowserWindow (falling back to mainWindow) so it never opens behind the app
+  // on Windows. The renderer supplies the export type and a suggested file name;
+  // both are sanitised here — the renderer is never trusted to dictate a path.
+  ipcMain.handle('dialog:show-save-dialog', async (_event, opts) => {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const type = o.type === 'excel' ? 'excel' : 'pdf';
+    const ext = type === 'excel' ? 'xlsx' : 'pdf';
+
+    // Reduce the suggested name to a bare, filesystem-safe basename with the
+    // correct extension. Strip any directory components the renderer sent.
+    let suggested = typeof o.defaultName === 'string'
+      ? path.basename(o.defaultName).replace(/[\\/:*?"<>|]+/g, '_').trim()
+      : '';
+    if (!suggested) {
+      suggested = type === 'excel' ? 'FinTrace_Export.xlsx' : 'FinTrace_Report.pdf';
+    } else if (!new RegExp(`\\.${ext}$`, 'i').test(suggested)) {
+      suggested = `${suggested.replace(/\.[^.]*$/, '')}.${ext}`;
+    }
+
+    const filters = type === 'excel'
+      ? [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+      : [{ name: 'PDF Document', extensions: ['pdf'] }];
+
+    const focused = BrowserWindow.getFocusedWindow() || mainWindow;
+    const result = await dialog.showSaveDialog(focused, {
+      title: type === 'excel' ? 'Save Excel workbook' : 'Save PDF report',
+      defaultPath: suggested,
+      filters,
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+
+    if (result.canceled || !result.filePath) return { canceled: true };
+    return { canceled: false, filePath: result.filePath };
+  });
+
+  // file:save-as — copy a freshly generated export (already written to
+  // EXPORTS_DIR by the backend) to the absolute destPath the user chose in the
+  // save dialog above. fileName is pinned to EXPORTS_DIR (traversal / unknown
+  // extension rejected); destPath must be an absolute path. Returns
+  // { ok, savedTo } or a user-facing error string — never throws.
+  ipcMain.handle('file:save-as', async (_event, fileName, destPath) => {
+    const safeSource = resolveExportedFile(fileName);
+    if (!safeSource) {
+      log.warn('file:save-as rejected source for', fileName);
+      return { ok: false, error: 'Invalid or unknown export file.' };
+    }
+    if (typeof destPath !== 'string' || destPath.trim() === '' || !path.isAbsolute(destPath)) {
+      return { ok: false, error: 'Invalid destination path.' };
+    }
+    try {
+      fs.copyFileSync(safeSource, destPath);
+      return { ok: true, savedTo: destPath };
+    } catch (err) {
+      log.error('file:save-as copy failed:', err);
+      return { ok: false, error: 'Could not write the file to the chosen location.' };
+    }
+  });
 }
 
 // ─── Single-instance lock (SDD §5.5) ─────────────────────────────────

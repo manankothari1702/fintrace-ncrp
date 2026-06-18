@@ -231,6 +231,87 @@ export async function openReportExcel(id) {
 }
 
 /**
+ * Build a sensible, filesystem-safe default file name for a report export,
+ * pre-filled into the native Save-As dialog (the user can still rename it).
+ * Derived from the uploaded NCRP file name (which carries the case identity),
+ * falling back to the report id.
+ *
+ * @param {{ id?: number, original_filename?: string }} report
+ * @param {'pdf'|'excel'} type
+ * @returns {string} e.g. "FinTrace_32709250080512_CompleteTrail_Report.pdf"
+ */
+export function suggestExportName(report, type) {
+  const id = report && report.id != null ? report.id : '';
+  const base = String((report && report.original_filename) || `case-${id}`)
+    .replace(/\.[^.]+$/, '')        // drop extension
+    .replace(/[^\w.-]+/g, '_')      // filesystem-safe
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const safeBase = base || `case-${id}` || 'report';
+  return type === 'excel'
+    ? `FinTrace_${safeBase}_Export.xlsx`
+    : `FinTrace_${safeBase}_Report.pdf`;
+}
+
+/**
+ * Save the dossier PDF to a user-chosen location via a native "Save As" dialog.
+ *
+ *   • Electron → show the OS save dialog FIRST. If the user cancels, return
+ *     { canceled: true } and write nothing. Otherwise generate the PDF into the
+ *     per-user exports folder (`?mode=file`) and copy it to the chosen path over
+ *     IPC, returning { savedTo }.
+ *   • Browser (Vite dev) → fall back to the streaming attachment download, which
+ *     the browser saves through its own download prompt.
+ *
+ * @param {number} id
+ * @param {string} [suggestedName] - Pre-filled file name for the dialog.
+ * @returns {Promise<{ savedTo: string|null } | { canceled: true }>}
+ */
+export async function saveReportPdf(id, suggestedName) {
+  if (!isElectron()) {
+    window.open(reportPdfUrl(id), '_blank', 'noopener');
+    return { savedTo: null };
+  }
+  const dlg = await window.fintrace.showSaveDialog({ type: 'pdf', defaultName: suggestedName });
+  if (!dlg || dlg.canceled || !dlg.filePath) return { canceled: true };
+
+  const { fileName } = await api
+    .get(`/ncrp/${id}/pdf`, { params: { mode: 'file' } })
+    .then((r) => r.data);
+  const res = await window.fintrace.saveExportAs(fileName, dlg.filePath);
+  if (!res || !res.ok) {
+    throw new ApiError((res && res.error) || 'Could not save the PDF.', { code: 'SAVE_FAILED' });
+  }
+  return { savedTo: res.savedTo };
+}
+
+/**
+ * Save the multi-sheet Excel workbook to a user-chosen location. Same
+ * dialog-first behaviour as {@link saveReportPdf}.
+ *
+ * @param {number} id
+ * @param {string} [suggestedName] - Pre-filled file name for the dialog.
+ * @returns {Promise<{ savedTo: string|null } | { canceled: true }>}
+ */
+export async function saveReportExcel(id, suggestedName) {
+  if (!isElectron()) {
+    window.open(reportExcelUrl(id), '_blank', 'noopener');
+    return { savedTo: null };
+  }
+  const dlg = await window.fintrace.showSaveDialog({ type: 'excel', defaultName: suggestedName });
+  if (!dlg || dlg.canceled || !dlg.filePath) return { canceled: true };
+
+  const { fileName } = await api
+    .get(`/ncrp/${id}/excel`, { params: { mode: 'file' } })
+    .then((r) => r.data);
+  const res = await window.fintrace.saveExportAs(fileName, dlg.filePath);
+  if (!res || !res.ok) {
+    throw new ApiError((res && res.error) || 'Could not save the workbook.', { code: 'SAVE_FAILED' });
+  }
+  return { savedTo: res.savedTo };
+}
+
+/**
  * Map an {@link ApiError} to an officer-facing message per the Phase 6 error
  * rules. Returns undefined for cases best served by the raw `error.message`
  * (so {@link ErrorAlert} falls back to it):

@@ -34,7 +34,7 @@ import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatDate } from '../utils/format.js';
 import {
-  getReport, getTransactions, openReportPdf, openReportExcel,
+  getReport, getTransactions, saveReportPdf, saveReportExcel, suggestExportName,
   friendlyErrorMessage, ApiError,
 } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -274,16 +274,25 @@ export default function Dashboard() {
   const [paymentSplit, setPaymentSplit] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  // Export feedback: which button is busy ('pdf' | 'excel' | null) + last error.
+  // Export feedback: which button is busy ('pdf' | 'excel' | null), last error,
+  // and a transient "Saved to …" success notice.
   const [exporting, setExporting] = useState(null);
   const [exportError, setExportError] = useState(null);
+  const [savedNotice, setSavedNotice] = useState(null);
 
   async function handleExport(kind) {
     setExportError(null);
+    setSavedNotice(null);
     setExporting(kind);
     try {
-      if (kind === 'pdf') await openReportPdf(report.id);
-      else await openReportExcel(report.id);
+      const suggested = suggestExportName(report, kind === 'pdf' ? 'pdf' : 'excel');
+      const result = kind === 'pdf'
+        ? await saveReportPdf(report.id, suggested)
+        : await saveReportExcel(report.id, suggested);
+      // User cancelled the save dialog → do nothing (no file, no error, no notice).
+      if (result && result.savedTo) {
+        setSavedNotice(`Saved to ${result.savedTo}`);
+      }
     } catch (err) {
       setExportError(err);
     } finally {
@@ -454,6 +463,20 @@ export default function Dashboard() {
             title="Export failed"
             message={friendlyErrorMessage(exportError)}
           />
+        </div>
+      )}
+
+      {savedNotice && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 16, padding: '10px 14px',
+            background: 'rgba(46, 160, 67, 0.12)', border: '1px solid var(--success, #2ea043)',
+            borderRadius: 'var(--radius)', color: 'var(--success, #2ea043)',
+            fontSize: 13, fontWeight: 600, wordBreak: 'break-all',
+          }}
+        >
+          ✓ {savedNotice}
         </div>
       )}
 
