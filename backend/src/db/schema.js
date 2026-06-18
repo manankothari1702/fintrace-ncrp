@@ -56,6 +56,7 @@ const CREATE_TABLES = Object.freeze([
     analysis_json          TEXT,
     source_sha256          TEXT,
     old_transactions       TEXT,
+    parse_warnings         TEXT,
     created_at             TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
 
@@ -224,6 +225,13 @@ const COLUMN_MIGRATIONS = Object.freeze([
   // annexure but excluded from every financial figure.
   { table: 'ncrp_reports', column: 'old_transactions',
     ddl: 'ALTER TABLE ncrp_reports ADD COLUMN old_transactions TEXT' },
+
+  // v0.4.0 — self-healing fuzzy parser. JSON array of structured parse warnings
+  // (fuzzy sheet/column resolutions + degraded informational columns), folded
+  // into analysis_json for the Data Quality "Parser Warnings" panel + PDF/Excel
+  // parse-audit trail. Never affects a financial figure.
+  { table: 'ncrp_reports', column: 'parse_warnings',
+    ddl: 'ALTER TABLE ncrp_reports ADD COLUMN parse_warnings TEXT' },
 ]);
 
 /**

@@ -535,6 +535,36 @@ function generateReportExcel(bundle = {}) {
     ] : []),
   ]);
 
+  // ── 13b. Parse Audit (self-healing parser) ────────────────────────────────
+  // Sheets/columns the parser resolved by name similarity rather than an exact
+  // match, plus informational columns that were absent. Records how the source
+  // file was READ — it never changes a computed amount.
+  const pw = Array.isArray(analysis.parse_warnings) ? analysis.parse_warnings : [];
+  const pwType = (code) => (
+    code === 'FUZZY_SHEET_MATCH' ? 'Sheet (fuzzy)'
+      : code === 'FUZZY_COLUMN_MATCH' ? 'Column (fuzzy)'
+        : 'Column missing');
+  addSheet(wb, 'Parse Audit', [
+    ['PARSER SELF-HEALING AUDIT'],
+    [pw.length === 0
+      ? 'No parser warnings — every sheet and column name matched exactly.'
+      : `${pw.length} item(s). "Fuzzy" = resolved by name similarity (confidence shown); ` +
+        '"missing" = informational column absent (degraded gracefully). ' +
+        'Interpretation provenance only — financial amounts are unaffected.'],
+    [],
+    ...(pw.length > 0 ? [
+      ['Type', 'Sheet', 'Source Name', 'Interpreted As', 'Confidence %', 'Note'],
+      ...pw.map((w) => [
+        pwType(w.code),
+        w.sheet || '',
+        w.matchedFrom || '(missing)',
+        w.matchedTo || '',
+        w.confidence == null ? '' : Math.round(w.confidence * 100),
+        w.message || '',
+      ]),
+    ] : []),
+  ]);
+
   // ── 14. Geographic Hotspots ───────────────────────────────────────────────
   // Merchants: prefer the analyzer's view, but derive from the ledger's POS
   // legs when it is empty (POS legs that carry a terminal id are bucketed as

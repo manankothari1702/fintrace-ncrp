@@ -18,8 +18,19 @@ import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
-import { getDataQuality, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { getDataQuality, getReport, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+
+// Parse-warning code → display label + colour for the self-healing audit panel.
+const PARSE_WARNING_META = {
+  FUZZY_SHEET_MATCH: { label: 'Sheet matched by similarity', color: 'var(--accent-orange)' },
+  FUZZY_COLUMN_MATCH: { label: 'Column matched by similarity', color: 'var(--accent-orange)' },
+  INFORMATIONAL_COLUMN_MISSING: { label: 'Column missing (degraded)', color: 'var(--text-muted)' },
+};
+
+function parseWarningMeta(code) {
+  return PARSE_WARNING_META[code] || { label: code || '—', color: 'var(--text-muted)' };
+}
 
 // Flag → display label + colour. Mismatches are the most actionable (the letter
 // bank differs from the source text), so they get the warning colour.
@@ -38,6 +49,7 @@ export default function DataQuality() {
   const reportId = useActiveReportId();
 
   const [rows, setRows] = useState([]);
+  const [parseWarnings, setParseWarnings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -45,6 +57,7 @@ export default function DataQuality() {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setParseWarnings([]);
 
     if (!reportId) {
       setError(new ApiError('No report selected.', { code: 'NO_REPORT' }));
@@ -56,6 +69,17 @@ export default function DataQuality() {
       .then((data) => { if (!cancelled) setRows(Array.isArray(data) ? data : []); })
       .catch((e) => { if (!cancelled) setError(e); })
       .finally(() => { if (!cancelled) setLoading(false); });
+
+    // Parser self-healing audit lives on the analysis snapshot. Best-effort:
+    // its absence must never block the bank-attribution view above.
+    getReport(reportId)
+      .then((r) => {
+        if (cancelled) return;
+        const pw = r && r.analysis_json && Array.isArray(r.analysis_json.parse_warnings)
+          ? r.analysis_json.parse_warnings : [];
+        setParseWarnings(pw);
+      })
+      .catch(() => { /* panel simply does not render */ });
 
     return () => { cancelled = true; };
   }, [reportId]);
@@ -130,6 +154,8 @@ export default function DataQuality() {
           <strong>verify the freeze target before dispatch.</strong> Amounts are unaffected.
         </p>
       </header>
+
+      {parseWarnings.length > 0 && <ParserWarningsPanel warnings={parseWarnings} />}
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         {counts.hasSeverity ? (
@@ -212,6 +238,59 @@ export default function DataQuality() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Self-healing parser audit. Lists every sheet/column the parser resolved by
+ * similarity (rather than an exact match) and every informational column that
+ * was missing — so the officer can confirm the file was interpreted correctly.
+ * Financial figures are unaffected; this is an interpretation-provenance panel.
+ */
+function ParserWarningsPanel({ warnings }) {
+  const fuzzy = warnings.filter((w) => w.confidence !== undefined && w.confidence !== null);
+  return (
+    <div className="card card-pad" style={{ marginBottom: 20, borderLeft: '4px solid var(--accent-orange)' }}>
+      <h2 style={{ marginTop: 0, fontSize: 16 }}>
+        ⚠️ Parser Warnings ({warnings.length})
+      </h2>
+      <p className="subtitle" style={{ marginTop: 0 }}>
+        The parser could not match {fuzzy.length > 0 ? 'some sheet/column names exactly' : 'every expected column'} and
+        {' '}
+        {fuzzy.length > 0 ? 'resolved them by similarity' : 'noted the gap'}. Confirm each was interpreted correctly —
+        {' '}
+        <strong>this affects how the source file was read, not the computed amounts.</strong>
+      </p>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Sheet</th>
+              <th>Source name</th>
+              <th>Interpreted as</th>
+              <th>Confidence</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {warnings.map((w, i) => {
+              const meta = parseWarningMeta(w.code);
+              return (
+                <tr key={`${w.code}-${w.sheet}-${w.matchedTo}-${i}`}>
+                  <td><Badge color={meta.color}>{meta.label}</Badge></td>
+                  <td>{w.sheet || '—'}</td>
+                  <td style={{ color: 'var(--text-muted)' }}>{w.matchedFrom || '—'}</td>
+                  <td style={{ fontWeight: 600 }}>{w.matchedTo || '—'}</td>
+                  <td>{w.confidence != null ? `${Math.round(w.confidence * 100)}%` : '—'}</td>
+                  <td style={{ maxWidth: 360, color: 'var(--text-muted)', fontSize: 12 }}>{w.message}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

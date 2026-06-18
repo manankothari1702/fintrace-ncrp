@@ -51,6 +51,7 @@ const XLSX = require('xlsx');
 
 const HEADER_SYNONYMS = require('../config/header_synonyms.json');
 const { resolveBank } = require('../lib/ifscBankResolver');
+const { resolveColumnFuzzy, resolveSheetCategoryFuzzy } = require('./parseFuzzy');
 
 // ─── Constants ───────────────────────────────────────────────────────
 
@@ -629,12 +630,17 @@ const KNOWN_SHEET_NAMES = new Map([
  *      (case/whitespace/punctuation-insensitive) → known.
  *   2. Keyword fallback via {@link classifySheetCategory}; a non-OTHER hit
  *      still counts as known (the channel keyword is unambiguous).
- *   3. Anything else → category OTHER, known=false. Such sheets are still
+ *   3. Fuzzy similarity (Dice/Levenshtein ≥ 85%) against the known channel
+ *      names via {@link resolveSheetCategoryFuzzy} — the self-healing tier.
+ *      Reached ONLY when 1 and 2 both miss, so it never alters a sheet that
+ *      already classifies today. A fuzzy hit is `known=true` and carries
+ *      `fuzzy/matched/confidence` so the caller can log + surface it.
+ *   4. Anything else → category OTHER, known=false. Such sheets are still
  *      parsed when they carry recognisable NCRP columns (a renamed sheet
  *      must not silently lose its rows) but are flagged in `warnings`.
  *
  * @param {string} sheetName
- * @returns {{ category: string, known: boolean }}
+ * @returns {{ category: string, known: boolean, fuzzy?: boolean, matched?: string, confidence?: number }}
  */
 function classifySheet(sheetName) {
   const normalized = normalizeSheetName(sheetName);
@@ -643,7 +649,19 @@ function classifySheet(sheetName) {
   // Keyword fallback on the NORMALISED name so punctuation/underscores
   // ("Withdrawal_Through_ATM (1)") can't defeat the word-boundary regexes.
   const category = classifySheetCategory(normalized);
-  return { category, known: category !== SHEET_CATEGORY.OTHER };
+  if (category !== SHEET_CATEGORY.OTHER) return { category, known: true };
+  // Self-healing tier: only the genuinely unrecognised names reach here.
+  // Fuzzy can map onto one of the seven KNOWN channels but never invents a new
+  // one — below the 85% floor it stays unknown and the existing unknown-sheet
+  // policy (skip / consequence-scoped hard-fail) applies untouched.
+  const fuzzy = resolveSheetCategoryFuzzy(sheetName);
+  if (fuzzy) {
+    return {
+      category: fuzzy.category, known: true,
+      fuzzy: true, matched: fuzzy.matched, confidence: fuzzy.confidence,
+    };
+  }
+  return { category: SHEET_CATEGORY.OTHER, known: false };
 }
 
 /**
@@ -790,18 +808,38 @@ function isRepeatedHeaderRow(row, headers, mapping) {
  * and "Transaction ID / UTR Number"), which carry the same value, so taking
  * the first is correct.
  *
+ * Resolution per header is THREE-TIER and strictly ordered so the exact path
+ * stays byte-identical to legacy behaviour:
+ *   1. exact-normalised synonym (authoritative);
+ *   2. loose alphanumeric-only synonym (punctuation/spacing drift) — the loose
+ *      map drops ambiguous keys at build time, so it never guesses;
+ *   3. fuzzy similarity (≥ 85%, {@link resolveColumnFuzzy}) — OPT-IN via
+ *      `opts.fuzzy`, and run in a SEPARATE pass AFTER tiers 1–2 have claimed
+ *      every header they can, so an exact/loose match always wins a canonical
+ *      over an earlier-positioned fuzzy candidate. Each fuzzy resolution is
+ *      reported in `fuzzyMatches` for logging — never silently accepted.
+ *
+ * With `opts.fuzzy` unset (the default, and what {@link findHeaderRow} uses
+ * while scanning candidate rows), tier 3 never runs and `mapping`/`unmapped`
+ * are identical to the legacy two-tier result.
+ *
  * @param {ReadonlyArray<unknown>} headers - One row of the worksheet.
- * @returns {{ mapping: Record<string, number>, unmapped: string[] }}
+ * @param {{ fuzzy?: boolean }} [opts]
+ * @returns {{ mapping: Record<string, number>, unmapped: string[],
+ *   fuzzyMatches: Array<{ header: string, canonical: string, matched: string, confidence: number }> }}
  *   `mapping[canonical]` is the zero-based column index of that field.
  *   `unmapped` lists header strings that could not be assigned to a canonical
  *   field (unknown headers OR duplicates of an already-mapped field).
  */
-function detectColumnMapping(headers) {
+function detectColumnMapping(headers, opts = {}) {
   const mapping = {};
   const unmapped = [];
+  const fuzzyMatches = [];
   if (!Array.isArray(headers)) {
-    return { mapping, unmapped };
+    return { mapping, unmapped, fuzzyMatches };
   }
+  // Indices left unclaimed by the exact + loose tiers — candidates for fuzzy.
+  const unmatchedIdx = [];
   for (let i = 0; i < headers.length; i++) {
     const cell = headers[i];
     const normalized = normalizeHeader(cell);
@@ -819,9 +857,31 @@ function detectColumnMapping(headers) {
       }
     } else {
       unmapped.push(String(cell));
+      unmatchedIdx.push(i);
     }
   }
-  return { mapping, unmapped };
+
+  // Tier 3 — fuzzy self-healing (opt-in). Runs only on headers no exact/loose
+  // synonym claimed and never overwrites an already-mapped canonical. A rescued
+  // header is moved out of `unmapped` and recorded in `fuzzyMatches`.
+  if (opts.fuzzy && unmatchedIdx.length > 0) {
+    for (const i of unmatchedIdx) {
+      const cell = headers[i];
+      const res = resolveColumnFuzzy(cell);
+      if (res && mapping[res.canonical] === undefined) {
+        mapping[res.canonical] = i;
+        fuzzyMatches.push({
+          header: String(cell),
+          canonical: res.canonical,
+          matched: res.matched,
+          confidence: res.confidence,
+        });
+        const pos = unmapped.indexOf(String(cell));
+        if (pos !== -1) unmapped.splice(pos, 1);
+      }
+    }
+  }
+  return { mapping, unmapped, fuzzyMatches };
 }
 
 /**
@@ -1247,6 +1307,9 @@ function materializeOldTransactionRows(aoa, headerInfo, mapping) {
  *   oldTransactions: Array<Object>,
  *   warnings: string[],
  *   errors: ParseError[],
+ *   parseWarnings: Array<{ code: string, scope: string, sheet: string,
+ *     matchedFrom?: string, matchedTo: string, confidence?: number,
+ *     severity: string, message: string }>,
  *   sheets: Array<{
  *     name: string, accepted: boolean, reason?: string, category?: string,
  *     headerRow?: number, rows?: number, skipped?: number, dataRows?: number,
@@ -1284,6 +1347,16 @@ function parseNcrpFile(filePath) {
   const warnings = [];
   /** @type {ParseError[]} */
   const errors = [];
+  /**
+   * Structured self-healing audit trail: one entry per fuzzy sheet/column
+   * resolution and per silently-degrading informational column. Distinct from
+   * the free-text `warnings` so the UI / PDF / Excel can render a dedicated
+   * "Parser Warnings" panel. Every fuzzy match is recorded here — a fuzzy
+   * resolution is NEVER silently accepted.
+   * @type {Array<{ code: string, scope: string, sheet: string, matchedFrom?: string,
+   *   matchedTo: string, confidence?: number, severity: string, message: string }>}
+   */
+  const parseWarnings = [];
   const sheets = [];
   const allRows = [];
   /** @type {Array<Object>} Old-transaction records (excluded from all figures). */
@@ -1321,8 +1394,48 @@ function parseNcrpFile(filePath) {
       continue;
     }
 
-    const { mapping, unmapped } = detectColumnMapping(headerInfo.headers);
-    const { category, known } = classifySheet(sheetName);
+    const cls = classifySheet(sheetName);
+    const { category, known } = cls;
+    // Self-healing column resolution is enabled here (on the CHOSEN header row
+    // only — findHeaderRow scans with fuzzy OFF, so header selection is
+    // unchanged). Tiers 1–2 run exactly as before; tier 3 fills the gaps.
+    const { mapping, unmapped, fuzzyMatches } = detectColumnMapping(
+      headerInfo.headers, { fuzzy: true }
+    );
+
+    // Surface how the sheet + columns were interpreted. These fire only when an
+    // exact/keyword/synonym match was NOT available, so a clean file produces
+    // an empty parseWarnings array (byte-identical behaviour).
+    if (cls.fuzzy) {
+      parseWarnings.push({
+        code: 'FUZZY_SHEET_MATCH',
+        scope: 'sheet',
+        sheet: sheetName,
+        matchedFrom: sheetName,
+        matchedTo: category,
+        confidence: cls.confidence,
+        severity: 'warn',
+        message:
+          `Sheet name '${sheetName}' did not match a known NCRP tab exactly; it was ` +
+          `resolved to the '${category}' channel by similarity ` +
+          `(${Math.round(cls.confidence * 100)}% confidence). Confirm this is the correct channel.`,
+      });
+    }
+    for (const fm of fuzzyMatches) {
+      parseWarnings.push({
+        code: 'FUZZY_COLUMN_MATCH',
+        scope: 'column',
+        sheet: sheetName,
+        matchedFrom: fm.header,
+        matchedTo: fm.canonical,
+        confidence: fm.confidence,
+        severity: 'warn',
+        message:
+          `Sheet '${sheetName}': column header '${fm.header}' did not match exactly; it was ` +
+          `resolved to '${fm.canonical}' by similarity (${Math.round(fm.confidence * 100)}% ` +
+          'confidence). Confirm the column was interpreted correctly.',
+      });
+    }
 
     const hasKeyColumns =
       mapping.ack_no !== undefined ||
@@ -1511,6 +1624,37 @@ function parseNcrpFile(filePath) {
       );
     }
 
+    // Previously-silent informational gaps, now surfaced (never silently
+    // accept a degraded parse). Scope is deliberate: an IFSC column is expected
+    // only on the transfer sheet (cash-exit / hold / AEPS channels legitimately
+    // carry none), whereas a transaction date matters on every channel.
+    if (category === SHEET_CATEGORY.TRANSFER &&
+        mapping.ifsc_code === undefined && sheetRows.length > 0) {
+      parseWarnings.push({
+        code: 'INFORMATIONAL_COLUMN_MISSING',
+        scope: 'column',
+        sheet: sheetName,
+        matchedTo: 'ifsc_code',
+        severity: 'warn',
+        message:
+          `Sheet '${sheetName}': no IFSC column was found on a money-transfer sheet. ` +
+          'Beneficiary bank attribution falls back to the source-file text and may be ' +
+          'less reliable — verify the bank on each lien letter before dispatch.',
+      });
+    }
+    if (mapping.transaction_date === undefined && sheetRows.length > 0) {
+      parseWarnings.push({
+        code: 'INFORMATIONAL_COLUMN_MISSING',
+        scope: 'column',
+        sheet: sheetName,
+        matchedTo: 'transaction_date',
+        severity: 'warn',
+        message:
+          `Sheet '${sheetName}': no transaction-date column was found — the timeline and ` +
+          'same-day cash-out analysis for these rows will be incomplete.',
+      });
+    }
+
     if (firstMapping === null) firstMapping = mapping;
     for (const r of sheetRows) allRows.push(r);
     totalSkippedRows += skipped;
@@ -1540,6 +1684,7 @@ function parseNcrpFile(filePath) {
         `Could not detect a header row within the first ${HEADER_SCAN_DEPTH} rows of any sheet`,
       ],
       errors,
+      parseWarnings,
       sheets,
     };
   }
@@ -1582,7 +1727,10 @@ function parseNcrpFile(filePath) {
     );
   }
 
-  return { rows: allRows, columnMapping: firstMapping || {}, oldTransactions, warnings, errors, sheets };
+  return {
+    rows: allRows, columnMapping: firstMapping || {}, oldTransactions,
+    warnings, errors, parseWarnings, sheets,
+  };
 }
 
 // ─── Validation ──────────────────────────────────────────────────────
