@@ -431,7 +431,7 @@ function renderExecutiveSummary(doc, a, liens) {
 
   para(doc, 'Note: the Visual Summary (section 2) presents the money-flow network, ' +
     'layer breakdown, and daily-volume timeline as charts. Every supporting table ' +
-    'is reproduced in full in the Annexure (A-H) at the back of this dossier.',
+    'is reproduced in full in the Annexure (A-I) at the back of this dossier.',
     { gap: 0, size: 8.5, color: MUTED });
 }
 
@@ -483,7 +483,7 @@ function renderVisualSummary(doc, charts) {
   if (!charts || !charts.available) {
     para(doc,
       'Charts could not be rendered in this build of FinTrace. The complete ' +
-      'underlying data is available as tables in the Annexure (A-H).', { color: MUTED });
+      'underlying data is available as tables in the Annexure (A-I).', { color: MUTED });
     return;
   }
 
@@ -516,10 +516,11 @@ function renderAnnexureDivider(doc) {
     .text('Supporting Data Tables', left, doc.y, { width: w, align: 'center' });
   doc.moveDown(1.5);
   doc.fillColor(INK).font('Helvetica').fontSize(10.5).text(
-    'The annexures below (A-H) hold the complete underlying data summarised in the ' +
+    'The annexures below (A-I) hold the complete underlying data summarised in the ' +
     'Executive Summary and charted in the Visual Summary: the per-layer aggregates, ' +
     'the money-flow edges, the mule-score ranking, the lien worksheet, the cash-out ' +
-    'and geographic breakdowns, the daily timeline, and the bank-attribution review. ' +
+    'and geographic breakdowns, the daily timeline, the bank-attribution review, and ' +
+    'the suspected-duplicate reconciliation. ' +
     'The draft Section 102 Cr.P.C. lien-request letters follow the annexures.',
     left, doc.y, { width: w, align: 'center' });
   doc.x = left;
@@ -703,7 +704,7 @@ function renderMoneyFlow(doc, network, aggregators) {
  * Circular-flow section (Feature 1) — placed after Money Flow Network. Real
  * simple loops (length <= 6) where money returns to an account it already passed
  * through; a strong layering indicator. Not lettered, so it never shifts the
- * Annexure A–H sequence.
+ * Annexure A–I sequence.
  *
  * @param {PDFKit.PDFDocument} doc
  * @param {Array<object>} cycles - analysis.circular_flows
@@ -1188,6 +1189,109 @@ function renderDataQuality(doc, dataQuality, oldTransactions = []) {
 }
 
 /**
+ * Annexure I — Suspected Duplicates (court-facing, NON-DESTRUCTIVE). Every
+ * flagged row is RETAINED in the dataset; this annexure documents the groups
+ * and the auditable raw → deduped (exact only) → probable-pending chain. The
+ * capped recovery / lien / victim-loss figures elsewhere are unaffected.
+ *
+ * @param {PDFKit.PDFDocument} doc
+ * @param {{ metrics?: object, groups?: Array<object> }} suspectedDuplicates
+ */
+function renderSuspectedDuplicates(doc, suspectedDuplicates) {
+  const sd = suspectedDuplicates || {};
+  const m = sd.metrics || null;
+  const groups = Array.isArray(sd.groups) ? sd.groups : [];
+  doc.addPage();
+  sectionHeading(doc, 'Annexure I — Suspected Duplicates');
+
+  if (!m) {
+    para(doc,
+      'No duplicate reconciliation is available for this report (it was analysed ' +
+      'before this feature was added). Re-run the analysis to populate it.',
+      { color: MUTED });
+    return;
+  }
+
+  para(doc,
+    'NCRP CompleteTrail exports re-list the same leg across channel sheets. ' +
+    `${formatCount(m.exact_duplicate_rows)} exact and ${formatCount(m.probable_duplicate_rows)} ` +
+    'probable duplicate row(s) were identified across ' +
+    `${formatCount(groups.length)} group(s). NO ROW WAS DELETED OR MERGED — every leg is ` +
+    'retained in the dataset and in the Transactions sheet. The figures below are an ' +
+    'audit aid; the capped recovery, lien and victim-loss totals in this dossier are ' +
+    'unaffected.', { gap: 0.8 });
+
+  // Reconciliation block: raw -> deduped (exact only) -> probable pending.
+  drawTable(doc, {
+    fontSize: 9,
+    columns: [
+      { label: 'Reconciliation', width: contentWidth(doc) - 130 },
+      { label: 'Value', width: 130, align: 'right' },
+    ],
+    rows: [
+      ['Transactions — raw (every parsed leg)', formatCount(m.transaction_count_raw)],
+      ['Transactions — deduped (less exact + probable)', formatCount(m.transaction_count_deduped)],
+      ['Uncapped cash-exit trail — raw (no dedup)', formatMoney(m.uncapped_trail_raw)],
+      ['Less exact-duplicate impact', `- ${formatMoney(m.exact_duplicate_impact)}`],
+      ['Uncapped cash-exit trail — deduped (headline)', formatMoney(m.uncapped_trail_deduped)],
+      ['Probable-duplicate impact (PENDING confirmation)', `- ${formatMoney(m.probable_duplicate_impact)}`],
+      ['Uncapped trail if probables confirmed', formatMoney(m.uncapped_trail_if_probable_confirmed)],
+    ],
+    rowColors: [null, null, null, MUTED, NAVY, MUTED, null],
+  });
+
+  para(doc,
+    'Exact duplicate = every field identical (sender, beneficiary, UTR, date-time, ' +
+    'amount, disputed amount and terminal). Probable duplicate = matches on account, ' +
+    'UTR, amount and minute but differs on the disputed amount or terminal id; it is ' +
+    'reported separately and is NOT folded into the headline until an investigator ' +
+    'confirms it.', { gap: 0.8, size: 8, color: MUTED });
+
+  if (groups.length === 0) {
+    para(doc, 'No suspected duplicates: every ledger row is a distinct transaction.',
+      { color: MUTED });
+    return;
+  }
+
+  // One flat table: each group's primary then its flagged members.
+  const rows = [];
+  const rowColors = [];
+  groups.forEach((g, gi) => {
+    (g.members || []).forEach((mem, mi) => {
+      const cls = mem.role === 'primary' ? 'Primary (kept)'
+        : (mem.dup_status === 'exact_duplicate' ? 'Exact duplicate' : 'Probable (pending)');
+      rows.push([
+        mi === 0 ? `G${gi + 1}` : '',
+        `#${mem.id ?? ''}`,
+        maskAccount(g.account),
+        (mem.date || '—').replace('T', ' ').replace(/\.\d+Z?$/, ''),
+        formatMoney(mem.amount),
+        formatMoney(mem.disputed),
+        (mem.secondary_id || '').replace(/^[TD]:/, '') || '—',
+        cls,
+      ]);
+      rowColors.push(mem.role === 'primary' ? null
+        : (mem.dup_status === 'exact_duplicate' ? '#b00020' : '#b25b00'));
+    });
+  });
+  drawTable(doc, {
+    fontSize: 8,
+    columns: [
+      { label: 'Grp', width: 30, align: 'center' },
+      { label: 'Row', width: 38 },
+      { label: 'Account', width: 96 },
+      { label: 'Date-time', width: 96 },
+      { label: 'Amount', width: 74, align: 'right' },
+      { label: 'Disputed', width: 74, align: 'right' },
+      { label: 'Terminal', width: 70 },
+      { label: 'Classification', width: contentWidth(doc) - 478 },
+    ],
+    rows,
+    rowColors,
+  });
+}
+
+/**
  * @param {PDFKit.PDFDocument} doc
  * @param {Array<object>} emails
  * @param {Array<object>} [dataQuality] - flagged accounts, for per-letter notes
@@ -1475,6 +1579,8 @@ function generateReportPdf(data, outputPath) {
       doc.addPage(); renderTimeline(doc, analysis.timeline || [], analysis.reconciliation, analysis.day_of_week);
       // Annexure H — bank-attribution data-quality review (adds its own page).
       renderDataQuality(doc, analysis.data_quality || [], analysis.old_transactions || []);
+      // Annexure I — suspected duplicates (NON-DESTRUCTIVE; adds its own page).
+      renderSuspectedDuplicates(doc, analysis.suspected_duplicates || {});
 
       // Draft emails (adds its own pages). Pass the flagged accounts so each
       // letter can carry a reviewer note where its bank was IFSC-corrected.

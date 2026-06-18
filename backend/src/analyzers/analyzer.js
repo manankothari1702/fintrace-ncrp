@@ -390,6 +390,241 @@ function enrichTransactions(txns) {
   });
 }
 
+// ─── Suspected-duplicate classification (court-facing, NON-DESTRUCTIVE) ──
+
+/**
+ * Channel-specific SECONDARY identifier used in the duplicate fingerprint.
+ * Two cash-exit legs that agree on account/UTR/amount/minute but hit a
+ * DIFFERENT terminal (ATM machine / POS terminal) are not provably the same
+ * withdrawal, so the secondary ID participates in the EXACT fingerprint.
+ *
+ *   • ATM / AEPS / POS  → the terminal id (parser folds MID+TID into atm_id)
+ *   • everything else   → destination account (canonical) + IFSC
+ *
+ * @param {Record<string, unknown>} t
+ * @returns {string}
+ */
+function secondaryId(t) {
+  const atm = str(t.atm_id);
+  if (atm) return `T:${atm}`;
+  const dest = canonicalAccountKey(str(t.beneficiary_account) || '');
+  const ifsc = str(t.ifsc_code) || '';
+  return `D:${dest}|${ifsc}`;
+}
+
+/** Minute-resolution IST-agnostic key (YYYY-MM-DDTHH:mm) or null when undated. */
+function minuteKey(iso) {
+  const m = toMs(iso);
+  if (m === null) return null;
+  return dayjs.utc(m).format('YYYY-MM-DDTHH:mm');
+}
+
+/**
+ * Flag suspected-duplicate ledger rows WITHOUT removing any of them. Every row
+ * is returned, annotated with:
+ *
+ *   • dup_status  — 'unique' | 'exact_duplicate' | 'probable_duplicate'
+ *   • dup_of      — id of the kept PRIMARY row this duplicates (null if unique)
+ *   • dup_reason  — human-readable basis of the flag (null if unique)
+ *   • shared_utr  — true when another row carries the same UTR but a DIFFERENT
+ *                   amount (transparency metadata ONLY — never a duplicate)
+ *
+ * Classification (per the locked Phase-B scheme):
+ *   1. Group rows by sender+beneficiary+UTR+amount+same-minute. A row with no
+ *      UTR or no parseable date is never a duplicate (identity too weak to
+ *      assert in court) → stays 'unique'.
+ *   2. Within a group, sub-cluster by the FULL fingerprint (adds disputed
+ *      amount + secondary id). The largest sub-cluster's earliest row is the
+ *      PRIMARY (kept).
+ *   3. Other rows IN the primary's sub-cluster → exact_duplicate (every field
+ *      identical). Rows in OTHER sub-clusters → probable_duplicate (match on
+ *      account/UTR/amount/minute but differ on disputed amount and/or terminal).
+ *
+ * Returns the annotated rows plus the suspected-duplicate groups (primary +
+ * members) for the DataQuality panel and the export annexure. Pure: inputs are
+ * not mutated (rows are shallow-copied before annotation).
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} enriched
+ * @returns {{ rows: Array<Record<string, unknown>>, groups: Array<object>,
+ *   exact_rows: number, probable_rows: number }}
+ */
+function classifyDuplicates(enriched) {
+  const rows = enriched.map((t) => ({
+    ...t, dup_status: 'unique', dup_of: null, dup_reason: null, shared_utr: false,
+  }));
+
+  // shared_utr: a UTR carried by >1 distinct amount is "shared" (e.g. ₹0
+  // placeholder rows that reuse a dated leg's UTR) — transparency, not a dup.
+  /** @type {Map<string, Set<number>>} */
+  const utrAmounts = new Map();
+  for (const r of rows) {
+    const u = str(r.utr_no);
+    if (!u) continue;
+    if (!utrAmounts.has(u)) utrAmounts.set(u, new Set());
+    utrAmounts.get(u).add(num(r.transaction_amount));
+  }
+  for (const r of rows) {
+    const u = str(r.utr_no);
+    if (u && utrAmounts.get(u).size > 1) r.shared_utr = true;
+  }
+
+  // Group by the WEAK key (account-pair + UTR + amount + minute).
+  /** @type {Map<string, number[]>} indices into `rows` */
+  const groups = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const u = str(r.utr_no);
+    const minute = minuteKey(r.transaction_date);
+    if (!u || minute === null) continue; // never a duplicate
+    const gk = [
+      canonicalAccountKey(str(r.victim_account) || ''),
+      canonicalAccountKey(str(r.beneficiary_account) || ''),
+      u, num(r.transaction_amount), minute,
+    ].join('|');
+    if (!groups.has(gk)) groups.set(gk, []);
+    groups.get(gk).push(i);
+  }
+
+  // Precise rupee value (not the abbreviated Cr/L/K form) for the audit trail.
+  const fmt = (n) => `₹${round(num(n), 2)}`;
+  const outGroups = [];
+  let exactRows = 0;
+  let probableRows = 0;
+
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    // Sub-cluster by the FULL fingerprint (adds disputed + secondary id).
+    /** @type {Map<string, number[]>} */
+    const sub = new Map();
+    for (const i of idxs) {
+      const r = rows[i];
+      const fk = [num(r.disputed_amount), secondaryId(r)].join('|');
+      if (!sub.has(fk)) sub.set(fk, []);
+      sub.get(fk).push(i);
+    }
+    // Primary sub-cluster = largest (tie → earliest first index).
+    let primaryFk = null;
+    let best = -1;
+    let bestFirst = Infinity;
+    for (const [fk, members] of sub) {
+      const first = members[0];
+      if (members.length > best || (members.length === best && first < bestFirst)) {
+        best = members.length; bestFirst = first; primaryFk = fk;
+      }
+    }
+    const primaryIdx = sub.get(primaryFk)[0];
+    const primary = rows[primaryIdx];
+    const members = [];
+    members.push({
+      id: primary.id, role: 'primary', dup_status: 'unique',
+      payment_mode: primary.payment_mode, account: str(primary.beneficiary_account),
+      utr: str(primary.utr_no), date: str(primary.transaction_date),
+      amount: num(primary.transaction_amount), disputed: num(primary.disputed_amount),
+      secondary_id: secondaryId(primary), reason: null,
+    });
+
+    for (const [fk, sidxs] of sub) {
+      for (const i of sidxs) {
+        if (i === primaryIdx) continue;
+        const r = rows[i];
+        let status; let reason;
+        if (fk === primaryFk) {
+          status = 'exact_duplicate';
+          reason = 'Every field identical to the primary leg ' +
+            `(sender, beneficiary, UTR ${str(r.utr_no)}, date-time, amount ${fmt(num(r.transaction_amount))}, ` +
+            `disputed ${fmt(num(r.disputed_amount))}, terminal ${secondaryId(r).slice(2)}).`;
+          exactRows += 1;
+        } else {
+          status = 'probable_duplicate';
+          const diffs = [];
+          if (num(r.disputed_amount) !== num(primary.disputed_amount)) {
+            diffs.push(`disputed amount (${fmt(num(r.disputed_amount))} vs ${fmt(num(primary.disputed_amount))})`);
+          }
+          if (secondaryId(r) !== secondaryId(primary)) {
+            diffs.push(`terminal/secondary id (${secondaryId(r).slice(2)} vs ${secondaryId(primary).slice(2)})`);
+          }
+          reason = `Matches the primary leg on account, UTR ${str(r.utr_no)}, amount ` +
+            `${fmt(num(r.transaction_amount))} and minute, but differs on: ${diffs.join('; ')}. ` +
+            'Pending investigator confirmation.';
+          probableRows += 1;
+        }
+        r.dup_status = status;
+        r.dup_of = primary.id ?? null;
+        r.dup_reason = reason;
+        members.push({
+          id: r.id, role: status, dup_status: status,
+          payment_mode: r.payment_mode, account: str(r.beneficiary_account),
+          utr: str(r.utr_no), date: str(r.transaction_date),
+          amount: num(r.transaction_amount), disputed: num(r.disputed_amount),
+          secondary_id: secondaryId(r), reason,
+        });
+      }
+    }
+    outGroups.push({
+      utr: str(primary.utr_no),
+      account: str(primary.beneficiary_account),
+      amount: num(primary.transaction_amount),
+      minute: minuteKey(primary.transaction_date),
+      row_kind: primary.row_kind,
+      primary_id: primary.id ?? null,
+      exact_count: members.filter((m) => m.dup_status === 'exact_duplicate').length,
+      probable_count: members.filter((m) => m.dup_status === 'probable_duplicate').length,
+      members,
+    });
+  }
+
+  // Stable order for the annexure: most members first, then by UTR.
+  outGroups.sort((a, b) =>
+    (b.members.length - a.members.length) || String(a.utr).localeCompare(String(b.utr)));
+
+  return { rows, groups: outGroups, exact_rows: exactRows, probable_rows: probableRows };
+}
+
+/**
+ * Suspected-duplicate METRICS — additive, court-defensible, and reported
+ * ALONGSIDE the existing capped/lien/GOLD figures (which are never touched).
+ *
+ *   • transaction_count_raw      — every parsed leg (== summary.total_transactions)
+ *   • transaction_count_deduped  — raw minus exact AND probable duplicate rows
+ *   • uncapped_trail_raw         — Σ every cash-exit (EXIT) leg, zero dedup
+ *   • uncapped_trail_deduped     — raw minus EXACT-duplicate impact ONLY (the
+ *                                  asserted headline)
+ *   • probable_duplicate_impact  — EXIT rupees on probable legs, reported as a
+ *                                  SEPARATE pending line (never folded into the
+ *                                  headline). If confirmed, the uncapped trail
+ *                                  becomes uncapped_trail_if_probable_confirmed.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} annotated - rows from
+ *   {@link classifyDuplicates} (carry dup_status + row_kind).
+ * @param {{ exact_rows: number, probable_rows: number }} counts
+ * @returns {object}
+ */
+function duplicateMetrics(annotated, counts) {
+  const isExit = (t) => t.row_kind === ROW_KIND.EXIT;
+  let trailRaw = 0; let exactImpact = 0; let probableImpact = 0;
+  for (const t of annotated) {
+    if (!isExit(t)) continue;
+    const a = num(t.transaction_amount);
+    trailRaw += a;
+    if (t.dup_status === 'exact_duplicate') exactImpact += a;
+    else if (t.dup_status === 'probable_duplicate') probableImpact += a;
+  }
+  const raw = round(trailRaw);
+  const dedupedExact = round(raw - round(exactImpact));
+  const probImpact = round(probableImpact);
+  return {
+    transaction_count_raw: annotated.length,
+    transaction_count_deduped: annotated.length - counts.exact_rows - counts.probable_rows,
+    exact_duplicate_rows: counts.exact_rows,
+    probable_duplicate_rows: counts.probable_rows,
+    uncapped_trail_raw: raw,
+    exact_duplicate_impact: round(exactImpact),
+    uncapped_trail_deduped: dedupedExact,            // headline (exact-only)
+    probable_duplicate_impact: probImpact,           // separate, pending
+    uncapped_trail_if_probable_confirmed: round(dedupedExact - probImpact),
+  };
+}
+
 // ─── Module 1 — layer analysis ─────────────────────────────────────────
 
 /**
@@ -2053,6 +2288,34 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
   const rows = deduped.rows;
   const duplicateCount = deduped.removed;
 
+  // Suspected-duplicate flagging (court-facing, NON-DESTRUCTIVE). Runs over the
+  // FULL `enriched` set and only ANNOTATES rows (dup_status/dup_of/dup_reason/
+  // shared_utr) — no row is removed and the existing `rows`/capped/lien/GOLD
+  // pipeline above is untouched. The derived raw/deduped metrics sit ALONGSIDE
+  // the legacy figures so the count and trail reconciliation is fully auditable.
+  const duplicates = runModule(
+    'duplicateFlags',
+    () => classifyDuplicates(enriched),
+    {
+      rows: enriched.map((r) => ({
+        ...r, dup_status: 'unique', dup_of: null, dup_reason: null, shared_utr: false,
+      })),
+      groups: [], exact_rows: 0, probable_rows: 0,
+    }
+  );
+  const duplicate_metrics = runModule(
+    'duplicateMetrics',
+    () => duplicateMetrics(duplicates.rows, {
+      exact_rows: duplicates.exact_rows, probable_rows: duplicates.probable_rows,
+    }),
+    {
+      transaction_count_raw: enriched.length, transaction_count_deduped: enriched.length,
+      exact_duplicate_rows: 0, probable_duplicate_rows: 0,
+      uncapped_trail_raw: 0, exact_duplicate_impact: 0, uncapped_trail_deduped: 0,
+      probable_duplicate_impact: 0, uncapped_trail_if_probable_confirmed: 0,
+    }
+  );
+
   // Shared rollup (mule + lien depend on it). If it fails, those two modules
   // fall back to empty via their own runModule wrappers using an empty Map.
   const rollup = runModule('accountRollup', () => buildAccountRollup(rows), new Map());
@@ -2299,6 +2562,13 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
       lien_table_total: round(liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0)),
       // Accounts whose bank attribution needs IO review (see data_quality).
       bank_flags_count: data_quality.length,
+      // Suspected-duplicate metrics — ADDITIVE, surfaced next to the legacy
+      // figures. The capped/lien/GOLD numbers above are unchanged.
+      transaction_count_raw: duplicate_metrics.transaction_count_raw,
+      transaction_count_deduped: duplicate_metrics.transaction_count_deduped,
+      uncapped_trail_raw: duplicate_metrics.uncapped_trail_raw,
+      uncapped_trail_deduped: duplicate_metrics.uncapped_trail_deduped,
+      probable_duplicate_impact: duplicate_metrics.probable_duplicate_impact,
       fraud_start_date: earliest === null
         ? null
         : dayjs.utc(earliest).add(IST_OFFSET_MINUTES, 'minute').format('YYYY-MM-DD'),
@@ -2320,6 +2590,14 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     generated_at: new Date().toISOString(),
     summary,
     reconciliation,
+    // Suspected duplicates (court-facing, NON-DESTRUCTIVE): the additive
+    // raw/deduped metrics + every flagged group with full row-level provenance.
+    // Powers the DataQuality "Suspected Duplicates" panel and the PDF/Excel
+    // annexure. No row was removed; capped/lien/GOLD figures are unchanged.
+    suspected_duplicates: {
+      metrics: duplicate_metrics,
+      groups: duplicates.groups,
+    },
     layer_analysis: layers,
     cashout_analysis: cashout,
     mule_detection: mules,
@@ -2376,6 +2654,10 @@ module.exports = {
     classifyRowKind,
     enrichTransactions,
     dedupeRows,
+    classifyDuplicates,
+    duplicateMetrics,
+    secondaryId,
+    minuteKey,
     buildAccountRollup,
     canonicalAccountKey,
     formatINR,

@@ -535,6 +535,47 @@ function generateReportExcel(bundle = {}) {
     ] : []),
   ]);
 
+  // ── 13b. Suspected Duplicates (NON-DESTRUCTIVE) ───────────────────────────
+  // NCRP re-lists the same leg across channel sheets. Every flagged row is
+  // RETAINED in the dataset; this annexure lists the groups and the auditable
+  // raw → deduped (exact only) → probable-pending reconciliation. Capped
+  // recovery / lien / victim-loss figures are unaffected.
+  const sd = analysis.suspected_duplicates || {};
+  const sdM = sd.metrics || {};
+  const sdGroups = Array.isArray(sd.groups) ? sd.groups : [];
+  const sdRows = [];
+  for (const g of sdGroups) {
+    for (const mrow of (g.members || [])) {
+      sdRows.push([
+        g.utr || '', g.account || '',
+        (mrow.date || '').replace('T', ' ').replace(/\.\d+Z?$/, ''),
+        num(mrow.amount), num(mrow.disputed),
+        (mrow.secondary_id || '').replace(/^[TD]:/, ''),
+        mrow.role === 'primary' ? 'PRIMARY (kept)'
+          : (mrow.dup_status === 'exact_duplicate' ? 'EXACT DUPLICATE' : 'PROBABLE (pending)'),
+        `#${mrow.id ?? ''}`,
+        mrow.reason || (mrow.role === 'primary' ? 'Kept as the canonical leg.' : ''),
+      ]);
+    }
+    sdRows.push([]);
+  }
+  addSheet(wb, 'Suspected Duplicates', [
+    ['SUSPECTED DUPLICATES — NON-DESTRUCTIVE (every row is retained)'],
+    [`${num(sdM.exact_duplicate_rows)} exact + ${num(sdM.probable_duplicate_rows)} probable across ${sdGroups.length} group(s). No row was deleted or merged.`],
+    [],
+    ['Metric', 'Value'],
+    ['Transactions — raw (every parsed leg)', num(sdM.transaction_count_raw)],
+    ['Transactions — deduped (less exact + probable)', num(sdM.transaction_count_deduped)],
+    ['Uncapped cash-exit trail — raw [Rs.]', num(sdM.uncapped_trail_raw)],
+    ['Less exact-duplicate impact [Rs.]', -num(sdM.exact_duplicate_impact)],
+    ['Uncapped cash-exit trail — deduped (headline) [Rs.]', num(sdM.uncapped_trail_deduped)],
+    ['Probable-duplicate impact (PENDING confirmation) [Rs.]', -num(sdM.probable_duplicate_impact)],
+    ['Uncapped trail IF probables confirmed [Rs.]', num(sdM.uncapped_trail_if_probable_confirmed)],
+    [],
+    ['UTR', 'Account', 'Date-time', 'Amount [Rs.]', 'Disputed [Rs.]', 'Terminal/Secondary', 'Classification', 'Row', 'Basis'],
+    ...(sdRows.length > 0 ? sdRows : [['—', 'No suspected duplicates: every ledger row is a distinct transaction.']]),
+  ]);
+
   // ── 14. Geographic Hotspots ───────────────────────────────────────────────
   // Merchants: prefer the analyzer's view, but derive from the ledger's POS
   // legs when it is empty (POS legs that carry a terminal id are bucketed as
@@ -573,6 +614,9 @@ function generateReportExcel(bundle = {}) {
     ['UTR', 'Unique Transaction Reference — the bank-issued identifier for a fund transfer, used to trace a specific leg.'],
     ['IFSC', 'Indian Financial System Code — identifies the specific bank branch holding an account.'],
     ['ACK No.', 'NCRP acknowledgement number — the complaint reference this dossier is built from.'],
+    ['Exact Duplicate', 'A ledger row whose every field — sender, beneficiary, UTR, date-time, amount, disputed amount and terminal/secondary id — is identical to an earlier (primary) row. The same leg re-listed; collapsed in the deduped headline. The row is retained, only flagged.'],
+    ['Probable Duplicate', 'A ledger row matching the primary on account, UTR, amount and minute, but differing on the disputed amount or the terminal/secondary id. Reported as a separate pending line, NOT folded into the headline, until an investigator confirms it.'],
+    ['Shared UTR', 'Two or more rows carry the same UTR but DIFFERENT amounts. Transparency metadata only — never treated as a duplicate.'],
   ]);
 
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

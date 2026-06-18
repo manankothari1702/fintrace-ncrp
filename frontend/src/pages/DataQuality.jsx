@@ -18,7 +18,8 @@ import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
-import { getDataQuality, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { getDataQuality, getDuplicates, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { formatINR } from '../utils/format.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 // Flag → display label + colour. Mismatches are the most actionable (the letter
@@ -38,6 +39,7 @@ export default function DataQuality() {
   const reportId = useActiveReportId();
 
   const [rows, setRows] = useState([]);
+  const [duplicates, setDuplicates] = useState({ metrics: null, groups: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -52,8 +54,17 @@ export default function DataQuality() {
       return undefined;
     }
 
-    getDataQuality(reportId)
-      .then((data) => { if (!cancelled) setRows(Array.isArray(data) ? data : []); })
+    Promise.all([
+      getDataQuality(reportId),
+      // Duplicates are best-effort: a report analysed before this feature has no
+      // suspected_duplicates section, so a failure here must not blank the page.
+      getDuplicates(reportId).catch(() => ({ metrics: null, groups: [] })),
+    ])
+      .then(([dq, dup]) => {
+        if (cancelled) return;
+        setRows(Array.isArray(dq) ? dq : []);
+        setDuplicates(dup && typeof dup === 'object' ? dup : { metrics: null, groups: [] });
+      })
       .catch((e) => { if (!cancelled) setError(e); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
@@ -212,6 +223,145 @@ export default function DataQuality() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      <SuspectedDuplicates data={duplicates} />
+    </div>
+  );
+}
+
+// Duplicate status → display label + colour.
+const DUP_META = {
+  exact_duplicate: { label: 'Exact duplicate', color: 'var(--danger)' },
+  probable_duplicate: { label: 'Probable (pending)', color: 'var(--accent-orange)' },
+  primary: { label: 'Primary (kept)', color: 'var(--brand)' },
+  unique: { label: 'Unique', color: 'var(--text-muted)' },
+};
+
+/**
+ * Suspected-duplicate reconciliation + flagged groups. NON-DESTRUCTIVE: every
+ * row is retained. Shows the auditable chain raw → deduped (exact only) →
+ * probable pending, then each flagged group with row-level provenance.
+ */
+function SuspectedDuplicates({ data }) {
+  const m = data && data.metrics;
+  const groups = (data && Array.isArray(data.groups)) ? data.groups : [];
+
+  if (!m) {
+    return (
+      <div className="card card-pad" style={{ marginTop: 24 }}>
+        <h2 style={{ marginTop: 0 }}>Suspected Duplicates</h2>
+        <div className="empty-state">
+          No duplicate reconciliation available for this report (analysed before
+          this feature was added). Re-run the analysis to populate it.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <header className="page-header" style={{ marginBottom: 12 }}>
+        <h2 style={{ marginBottom: 4 }}>Suspected Duplicates</h2>
+        <p className="subtitle">
+          NCRP re-lists the same leg across channel sheets. Every row below is
+          {' '}<strong>retained</strong> — nothing is deleted or merged. The figures
+          {' '}show the auditable reconciliation; capped recovery, lien and victim-loss
+          {' '}totals are unaffected.
+        </p>
+      </header>
+
+      <div className="grid grid-stats" style={{ marginBottom: 16 }}>
+        <StatCard
+          title="Transactions (raw)"
+          value={m.transaction_count_raw}
+          subtitle={`${m.transaction_count_deduped} after removing ${m.exact_duplicate_rows} exact + ${m.probable_duplicate_rows} probable`}
+          icon="🧾"
+          color="var(--brand)"
+        />
+        <StatCard
+          title="Uncapped trail (raw)"
+          value={formatINR(m.uncapped_trail_raw, { paise: true })}
+          subtitle="every cash-exit leg, no dedup"
+          icon="∑"
+          color="var(--text-muted)"
+        />
+        <StatCard
+          title="Uncapped trail (deduped)"
+          value={formatINR(m.uncapped_trail_deduped, { paise: true })}
+          subtitle={`headline — exact dups removed (−${formatINR(m.exact_duplicate_impact)})`}
+          icon="✓"
+          color="var(--accent)"
+        />
+        <StatCard
+          title="Probable dups (pending)"
+          value={formatINR(m.probable_duplicate_impact, { paise: true })}
+          subtitle={`if confirmed → ${formatINR(m.uncapped_trail_if_probable_confirmed, { paise: true })}`}
+          icon="⚖️"
+          color={m.probable_duplicate_impact > 0 ? 'var(--accent-orange)' : 'var(--accent)'}
+        />
+      </div>
+
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <strong>Reconciliation chain.</strong>{' '}
+        Raw {formatINR(m.uncapped_trail_raw, { paise: true })}
+        {' → '}deduped (exact only) {formatINR(m.uncapped_trail_deduped, { paise: true })}
+        {' → '}less {m.probable_duplicate_rows} probable duplicate(s)
+        {' '}{formatINR(m.probable_duplicate_impact)}
+        {' → '}{formatINR(m.uncapped_trail_if_probable_confirmed, { paise: true })}
+        {' '}<span style={{ color: 'var(--text-muted)' }}>(pending investigator confirmation)</span>.
+      </div>
+
+      <div className="card card-pad">
+        {groups.length === 0 ? (
+          <div className="empty-state">
+            ✓ No suspected duplicates. Every ledger row is a distinct transaction.
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Group (UTR / account)</th>
+                  <th>Row</th>
+                  <th>Date-time</th>
+                  <th>Amount</th>
+                  <th>Disputed</th>
+                  <th>Terminal / secondary</th>
+                  <th>Classification</th>
+                  <th>Why</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.flatMap((g) => g.members.map((row, idx) => {
+                  const meta = DUP_META[row.dup_status === 'unique' && row.role === 'primary'
+                    ? 'primary' : row.dup_status] || DUP_META.unique;
+                  return (
+                    <tr key={`${g.primary_id}-${row.id}-${idx}`}>
+                      {idx === 0 ? (
+                        <td rowSpan={g.members.length} style={{ verticalAlign: 'top', fontSize: 12 }}>
+                          <div style={{ fontFamily: 'monospace' }}>{g.utr}</div>
+                          <div style={{ color: 'var(--text-muted)' }}>{g.account}</div>
+                          <div style={{ marginTop: 4 }}>
+                            <Badge color="var(--danger)">{g.exact_count} exact</Badge>{' '}
+                            <Badge color="var(--accent-orange)">{g.probable_count} probable</Badge>
+                          </div>
+                        </td>
+                      ) : null}
+                      <td>#{row.id}</td>
+                      <td style={{ fontSize: 12 }}>{(row.date || '—').replace('T', ' ').replace(/\.\d+Z?$/, '')}</td>
+                      <td>{formatINR(row.amount, { paise: true })}</td>
+                      <td>{formatINR(row.disputed, { paise: true })}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{(row.secondary_id || '').replace(/^[TD]:/, '')}</td>
+                      <td><Badge color={meta.color}>{meta.label}</Badge></td>
+                      <td style={{ maxWidth: 320, color: 'var(--text-muted)', fontSize: 12 }}>{row.reason || (row.role === 'primary' ? 'Kept as the canonical leg.' : '')}</td>
+                    </tr>
+                  );
+                }))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

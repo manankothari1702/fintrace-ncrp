@@ -144,6 +144,16 @@ export const getDataQuality = (id) =>
   api.get(`/ncrp/${id}/data-quality`).then((r) => r.data);
 
 /**
+ * Suspected-duplicate flags + additive raw/deduped reconciliation metrics.
+ * NON-DESTRUCTIVE: every transaction row is retained; this only reports the
+ * flagged groups and the count/trail reconciliation.
+ * @param {number} id
+ * @returns {Promise<{ metrics: object|null, groups: Array<object> }>}
+ */
+export const getDuplicates = (id) =>
+  api.get(`/ncrp/${id}/duplicates`).then((r) => r.data);
+
+/**
  * Insert or update a lien record by account.
  * @param {number} id
  * @param {{ account_no: string, lien_status?: string, remarks?: string }} payload

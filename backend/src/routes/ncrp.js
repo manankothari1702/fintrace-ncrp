@@ -904,6 +904,17 @@ function createNcrpRouter(db) {
     res.json(analysis && Array.isArray(analysis.data_quality) ? analysis.data_quality : []);
   });
 
+  // GET /api/ncrp/:id/duplicates — suspected-duplicate flags + the additive
+  // raw/deduped metrics, from the analysis snapshot. NON-DESTRUCTIVE: every row
+  // is retained; this only reports the flagged groups and the reconciliation.
+  router.get('/ncrp/:id/duplicates', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    const sd = analysis && analysis.suspected_duplicates;
+    res.json(sd && typeof sd === 'object' ? sd : { metrics: null, groups: [] });
+  });
+
   // GET /api/ncrp/:id/lien — lien worksheet rows.
   router.get('/ncrp/:id/lien', (req, res) => {
     const report = loadReport(req, res);
