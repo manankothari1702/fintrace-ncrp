@@ -1068,22 +1068,51 @@ function createNcrpRouter(db) {
 
   // GET /api/ncrp/:id/payment-modes — full payment-mode distribution.
   //
-  // Aggregated in SQL (GROUP BY) over EVERY transaction for the report, so the
-  // dashboard donut summarises the whole case — not a sampled page. Returns one
-  // row per mode (count + summed amount), so the payload stays tiny regardless
-  // of dataset size: a 50k-row file aggregates in the DB and ships ~10 rows.
-  // Mode is normalised the same way the UI groups it: trimmed, blank/NULL →
-  // "OTHERS", upper-cased — so colours and labels line up.
+  // Aggregated in SQL (GROUP BY) over the report's LEDGER ROWS — not a sampled
+  // page — so the dashboard donut summarises the whole case. Returns one row per
+  // mode (count + summed amount), so the payload stays tiny regardless of dataset
+  // size: a 50k-row file aggregates in the DB and ships ~10 rows. Mode is
+  // normalised the same way the UI groups it: trimmed, blank/NULL → "OTHERS",
+  // upper-cased — so colours and labels line up.
+  //
+  // EXACT-DUPLICATE EXCLUSION: the same money is routinely re-listed across NCRP
+  // channel sheets; the analyzer collapses those before computing every figure
+  // (see analyzer.js dedupeRows). The donut must agree, or its total is inflated
+  // by dedup artifacts. The CTE below replicates dedupeRows' key exactly —
+  // (victim_account | beneficiary_account | transaction_date | transaction_amount
+  // | disputed_amount | utr_no), collapsing only rows that carry a UTR and keeping
+  // the first (lowest id) of each duplicate group — so the donut counts the same
+  // deduped ledger as the rest of the case (e.g. report …170: 2411 raw → 2162).
+  // This counts ALL row kinds (transfers + HOLD/OTHER dispositions), which is why
+  // the donut is labelled "LEDGER ROWS", a deliberately different figure from the
+  // headline transaction (hop) count.
   router.get('/ncrp/:id/payment-modes', (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const modes = db.prepare(`
+      WITH ranked AS (
+        SELECT
+          payment_mode, transaction_amount,
+          CASE WHEN TRIM(COALESCE(utr_no, '')) = '' THEN NULL
+               ELSE ROW_NUMBER() OVER (
+                 PARTITION BY
+                   TRIM(COALESCE(victim_account, '')),
+                   TRIM(COALESCE(beneficiary_account, '')),
+                   TRIM(COALESCE(transaction_date, '')),
+                   COALESCE(transaction_amount, 0),
+                   COALESCE(disputed_amount, 0),
+                   TRIM(utr_no)
+                 ORDER BY id
+               ) END AS rn
+        FROM ncrp_transactions
+        WHERE report_id = ?
+      )
       SELECT
         UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others')) AS mode,
         COUNT(*) AS count,
         COALESCE(SUM(transaction_amount), 0) AS amount
-      FROM ncrp_transactions
-      WHERE report_id = ?
+      FROM ranked
+      WHERE rn IS NULL OR rn = 1
       GROUP BY UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others'))
       ORDER BY count DESC, mode ASC
     `).all(report.id);

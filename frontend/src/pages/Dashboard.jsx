@@ -461,8 +461,11 @@ export default function Dashboard() {
 
         if (r.analysis_status === 'complete') {
           try {
-            // Full distribution over ALL transactions (server-side GROUP BY),
-            // so the donut total + percentages reflect the whole case.
+            // Full distribution over the case's deduped LEDGER ROWS (server-side
+            // GROUP BY with the same exact-duplicate exclusion the analyzer uses),
+            // so the donut total + percentages reflect the whole case without
+            // double-counting re-listed legs. This is a ledger-row count (all row
+            // kinds), deliberately distinct from the headline transaction count.
             const pm = await getPaymentModes(reportId);
             if (!cancelled) setPaymentSplit((pm.modes || []).map((m) => ({ mode: m.mode, count: m.count })));
           } catch (_e) { /* pie is non-critical */ }
@@ -492,6 +495,20 @@ export default function Dashboard() {
     [analysis],
   );
 
+  // Mule risk split. The analyzer SCORES every account that touched the money
+  // (incl. LOW-risk pass-through accounts), so mule_detection.length is the count
+  // of accounts scored — NOT the count of mules. The headline must reflect the
+  // actual flagged mules, so the card leads with the HIGH-risk count and footnotes
+  // the medium/low split. Counted exactly as the Mules page does (by risk_label),
+  // so the dashboard's HIGH number always equals the Mules page's "High Risk" card.
+  const muleRisk = useMemo(() => {
+    const c = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const m of (analysis?.mule_detection || [])) {
+      if (c[m.risk_label] !== undefined) c[m.risk_label] += 1;
+    }
+    return c;
+  }, [analysis]);
+
   const layerChartData = useMemo(
     () => (analysis?.layer_analysis || []).map((l) => ({
       name: `Layer ${l.layer_no}`,
@@ -502,8 +519,10 @@ export default function Dashboard() {
 
   // Payment-mode slices carry their share so the legend, tooltip and centre
   // label all read the same %. The endpoint returns modes already sorted desc,
-  // so the legend reads largest-to-smallest. value = transaction count (the
-  // chart is a distribution of how transactions split across modes).
+  // so the legend reads largest-to-smallest. value = ledger-row count (the chart
+  // is a distribution of how the case's deduped ledger rows split across payment
+  // channels — all row kinds, not just transfers; hence "LEDGER ROWS", a count
+  // deliberately distinct from the headline transaction (hop) figure).
   const paymentTotal = useMemo(
     () => paymentSplit.reduce((s, p) => s + (p.count || 0), 0),
     [paymentSplit],
@@ -659,7 +678,13 @@ export default function Dashboard() {
           color="var(--danger)"
         />
         <StatCard title="Layers in Trail" value={totalLayers} subtitle="laundering hops" icon={<IconLayers color="var(--brand)" />} color="var(--brand)" />
-        <StatCard title="Mule Accounts" value={formatNumber(analysis?.mule_detection?.length || 0)} subtitle="flagged accounts" icon={<IconUsers color="var(--accent-orange)" />} color="var(--accent-orange)" />
+        <StatCard
+          title="Mule Accounts"
+          value={formatNumber(muleRisk.HIGH)}
+          subtitle={`high-risk · ${formatNumber(muleRisk.MEDIUM)} medium · ${formatNumber(muleRisk.LOW)} low`}
+          icon={<IconUsers color="var(--accent-orange)" />}
+          color="var(--accent-orange)"
+        />
         <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable balance" icon={<IconShieldCheck color="var(--accent)" />} color="var(--accent)" />
       </div>
 
@@ -754,7 +779,7 @@ export default function Dashboard() {
                         </text>
                         <text x={cx} y={cy + 14} textAnchor="middle" dominantBaseline="central"
                           style={{ fontSize: 10.5, fontWeight: 600, fill: chart.textMuted, letterSpacing: '0.06em' }}>
-                          TRANSACTIONS
+                          LEDGER ROWS
                         </text>
                       </g>
                     );
@@ -764,7 +789,7 @@ export default function Dashboard() {
               <Tooltip
                 formatter={(v, n) => {
                   const pct = paymentTotal ? ((v / paymentTotal) * 100).toFixed(1) : '0';
-                  return [`${formatNumber(v)} txns (${pct}%)`, n];
+                  return [`${formatNumber(v)} rows (${pct}%)`, n];
                 }}
                 contentStyle={{ background: chart.cardBg, border: `1px solid ${chart.border}`, borderRadius: 8, color: chart.text }}
                 labelStyle={{ color: chart.text }}
