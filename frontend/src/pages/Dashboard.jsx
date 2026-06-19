@@ -37,7 +37,7 @@ import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatDate } from '../utils/format.js';
 import {
-  getReport, getTransactions, saveReportPdf, saveReportExcel, suggestExportName,
+  getReport, getPaymentModes, saveReportPdf, saveReportExcel, suggestExportName,
   friendlyErrorMessage, ApiError,
 } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -174,6 +174,31 @@ function IconShieldCheck({ color }) {
   );
 }
 
+/**
+ * Value label for the Amount-by-Layer bars, rendered vertically just above each
+ * bar. recharts <LabelList> clones this with the bar geometry (x/y/width/value);
+ * rotating the text -90° keeps a row of adjacent short-bar labels from colliding
+ * (the failure mode of horizontal labels) while every layer's amount stays
+ * visible. `fill` is passed in so it tracks the theme.
+ */
+function VerticalBarLabel({ x, y, width, value, fill }) {
+  if (value == null || x == null) return null;
+  const cx = x + width / 2;
+  const ly = y - 5;
+  return (
+    <text
+      x={cx}
+      y={ly}
+      transform={`rotate(-90 ${cx} ${ly})`}
+      textAnchor="start"
+      dominantBaseline="central"
+      style={{ fontSize: 10.5, fontWeight: 700, fill }}
+    >
+      {formatCrore(value)}
+    </text>
+  );
+}
+
 // Recovery-bucket → colour grammar (cashed out is the worst outcome).
 const RECOVERY_COLORS = {
   cashed_out: 'var(--danger)',
@@ -195,17 +220,6 @@ function findingIcon(text) {
   if (/(lien|recommend|priority|action|recover)/.test(t)) return '🎯';
   if (/(₹|cash|amount|exposure|recoverable|victim)/.test(t)) return '💰';
   return '⚠️';
-}
-
-function groupByPaymentMode(rows) {
-  const counts = new Map();
-  for (const t of rows || []) {
-    const mode = (t.payment_mode || 'Others').toUpperCase();
-    counts.set(mode, (counts.get(mode) || 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([mode, count]) => ({ mode, count }))
-    .sort((a, b) => b.count - a.count);
 }
 
 // ─── Recovery "fund trail" bar ─────────────────────────────────────────────────
@@ -447,8 +461,10 @@ export default function Dashboard() {
 
         if (r.analysis_status === 'complete') {
           try {
-            const txns = await getTransactions(reportId, { limit: 500 });
-            if (!cancelled) setPaymentSplit(groupByPaymentMode(txns.data));
+            // Full distribution over ALL transactions (server-side GROUP BY),
+            // so the donut total + percentages reflect the whole case.
+            const pm = await getPaymentModes(reportId);
+            if (!cancelled) setPaymentSplit((pm.modes || []).map((m) => ({ mode: m.mode, count: m.count })));
           } catch (_e) { /* pie is non-critical */ }
         } else if (r.analysis_status !== 'error') {
           timer = setTimeout(load, 2000);
@@ -485,9 +501,9 @@ export default function Dashboard() {
   );
 
   // Payment-mode slices carry their share so the legend, tooltip and centre
-  // label all read the same %. groupByPaymentMode already sorts desc, so the
-  // legend reads largest-to-smallest. value = transaction count (the chart is a
-  // distribution of how transactions split across modes).
+  // label all read the same %. The endpoint returns modes already sorted desc,
+  // so the legend reads largest-to-smallest. value = transaction count (the
+  // chart is a distribution of how transactions split across modes).
   const paymentTotal = useMemo(
     () => paymentSplit.reduce((s, p) => s + (p.count || 0), 0),
     [paymentSplit],
@@ -504,10 +520,6 @@ export default function Dashboard() {
   // Theme-aware chart colours (re-resolved on theme flip), plus the derived
   // per-bar / per-slice palettes.
   const chart = useChartTheme();
-  const layerMax = useMemo(
-    () => Math.max(1, ...layerChartData.map((d) => d.amount || 0)),
-    [layerChartData],
-  );
   const layerBarColors = useMemo(() => {
     const max = Math.max(1, ...layerChartData.map((d) => d.amount || 0));
     const lo = hexToRgb(chart.brand);
@@ -683,6 +695,9 @@ export default function Dashboard() {
                 width={64}
                 axisLine={{ stroke: chart.border }}
                 tickLine={{ stroke: chart.border }}
+                /* Headroom above the tallest bar so its vertical value label
+                   has room and isn't clipped at the top edge. */
+                domain={[0, (dataMax) => Math.ceil(dataMax * 1.3)]}
               />
               <Tooltip
                 formatter={(v) => formatINR(v)}
@@ -692,15 +707,12 @@ export default function Dashboard() {
                 itemStyle={{ color: chart.text }}
               />
               <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
-                {/* Value on top of each bar; bars under 4% of the tallest skip
-                    the label (it would collide with the axis) — hover still
-                    shows the exact figure via the tooltip. */}
-                <LabelList
-                  dataKey="amount"
-                  position="top"
-                  formatter={(v) => (v >= layerMax * 0.04 ? formatCrore(v) : '')}
-                  style={{ fontSize: 11, fontWeight: 700, fill: chart.text }}
-                />
+                {/* Every bar gets its value, rendered VERTICALLY just above the
+                    bar. Rotating the labels uses the empty vertical headroom and
+                    removes the horizontal collisions that plagued the cluster of
+                    short layers — a row of compact ₹ figures would overlap, thin
+                    vertical strips never do. */}
+                <LabelList dataKey="amount" content={<VerticalBarLabel fill={chart.text} />} />
                 {layerChartData.map((_, i) => (
                   <Cell key={i} fill={layerBarColors[i]} />
                 ))}

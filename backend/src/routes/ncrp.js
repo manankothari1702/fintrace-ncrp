@@ -1066,6 +1066,31 @@ function createNcrpRouter(db) {
     res.json(analysis && analysis.geography ? analysis.geography : { by_state: [], by_city: [] });
   });
 
+  // GET /api/ncrp/:id/payment-modes — full payment-mode distribution.
+  //
+  // Aggregated in SQL (GROUP BY) over EVERY transaction for the report, so the
+  // dashboard donut summarises the whole case — not a sampled page. Returns one
+  // row per mode (count + summed amount), so the payload stays tiny regardless
+  // of dataset size: a 50k-row file aggregates in the DB and ships ~10 rows.
+  // Mode is normalised the same way the UI groups it: trimmed, blank/NULL →
+  // "OTHERS", upper-cased — so colours and labels line up.
+  router.get('/ncrp/:id/payment-modes', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const modes = db.prepare(`
+      SELECT
+        UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others')) AS mode,
+        COUNT(*) AS count,
+        COALESCE(SUM(transaction_amount), 0) AS amount
+      FROM ncrp_transactions
+      WHERE report_id = ?
+      GROUP BY UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others'))
+      ORDER BY count DESC, mode ASC
+    `).all(report.id);
+    const total = modes.reduce((s, m) => s + m.count, 0);
+    res.json({ modes, total });
+  });
+
   // GET /api/ncrp/:id/pdf — generate the dossier and return it.
   //
   // Two delivery modes:

@@ -124,6 +124,14 @@ export const deleteReport = (id) => api.delete(`/ncrp/${id}`).then((r) => r.data
 export const getTransactions = (id, params = {}) =>
   api.get(`/ncrp/${id}/transactions`, { params }).then((r) => r.data);
 
+/**
+ * Full payment-mode distribution for a report — `{ modes: [{ mode, count,
+ * amount }], total }`, aggregated server-side over ALL transactions (not a
+ * page). Drives the dashboard donut.
+ */
+export const getPaymentModes = (id) =>
+  api.get(`/ncrp/${id}/payment-modes`).then((r) => r.data);
+
 /** Persisted per-layer aggregates. */
 export const getLayers = (id) => api.get(`/ncrp/${id}/layers`).then((r) => r.data);
 
