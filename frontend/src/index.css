@@ -282,6 +282,26 @@ th {
   filter: brightness(1.1);
 }
 
+/* A disabled primary should read as clearly inert — a flat neutral surface —
+   rather than a faded-translucent gradient that still looks half-active. The
+   full-strength gradient is what signals "ready, click me". */
+.btn-primary:disabled {
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--text-muted);
+  filter: none;
+  opacity: 1;
+}
+
+/* Subtle-until-hover danger action (e.g. row Delete): a plain neutral button
+   at rest, committing to the danger grammar only on hover so the table isn't
+   peppered with always-red controls. */
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+}
+
 .btn-sm {
   padding: 5px 10px;
   font-size: 12px;
@@ -305,6 +325,98 @@ th {
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-light);
+}
+
+/* ─── Upload drop zone ────────────────────────────────────────────────
+   The primary call-to-action on the Upload page. At rest it's an inviting
+   inset panel (surface-2) ringed by a thick dashed brand-tinted border. On
+   drag-over it commits: the border goes solid brand, the fill tints toward
+   brand, and the whole panel lifts a hair — so "I've got your file" is
+   unmistakable. Tokenised throughout, so it holds up in both themes. */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 220px;
+  padding: 48px 24px;
+  text-align: center;
+  background: var(--surface-2);
+  border: 2px dashed color-mix(in srgb, var(--brand) 42%, transparent);
+  border-radius: var(--radius);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.dropzone:hover {
+  border-color: color-mix(in srgb, var(--brand) 62%, transparent);
+}
+
+/* In dark mode the brand navy at low opacity nearly vanishes against the dark
+   panel; lift the dash opacity so the target still reads. */
+[data-theme='dark'] .dropzone {
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--text-muted));
+}
+
+[data-theme='dark'] .dropzone:hover {
+  border-color: color-mix(in srgb, var(--brand) 50%, var(--text-muted));
+}
+
+/* Drag-over: solid brand border + brand-tinted fill + a faint scale-up. */
+.dropzone[data-dragging] {
+  border-style: solid;
+  border-color: var(--brand);
+  background: var(--brand-light);
+  transform: scale(1.01);
+}
+
+/* --brand-light is a dark navy tint in dark mode (barely "active"); surface-3
+   gives a clearer lightening against the dark panel for the drag-over state. */
+[data-theme='dark'] .dropzone[data-dragging] {
+  background: var(--surface-3);
+}
+
+.dropzone .dz-icon {
+  font-size: 46px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.dropzone .dz-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dropzone .dz-file {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.dropzone .dz-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Inline "Saved to …" confirmation under the Previous Reports header. Uses the
+   success surface token; the label lifts to a lighter green in dark mode for
+   contrast on the dark tint (same treatment as the success badge). */
+.save-notice {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: var(--success-bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+[data-theme='dark'] .save-notice {
+  color: color-mix(in srgb, var(--accent) 55%, #fff);
 }
 
 /* ─── Table ──────────────────────────────────────────────────────── */
@@ -370,6 +482,14 @@ table.data-table tbody tr:hover {
   transition: background 0.1s ease;
 }
 
+/* Detail panel revealed under a click-to-expand row. The nested surface
+   (surface-2) sets it apart from the parent row in both themes; padding is
+   zeroed so the rendered panel controls its own spacing. */
+table.data-table tbody td.expanded-cell {
+  background: var(--surface-2);
+  padding: 0;
+}
+
 .table-toolbar {
   display: flex;
   align-items: center;
@@ -428,6 +548,21 @@ table.data-table tbody tr:hover {
   background: currentColor;
 }
 
+/* Solid success badge (e.g. the COMPLETE report status) keyed to the success
+   surface token rather than a derived tint, so it reads as a settled,
+   affirmative state. In dark mode the deep money-green is too dark to read on
+   the dark success-bg, so the label (and its dot, via currentColor) lifts to a
+   lighter green for AA contrast — the green grammar is preserved either way. */
+.badge.badge-success {
+  background: var(--success-bg);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+[data-theme='dark'] .badge.badge-success {
+  color: color-mix(in srgb, var(--accent) 55%, #fff);
+}
+
 /* ─── States: loading + error ────────────────────────────────────── */
 
 .spinner {
@@ -454,14 +589,17 @@ table.data-table tbody tr:hover {
   color: var(--text-muted);
 }
 
+/* Danger banner. Tokenised so it flips with the theme: a soft danger tint
+   behind danger-red text + border in both light and dark mode (the colour
+   grammar — red = danger — is intentionally preserved across themes). */
 .error-alert {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  background: #fdecea;
-  border: 1px solid #f5c6c2;
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   border-left: 4px solid var(--danger);
-  color: #7c1f1a;
+  color: var(--danger);
   border-radius: var(--radius);
   padding: 14px 16px;
 }
@@ -487,11 +625,18 @@ table.data-table tbody tr:hover {
   padding: 40px 16px;
 }
 
-/* Skeleton rows for the table loading state. */
+/* Skeleton rows for the table loading state. Token-based gradient (surface-2
+   base → surface-3 highlight) so the shimmer stays visible in dark mode — the
+   highlight band lightens against the dark base instead of flashing white. */
 .skeleton-row {
   height: 14px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #eef1f6 25%, #e3e8f0 37%, #eef1f6 63%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
   background-size: 400% 100%;
   animation: shimmer 1.3s ease infinite;
 }
@@ -783,7 +928,12 @@ table.data-table tbody tr:hover {
    reuse the same shimmer animation as the table skeleton rows. */
 
 .skeleton {
-  background: linear-gradient(90deg, #eef1f6 25%, #e3e8f0 37%, #eef1f6 63%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
   background-size: 400% 100%;
   animation: shimmer 1.3s ease infinite;
   border-radius: 6px;

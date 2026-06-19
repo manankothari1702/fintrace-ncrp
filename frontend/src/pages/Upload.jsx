@@ -251,8 +251,7 @@ export default function Upload() {
             </button>
             <button
               type="button"
-              className="btn btn-sm"
-              style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+              className="btn btn-sm btn-danger"
               disabled={deletingId === r.id}
               onClick={() => handleDelete(r.id)}
             >
@@ -309,15 +308,7 @@ export default function Upload() {
             onClick={() => !busy && inputRef.current?.click()}
             role="button"
             tabIndex={0}
-            style={{
-              border: `2px dashed ${dragging ? 'var(--brand)' : 'var(--border)'}`,
-              background: dragging ? 'var(--brand-light)' : 'transparent',
-              borderRadius: 'var(--radius)',
-              padding: '40px 24px',
-              textAlign: 'center',
-              cursor: busy ? 'default' : 'pointer',
-              transition: 'background 0.12s ease, border-color 0.12s ease',
-            }}
+            style={{ cursor: busy ? 'default' : 'pointer' }}
           >
             <input
               ref={inputRef}
@@ -326,16 +317,16 @@ export default function Upload() {
               hidden
               onChange={(e) => acceptFile(e.target.files?.[0])}
             />
-            <div style={{ fontSize: 36, marginBottom: 8 }}>📤</div>
+            <div className="dz-icon" aria-hidden="true">📤</div>
             {file ? (
               <div>
-                <div style={{ fontWeight: 700 }}>{file.name}</div>
-                <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{formatBytes(file.size)}</div>
+                <div className="dz-file">{file.name}</div>
+                <div className="dz-sub" style={{ marginTop: 2 }}>{formatBytes(file.size)}</div>
               </div>
             ) : (
               <div>
-                <div style={{ fontWeight: 600 }}>Drag &amp; drop your NCRP file here</div>
-                <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>or click to browse — .xlsx / .xls, up to 50 MB</div>
+                <div className="dz-title">Drag &amp; drop your NCRP file here</div>
+                <div className="dz-sub" style={{ marginTop: 4 }}>or click to browse — .xlsx / .xls, up to 50 MB</div>
               </div>
             )}
           </div>
@@ -395,15 +386,7 @@ export default function Upload() {
         <p className="subtitle">Earlier uploads and their analysis status.</p>
       </header>
       {savedNotice && (
-        <div
-          role="status"
-          style={{
-            marginBottom: 12, padding: '10px 14px',
-            background: 'rgba(46, 160, 67, 0.12)', border: '1px solid var(--success, #2ea043)',
-            borderRadius: 'var(--radius)', color: 'var(--success, #2ea043)',
-            fontSize: 13, fontWeight: 600, wordBreak: 'break-all',
-          }}
-        >
+        <div role="status" className="save-notice">
           ✓ {savedNotice}
         </div>
       )}
@@ -430,8 +413,18 @@ export default function Upload() {
 // ─── Small presentational helpers ────────────────────────────────────────────
 
 function StatusBadge({ status }) {
+  // The settled "complete" state gets the solid success-surface badge (theme-
+  // aware via .badge-success); the transient states keep the derived-tint
+  // Badge in their grammar colour (orange = in-flight, red = error).
+  if (status === 'complete') {
+    return (
+      <span className="badge badge-success">
+        <span className="dot" />
+        complete
+      </span>
+    );
+  }
   const map = {
-    complete: 'var(--accent)',
     processing: 'var(--accent-orange)',
     pending: 'var(--text-muted)',
     error: 'var(--danger)',
@@ -450,17 +443,17 @@ function ParseErrorDetails({ errors }) {
     <div
       style={{
         marginTop: 10,
-        background: '#fdf0f0',
-        border: '1px solid #ecc8c8',
+        background: 'var(--danger-bg)',
+        border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
         borderLeft: '4px solid var(--danger)',
         borderRadius: 'var(--radius)',
         padding: '12px 16px',
       }}
     >
-      <div style={{ fontWeight: 700, marginBottom: 6, color: '#8a1f1f' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6, color: 'var(--danger)' }}>
         ⛔ No figures were computed — fix these sheets and upload again
       </div>
-      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a2424' }}>
+      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: 'var(--danger)' }}>
         {errors.map((e, i) => (
           <li key={i} style={{ marginBottom: 6 }}>
             {e.code === 'UNKNOWN_CHANNEL_WITH_TRANSACTIONS' ? (
@@ -498,17 +491,17 @@ function ParserWarnings({ warnings }) {
   return (
     <div
       style={{
-        background: '#fff8e6',
-        border: '1px solid #f3e0b0',
+        background: 'var(--warning-bg)',
+        border: '1px solid color-mix(in srgb, var(--accent-orange) 32%, transparent)',
         borderLeft: '4px solid var(--accent-orange)',
         borderRadius: 'var(--radius)',
         padding: '12px 16px',
       }}
     >
-      <div style={{ fontWeight: 700, marginBottom: 6, color: '#8a5a00' }}>
+      <div style={{ fontWeight: 700, marginBottom: 6, color: 'var(--accent-orange)' }}>
         ⚠️ Parser notes ({warnings.length})
       </div>
-      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a5400' }}>
+      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: 'var(--accent-orange)' }}>
         {warnings.map((w, i) => {
           // Warnings are either plain strings (parser notes) or structured
           // objects ({ code, message }) such as the changed-source alert.
@@ -517,7 +510,7 @@ function ParserWarnings({ warnings }) {
           const isSourceChanged = isObj && w.code === 'SOURCE_FILE_CHANGED';
           const isOldTxns = isObj && w.code === 'OLD_TRANSACTIONS_FOUND';
           let style;
-          if (isSourceChanged) style = { fontWeight: 700, color: '#8a2a00' };
+          if (isSourceChanged) style = { fontWeight: 700, color: 'var(--accent-orange)' };
           else if (isOldTxns) style = { fontWeight: 600 };
           const prefix = isSourceChanged ? '🔑 Source file changed — ' : (isOldTxns ? 'ℹ️ ' : '');
           return (

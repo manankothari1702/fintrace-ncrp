@@ -207,7 +207,7 @@ function DataTable({
                     </tr>
                     {expandable && row.getIsExpanded() && (
                       <tr>
-                        <td colSpan={columnCount} style={{ background: '#fafbfd', padding: 0 }}>
+                        <td colSpan={columnCount} className="expanded-cell">
                           {renderExpanded(row.original)}
                         </td>
                       </tr>
