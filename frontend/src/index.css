@@ -75,8 +75,17 @@
   --text: #1a1a2e;
   --text-muted: #5a6a7a;
 
+  /* Foreground for text/icons sitting on a SOLID semantic-colour fill (brand
+     buttons, status badges, recovery-bar segments, active chips). Intentionally
+     theme-invariant — those fills stay coloured in both themes, so white reads
+     on them either way. Centralised here so no raw #fff leaks into components. */
+  --text-on-solid: #ffffff;
+
   /* Typography + shape */
   --font: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Monospace stack for account numbers, IFSC codes, source→dest cells — the
+     fixed advance keeps digits column-aligned. */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --radius: 8px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 6px 24px rgba(0, 0, 0, 0.12);
@@ -272,7 +281,7 @@ th {
 .btn-primary {
   background: linear-gradient(180deg, var(--brand) 0%, var(--brand-dark) 100%);
   border-color: var(--brand-dark);
-  color: #fff;
+  color: var(--text-on-solid);
 }
 
 /* Re-declare the gradient (the generic .btn:hover would otherwise tint it) and

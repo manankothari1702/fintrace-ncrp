@@ -155,8 +155,8 @@ export default function Emails() {
           role="status"
           style={{
             position: 'fixed', top: 20, right: 20, zIndex: 50,
-            background: 'var(--accent)', color: '#fff', padding: '10px 16px',
-            borderRadius: 'var(--radius)', boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+            background: 'var(--accent)', color: 'var(--text-on-solid)', padding: '10px 16px',
+            borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-lg)',
             fontSize: 13, fontWeight: 600,
           }}
         >
@@ -217,7 +217,7 @@ export default function Emails() {
 
                     <pre style={{
                       fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
-                      background: '#fafbfd', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                      background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
                       padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
                     }}>{email.body}</pre>
 

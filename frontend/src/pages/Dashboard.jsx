@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
 import {
   Bar,
   BarChart,
+  CartesianGrid,
   Cell,
   Legend,
   Pie,
@@ -41,21 +42,135 @@ import { useActiveReportId } from '../context/ReportContext.jsx';
 
 // ─── Colour helpers ──────────────────────────────────────────────────────────
 
-function layerColor(index, total) {
-  const t = total <= 1 ? 0 : index / (total - 1);
-  const from = [31, 58, 110];
-  const to = [198, 40, 40];
-  const ch = (i) => Math.round(from[i] + (to[i] - from[i]) * t);
+/* recharts paints SVG fills, which don't resolve CSS var() / color-mix() the way
+   CSS properties do. So chart colours are resolved to CONCRETE values from the
+   live design tokens via getComputedStyle, and re-resolved whenever the theme
+   flips (the hook watches data-theme on <html>). This is what makes the charts
+   theme-aware — recharts does not auto-theme. */
+
+function hexToRgb(hex) {
+  let h = String(hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const n = parseInt(h || '0', 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Linear-interpolate between two RGB triples, returning an `rgb(...)` string. */
+function mixRgb(a, b, t) {
+  const u = Math.max(0, Math.min(1, t));
+  const ch = (i) => Math.round(a[i] + (b[i] - a[i]) * u);
   return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`;
 }
 
-const PAYMENT_MODE_COLORS = {
-  ATM: 'var(--danger)',
-  UPI: 'var(--brand)',
-  IMPS: 'var(--accent)',
-  NEFT: 'var(--accent-orange)',
-  Others: 'var(--text-muted)',
+/**
+ * Resolve the design tokens the charts need into concrete colours, refreshed on
+ * theme change. Surface/line/text tokens flip between themes; the brand/risk
+ * grammar colours are the same in both but still read from tokens so there's a
+ * single source of truth (no duplicated hexes).
+ */
+function useChartTheme() {
+  const [theme, setTheme] = useState(
+    () => (typeof document !== 'undefined'
+      ? document.documentElement.getAttribute('data-theme') : null) || 'light',
+  );
+  useEffect(() => {
+    const el = document.documentElement;
+    const obs = new MutationObserver(() => setTheme(el.getAttribute('data-theme') || 'light'));
+    obs.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  return useMemo(() => {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n, fallback) => (cs.getPropertyValue(n).trim() || fallback);
+    return {
+      theme,
+      text: v('--text', '#1a1a2e'),
+      textMuted: v('--text-muted', '#5a6a7a'),
+      border: v('--border', '#e0e5ed'),
+      cardBg: v('--card-bg', '#ffffff'),
+      brand: v('--brand', '#1f3a6e'),
+      danger: v('--danger', '#c62828'),
+      accent: v('--accent', '#2e7d32'),
+      accentOrange: v('--accent-orange', '#e65100'),
+    };
+  }, [theme]);
+}
+
+/**
+ * Distinct, on-brand colour per payment mode. Known modes keep the colour
+ * grammar (cash exit = danger, etc.); any extra modes (RTGS, wallets…) draw from
+ * a derived palette of token blends so every slice stays visually distinct
+ * without going rainbow.
+ */
+function buildPaymentColors(names, c) {
+  const known = {
+    ATM: c.danger, UPI: c.brand, IMPS: c.accent, NEFT: c.accentOrange, OTHERS: c.textMuted,
+  };
+  // Four mutually-distinct on-brand blends for modes outside the grammar
+  // (teal / plum / light-slate / ember) — kept far apart in hue so no two
+  // slices read as the same colour.
+  const extras = [
+    mixRgb(hexToRgb(c.brand), hexToRgb(c.accent), 0.5),         // teal
+    mixRgb(hexToRgb(c.brand), hexToRgb(c.danger), 0.5),         // plum
+    mixRgb(hexToRgb(c.brand), [255, 255, 255], 0.5),            // light slate
+    mixRgb(hexToRgb(c.danger), hexToRgb(c.accentOrange), 0.5),  // ember
+  ];
+  const map = {};
+  let ei = 0;
+  for (const name of names) {
+    const key = String(name || '').toUpperCase();
+    if (known[key]) map[name] = known[key];
+    else { map[name] = extras[ei % extras.length]; ei += 1; }
+  }
+  return map;
+}
+
+/* Consistent line-icon set for the hero stat cards (replaces the mixed emoji).
+   Each is a 22px stroke icon coloured to its metric's semantic grammar. */
+const SVG_ICON_PROPS = {
+  width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none',
+  strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
 };
+
+function IconBanknote({ color }) {
+  return (
+    <svg {...SVG_ICON_PROPS} stroke={color}>
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2.5" />
+      <path d="M6 9.5v5M18 9.5v5" />
+    </svg>
+  );
+}
+
+function IconLayers({ color }) {
+  return (
+    <svg {...SVG_ICON_PROPS} stroke={color}>
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </svg>
+  );
+}
+
+function IconUsers({ color }) {
+  return (
+    <svg {...SVG_ICON_PROPS} stroke={color}>
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function IconShieldCheck({ color }) {
+  return (
+    <svg {...SVG_ICON_PROPS} stroke={color}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <polyline points="9 12 12 15 16 10" />
+    </svg>
+  );
+}
 
 // Recovery-bucket → colour grammar (cashed out is the worst outcome).
 const RECOVERY_COLORS = {
@@ -116,7 +231,7 @@ function RecoveryBar({ recovery }) {
             style={{
               width: `${s.pct}%`, background: RECOVERY_COLORS[s.key],
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#fff', fontSize: 11, fontWeight: 700, minWidth: s.pct > 6 ? 'auto' : 0,
+              color: 'var(--text-on-solid)', fontSize: 11, fontWeight: 700, minWidth: s.pct > 6 ? 'auto' : 0,
             }}
           >
             {s.pct >= 8 ? `${s.pct}%` : ''}
@@ -210,6 +325,15 @@ function DataQualityCard({ analysis, reportId }) {
 
   const chips = DQ_ACTIONABLE_LABELS.filter(([key]) => (dq.actionable_counts?.[key] || 0) > 0);
 
+  // Tint the banner by severity so a warning reads as a warning at a glance —
+  // soft, not alarming. Green stays a neutral card; amber/red pick up the
+  // matching alert surface (theme-aware tokens, dark-mode safe).
+  const tintBg = dq.status === 'red'
+    ? 'var(--danger-bg)'
+    : dq.status === 'amber'
+      ? 'var(--warning-bg)'
+      : undefined;
+
   return (
     <Link
       to={`/data-quality${reportId ? `?reportId=${reportId}` : ''}`}
@@ -218,6 +342,7 @@ function DataQualityCard({ analysis, reportId }) {
       style={{
         display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20,
         borderLeft: `4px solid ${color}`,
+        background: tintBg,
         textDecoration: 'none', color: 'inherit', cursor: 'pointer',
       }}
     >
@@ -362,6 +487,21 @@ export default function Dashboard() {
     [paymentSplit],
   );
 
+  // Theme-aware chart colours (re-resolved on theme flip), plus the derived
+  // per-bar / per-slice palettes.
+  const chart = useChartTheme();
+  const layerBarColors = useMemo(() => {
+    const max = Math.max(1, ...layerChartData.map((d) => d.amount || 0));
+    const lo = hexToRgb(chart.brand);
+    const hi = hexToRgb(chart.danger);
+    // Higher amount → hotter (toward danger red); the lightest layers stay navy.
+    return layerChartData.map((d) => mixRgb(lo, hi, (d.amount || 0) / max));
+  }, [layerChartData, chart.brand, chart.danger]);
+  const paymentColors = useMemo(
+    () => buildPaymentColors(paymentChartData.map((p) => p.name), chart),
+    [paymentChartData, chart],
+  );
+
   if (loading) {
     return (
       <div className="page">
@@ -467,15 +607,7 @@ export default function Dashboard() {
       )}
 
       {savedNotice && (
-        <div
-          role="status"
-          style={{
-            marginBottom: 16, padding: '10px 14px',
-            background: 'rgba(46, 160, 67, 0.12)', border: '1px solid var(--success, #2ea043)',
-            borderRadius: 'var(--radius)', color: 'var(--success, #2ea043)',
-            fontSize: 13, fontWeight: 600, wordBreak: 'break-all',
-          }}
-        >
+        <div role="status" className="save-notice">
           ✓ {savedNotice}
         </div>
       )}
@@ -493,12 +625,12 @@ export default function Dashboard() {
           title="Victim Loss (Total Fraud)"
           value={formatCrore(victimLoss)}
           subtitle={`Trail disputed ${formatCrore(trailDisputed)} · ${formatNumber(uniqueTxns)} transactions`}
-          icon="💸"
+          icon={<IconBanknote color="var(--danger)" />}
           color="var(--danger)"
         />
-        <StatCard title="Layers in Trail" value={totalLayers} subtitle="laundering hops" icon="🔢" color="var(--brand)" />
-        <StatCard title="Mule Accounts" value={formatNumber(analysis?.mule_detection?.length || 0)} subtitle="flagged accounts" icon="🎯" color="var(--accent-orange)" />
-        <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable balance" icon="💰" color="var(--accent)" />
+        <StatCard title="Layers in Trail" value={totalLayers} subtitle="laundering hops" icon={<IconLayers color="var(--brand)" />} color="var(--brand)" />
+        <StatCard title="Mule Accounts" value={formatNumber(analysis?.mule_detection?.length || 0)} subtitle="flagged accounts" icon={<IconUsers color="var(--accent-orange)" />} color="var(--accent-orange)" />
+        <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable balance" icon={<IconShieldCheck color="var(--accent)" />} color="var(--accent)" />
       </div>
 
       {/* Recovery / fund-trail bar */}
@@ -520,12 +652,30 @@ export default function Dashboard() {
           <h3 style={{ fontSize: 15, marginBottom: 12 }}>Amount by Layer</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={layerChartData} margin={{ top: 8, right: 8, left: 8, bottom: 4 }}>
-              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-              <YAxis tickFormatter={(v) => formatCrore(v)} tick={{ fontSize: 12 }} width={64} />
-              <Tooltip formatter={(v) => formatINR(v)} cursor={{ fill: 'rgba(31,58,110,0.06)' }} />
+              <CartesianGrid vertical={false} stroke={chart.border} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="name"
+                tick={{ fontSize: 12, fill: chart.textMuted }}
+                axisLine={{ stroke: chart.border }}
+                tickLine={{ stroke: chart.border }}
+              />
+              <YAxis
+                tickFormatter={(v) => formatCrore(v)}
+                tick={{ fontSize: 12, fill: chart.textMuted }}
+                width={64}
+                axisLine={{ stroke: chart.border }}
+                tickLine={{ stroke: chart.border }}
+              />
+              <Tooltip
+                formatter={(v) => formatINR(v)}
+                cursor={{ fill: chart.text, fillOpacity: 0.06 }}
+                contentStyle={{ background: chart.cardBg, border: `1px solid ${chart.border}`, borderRadius: 8, color: chart.text }}
+                labelStyle={{ color: chart.text }}
+                itemStyle={{ color: chart.text }}
+              />
               <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
                 {layerChartData.map((_, i) => (
-                  <Cell key={i} fill={layerColor(i, layerChartData.length)} />
+                  <Cell key={i} fill={layerBarColors[i]} />
                 ))}
               </Bar>
             </BarChart>
@@ -536,13 +686,32 @@ export default function Dashboard() {
           <h3 style={{ fontSize: 15, marginBottom: 12 }}>Payment Mode Distribution</h3>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
-              <Pie data={paymentChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={(e) => e.name}>
+              <Pie
+                data={paymentChartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                innerRadius={52}
+                outerRadius={92}
+                paddingAngle={2}
+                stroke={chart.cardBg}
+                strokeWidth={2}
+              >
                 {paymentChartData.map((entry, i) => (
-                  <Cell key={i} fill={PAYMENT_MODE_COLORS[entry.name] || 'var(--text-muted)'} />
+                  <Cell key={i} fill={paymentColors[entry.name] || chart.textMuted} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v, n) => [`${formatNumber(v)} txns`, n]} />
-              <Legend />
+              <Tooltip
+                formatter={(v, n) => [`${formatNumber(v)} txns`, n]}
+                contentStyle={{ background: chart.cardBg, border: `1px solid ${chart.border}`, borderRadius: 8, color: chart.text }}
+                labelStyle={{ color: chart.text }}
+                itemStyle={{ color: chart.text }}
+              />
+              <Legend
+                wrapperStyle={{ fontSize: 12 }}
+                formatter={(value) => <span style={{ color: chart.text }}>{value}</span>}
+              />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -563,7 +732,7 @@ export default function Dashboard() {
                 }}
               >
                 <span style={{
-                  flexShrink: 0, fontWeight: 800, fontSize: 12, color: '#fff',
+                  flexShrink: 0, fontWeight: 800, fontSize: 12, color: 'var(--text-on-solid)',
                   background: PRIORITY_COLORS[item.priority] || 'var(--text-muted)',
                   borderRadius: 4, padding: '2px 8px',
                 }}>{item.priority}</span>

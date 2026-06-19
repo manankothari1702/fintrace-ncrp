@@ -194,8 +194,8 @@ export default function Lien() {
           role="status"
           style={{
             position: 'fixed', top: 20, right: 20, zIndex: 50,
-            background: 'var(--accent)', color: '#fff', padding: '10px 16px',
-            borderRadius: 'var(--radius)', boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+            background: 'var(--accent)', color: 'var(--text-on-solid)', padding: '10px 16px',
+            borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-lg)',
             fontSize: 13, fontWeight: 600,
           }}
         >

@@ -314,7 +314,7 @@ export default function Transactions() {
                     const isCashout = CASH_EXIT_MODES.has(t.payment_mode) || t.cashout_mode === 'ATM_WITHDRAWAL' || t.cashout_mode === 'POS_PURCHASE';
                     const isHighValue = Number(t.transaction_amount) > HIGH_AMOUNT_THRESHOLD;
                     return (
-                      <tr key={t.id} style={isCashout ? { background: '#FFF5F5' } : undefined}>
+                      <tr key={t.id} style={isCashout ? { background: 'color-mix(in srgb, var(--danger) 8%, transparent)' } : undefined}>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {t.same_day_cashout ? <span title="Same-day cashout" style={{ marginRight: 4 }}>⚡</span> : null}
                           {formatDateTime(t.transaction_date)}
@@ -385,7 +385,7 @@ function Chip({ active, onClick, children }) {
         padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: 'pointer',
         border: `1px solid ${active ? 'var(--brand)' : 'var(--border)'}`,
         background: active ? 'var(--brand)' : 'var(--card-bg)',
-        color: active ? '#fff' : 'var(--text)',
+        color: active ? 'var(--text-on-solid)' : 'var(--text)',
       }}
     >
       {children}
