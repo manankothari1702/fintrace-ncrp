@@ -2370,6 +2370,10 @@ module.exports = {
   keyFindings,
   dataQuality,
   dataQualitySummary,
+  // Exact-duplicate collapse — the single dedup definition, reused by the
+  // payment-modes endpoint so the donut counts the same de-duplicated ledger as
+  // every other figure (rather than re-deriving the dedup key in a second place).
+  dedupeRows,
   // Helpers exposed for testing; not part of the stable contract.
   _internals: Object.freeze({
     classifyCashoutMode,

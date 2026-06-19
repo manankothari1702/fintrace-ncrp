@@ -38,7 +38,7 @@ try {
 }
 
 const { parseNcrpFile } = require('../parsers/ncrpParser');
-const { analyzeReport } = require('../analyzers/analyzer');
+const { analyzeReport, dedupeRows } = require('../analyzers/analyzer');
 const {
   insertReport,
   updateReportAnalysis,
@@ -1068,54 +1068,43 @@ function createNcrpRouter(db) {
 
   // GET /api/ncrp/:id/payment-modes — full payment-mode distribution.
   //
-  // Aggregated in SQL (GROUP BY) over the report's LEDGER ROWS — not a sampled
+  // Distribution over the report's de-duplicated LEDGER ROWS — not a sampled
   // page — so the dashboard donut summarises the whole case. Returns one row per
-  // mode (count + summed amount), so the payload stays tiny regardless of dataset
-  // size: a 50k-row file aggregates in the DB and ships ~10 rows. Mode is
-  // normalised the same way the UI groups it: trimmed, blank/NULL → "OTHERS",
-  // upper-cased — so colours and labels line up.
+  // mode (count + summed amount); the payload stays tiny regardless of dataset
+  // size (~10 rows). Mode is normalised the same way the UI groups it: trimmed,
+  // blank/NULL → "OTHERS", upper-cased — so colours and labels line up.
   //
   // EXACT-DUPLICATE EXCLUSION: the same money is routinely re-listed across NCRP
-  // channel sheets; the analyzer collapses those before computing every figure
-  // (see analyzer.js dedupeRows). The donut must agree, or its total is inflated
-  // by dedup artifacts. The CTE below replicates dedupeRows' key exactly —
-  // (victim_account | beneficiary_account | transaction_date | transaction_amount
-  // | disputed_amount | utr_no), collapsing only rows that carry a UTR and keeping
-  // the first (lowest id) of each duplicate group — so the donut counts the same
-  // deduped ledger as the rest of the case (e.g. report …170: 2411 raw → 2162).
-  // This counts ALL row kinds (transfers + HOLD/OTHER dispositions), which is why
-  // the donut is labelled "LEDGER ROWS", a deliberately different figure from the
-  // headline transaction (hop) count.
+  // channel sheets; the analyzer collapses those before computing every figure.
+  // The donut must agree, or its total is inflated by dedup artifacts. Rather
+  // than re-deriving the dedup key here (a second definition that could silently
+  // drift), we REUSE the analyzer's `dedupeRows` — the single dedup source of
+  // truth — so the donut counts exactly the same de-duplicated ledger as the rest
+  // of the case (e.g. report …170: 2411 raw → 2162; the 249 collapsed legs are
+  // surfaced on the dashboard as `summary.duplicate_count`). This counts ALL row
+  // kinds (transfers + HOLD/OTHER dispositions), which is why the donut is
+  // labelled "LEDGER ROWS" — a deliberately different figure from the headline
+  // transaction (hop) count.
   router.get('/ncrp/:id/payment-modes', (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
-    const modes = db.prepare(`
-      WITH ranked AS (
-        SELECT
-          payment_mode, transaction_amount,
-          CASE WHEN TRIM(COALESCE(utr_no, '')) = '' THEN NULL
-               ELSE ROW_NUMBER() OVER (
-                 PARTITION BY
-                   TRIM(COALESCE(victim_account, '')),
-                   TRIM(COALESCE(beneficiary_account, '')),
-                   TRIM(COALESCE(transaction_date, '')),
-                   COALESCE(transaction_amount, 0),
-                   COALESCE(disputed_amount, 0),
-                   TRIM(utr_no)
-                 ORDER BY id
-               ) END AS rn
-        FROM ncrp_transactions
-        WHERE report_id = ?
-      )
-      SELECT
-        UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others')) AS mode,
-        COUNT(*) AS count,
-        COALESCE(SUM(transaction_amount), 0) AS amount
-      FROM ranked
-      WHERE rn IS NULL OR rn = 1
-      GROUP BY UPPER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'Others'))
-      ORDER BY count DESC, mode ASC
-    `).all(report.id);
+    // Reuse the analyzer's exact-duplicate collapse on the raw ledger rows (it
+    // keys only on the base fields present here, so no enrichment is needed).
+    const { rows: deduped } = dedupeRows(stmt.allTxns.all(report.id));
+    /** @type {Map<string, { mode: string, count: number, amount: number }>} */
+    const byMode = new Map();
+    for (const t of deduped) {
+      const trimmed = String(t.payment_mode == null ? '' : t.payment_mode).trim();
+      const mode = (trimmed === '' ? 'OTHERS' : trimmed.toUpperCase());
+      if (!byMode.has(mode)) byMode.set(mode, { mode, count: 0, amount: 0 });
+      const m = byMode.get(mode);
+      m.count += 1;
+      m.amount += Number(t.transaction_amount) || 0;
+    }
+    const modes = [...byMode.values()]
+      .map((m) => ({ mode: m.mode, count: m.count, amount: Math.round(m.amount * 100) / 100 }))
+      // Same ordering as before: largest mode first, ties broken by name.
+      .sort((a, b) => (b.count - a.count) || (a.mode < b.mode ? -1 : a.mode > b.mode ? 1 : 0));
     const total = modes.reduce((s, m) => s + m.count, 0);
     res.json({ modes, total });
   });

@@ -461,11 +461,11 @@ export default function Dashboard() {
 
         if (r.analysis_status === 'complete') {
           try {
-            // Full distribution over the case's deduped LEDGER ROWS (server-side
-            // GROUP BY with the same exact-duplicate exclusion the analyzer uses),
-            // so the donut total + percentages reflect the whole case without
-            // double-counting re-listed legs. This is a ledger-row count (all row
-            // kinds), deliberately distinct from the headline transaction count.
+            // Full distribution over the case's de-duplicated LEDGER ROWS — the
+            // endpoint reuses the analyzer's own dedupeRows, so the donut total +
+            // percentages reflect the whole case without double-counting re-listed
+            // legs. This is a ledger-row count (all row kinds), deliberately
+            // distinct from the headline transaction count.
             const pm = await getPaymentModes(reportId);
             if (!cancelled) setPaymentSplit((pm.modes || []).map((m) => ({ mode: m.mode, count: m.count })));
           } catch (_e) { /* pie is non-critical */ }
@@ -617,6 +617,14 @@ export default function Dashboard() {
   const victimLoss = summary?.victim_loss_amount ?? report.total_disputed_amount;
   const trailDisputed = summary?.total_trail_disputed ?? summary?.total_disputed_amount ?? report.total_disputed_amount;
   const uniqueTxns = summary?.unique_transactions ?? report.total_transactions;
+  // Exact-duplicate transparency: the count the dedup system already computed
+  // (summary.duplicate_count, the same value that drives the dossier's Suspected
+  // Duplicates annexure) — never recomputed here. The donut excludes these legs,
+  // so we tell the officer how many were collapsed rather than absorbing them
+  // silently. Absent on legacy snapshots → 0 → the note simply doesn't render.
+  const duplicateCount = summary?.duplicate_count
+    ?? analysis?.reconciliation?.transactions?.duplicates
+    ?? 0;
 
   return (
     <div className="page">
@@ -809,6 +817,19 @@ export default function Dashboard() {
               />
             </PieChart>
           </ResponsiveContainer>
+          {/* Duplicate-transparency note (Finding #2). Informational, never
+              alarming: the dedup system already collapsed these re-listed legs
+              (summary.duplicate_count), and the donut excludes them — so we say
+              how many were set aside rather than absorbing them silently. Hidden
+              when none were found (count 0 / legacy snapshot). */}
+          {duplicateCount > 0 && (
+            <p style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+              {formatNumber(paymentTotal)} de-duplicated ledger rows shown ·{' '}
+              {formatNumber(duplicateCount)} exact duplicate{duplicateCount === 1 ? '' : 's'} excluded —
+              {' '}identical legs re-listed across NCRP sheets, collapsed before counting
+              {' '}(itemised in the exported dossier).
+            </p>
+          )}
         </div>
       </div>
 
