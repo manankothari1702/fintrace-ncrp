@@ -721,9 +721,9 @@ export default function Dashboard() {
                 cy="50%"
                 innerRadius={52}
                 outerRadius={92}
-                paddingAngle={2}
+                paddingAngle={1}
                 stroke={chart.cardBg}
-                strokeWidth={2}
+                strokeWidth={1}
               >
                 {paymentChartData.map((entry, i) => (
                   <Cell key={i} fill={paymentColors[entry.name] || chart.textMuted} />
