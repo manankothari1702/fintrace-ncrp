@@ -7,6 +7,42 @@
    orange, high-risk is red — a colour grammar reused across components.
    ════════════════════════════════════════════════════════════════════ */
 
+/* ─── Inter (self-hosted, offline) ───────────────────────────────────
+   This app ships air-gapped, so Inter is bundled locally rather than
+   pulled from Google Fonts at runtime. The two woff2 files are Inter v20
+   *variable* fonts (one file spans the whole 400–700 weight axis), so a
+   single @font-face per subset with `font-weight: 400 700` covers the
+   400/500/600/700 weights the design uses. `latin-ext` carries the ₹
+   rupee sign (U+20B9, in U+20AD–20C0) and accented characters.
+
+   The files live in src/fonts/ (NOT public/) on purpose: the production
+   bundle loads over file:// with Vite base './', so the fonts must pass
+   through Vite's asset pipeline to get *relative* url() rewrites that
+   resolve next to the hashed CSS in dist/assets/. A public/ asset would
+   keep an absolute /fonts/ URL that 404s under file://. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('./fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('./fonts/inter-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+
 :root {
   /* Brand */
   --brand: #1f3a6e;          /* deep navy — primary */
@@ -25,6 +61,15 @@
   --sidebar-text: #ffffff;
   --sidebar-active: #2e5090;
 
+  /* Layered surfaces — nested cards, table headers, hover states. */
+  --surface-2: #eef1f7;      /* nested cards, table headers / zebra rows */
+  --surface-3: #e4e8f0;      /* hover states */
+
+  /* Semantic alert/badge backgrounds (tints of the colour grammar). */
+  --success-bg: #e8f5e9;     /* success badges / alerts (green) */
+  --warning-bg: #fff3e0;     /* warning badges (orange) */
+  --danger-bg: #ffebee;      /* danger badges (red) */
+
   /* Lines + text */
   --border: #e0e5ed;
   --text: #1a1a2e;
@@ -39,6 +84,43 @@
   /* Layout */
   --sidebar-width: 220px;
   --sidebar-width-collapsed: 64px;
+}
+
+/* ─── Dark theme ─────────────────────────────────────────────────────
+   Applied by toggling data-theme="dark" on <html> (see Sidebar's theme
+   toggle; the choice persists in localStorage 'fintrace-theme'). Only the
+   surface / line / text / shadow tokens flip — the semantic colour grammar
+   (brand navy, money green, risk orange, danger red) is intentionally
+   preserved so the same colours mean the same things in either theme.
+
+   --brand-light is the one derived override: at its light value (#e8edf4)
+   it would flash near-white on button hover and focus rings against a dark
+   UI, so it becomes a subtle dark navy tint here.
+
+   Scoped to @media screen on purpose: when the case file is printed the dark
+   tokens drop out entirely, so the print stylesheet below keeps working off
+   the light :root exactly as before — officers always print on white. */
+@media screen {
+  [data-theme='dark'] {
+    --bg: #0f1117;
+    --card-bg: #1a1d27;
+    --sidebar-bg: #0d1021;
+    --sidebar-active: #1e2a4a;
+    --border: #2a2f45;
+    --text: #e8eaf0;
+    --text-muted: #8b92a9;
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+
+    --surface-2: #222536;
+    --surface-3: #2a2f45;
+
+    --success-bg: #1a2e1c;
+    --warning-bg: #2e1f0a;
+    --danger-bg: #2e0f0f;
+
+    --brand-light: #1e2540;
+  }
 }
 
 /* ─── Reset ──────────────────────────────────────────────────────── */
@@ -104,7 +186,7 @@ th {
   flex: 1;
   min-width: 0; /* allow inner tables to scroll instead of blowing out width */
   margin-left: var(--sidebar-width);
-  transition: margin-left 0.18s ease;
+  transition: margin-left 0.2s ease;
 }
 
 .app-main.is-collapsed {
@@ -138,6 +220,13 @@ th {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+  transition: box-shadow 0.15s ease;
+}
+
+/* Subtle 2px brand accent on the left edge on hover. Drawn as an inset shadow
+   (not a border) so it adds zero layout shift and follows the rounded corner. */
+.card:hover {
+  box-shadow: var(--shadow), inset 2px 0 0 var(--brand);
 }
 
 .card-pad {
@@ -167,7 +256,8 @@ th {
   border-radius: var(--radius);
   font-size: 13px;
   font-weight: 600;
-  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease,
+    filter 0.15s ease;
 }
 
 .btn:hover {
@@ -180,13 +270,16 @@ th {
 }
 
 .btn-primary {
-  background: var(--brand);
-  border-color: var(--brand);
+  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-dark) 100%);
+  border-color: var(--brand-dark);
   color: #fff;
 }
 
+/* Re-declare the gradient (the generic .btn:hover would otherwise tint it) and
+   lift it slightly with brightness instead of a flat colour swap. */
 .btn-primary:hover {
-  background: var(--brand-dark);
+  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-dark) 100%);
+  filter: brightness(1.1);
 }
 
 .btn-sm {
@@ -229,13 +322,24 @@ table.data-table {
 
 table.data-table thead th {
   text-align: left;
-  background: var(--brand-light);
+  /* Sticky header: stays visible while a long table scrolls. The opaque
+     card-bg fill lets rows pass cleanly underneath. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card-bg);
   color: var(--brand);
   font-weight: 600;
-  padding: 10px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   user-select: none;
+}
+
+/* Brand navy header text is unreadable on the dark card surface, so headers
+   use the regular text colour in dark mode. */
+[data-theme='dark'] table.data-table thead th {
+  color: var(--text);
 }
 
 table.data-table thead th.sortable {
@@ -249,14 +353,21 @@ table.data-table thead th .sort-indicator {
 }
 
 table.data-table tbody td {
-  padding: 9px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   vertical-align: middle;
 }
 
+/* Zebra striping for readability on wide tables; row hover takes precedence
+   (declared after, equal specificity). */
+table.data-table tbody tr:nth-child(even) {
+  background: var(--surface-2);
+}
+
 table.data-table tbody tr:hover {
-  background: #fafbfd;
+  background: var(--surface-3);
+  transition: background 0.1s ease;
 }
 
 .table-toolbar {
@@ -299,9 +410,11 @@ table.data-table tbody tr:hover {
   align-items: center;
   gap: 5px;
   padding: 2px 9px;
+  /* Kept as a pill (999px): the spec asks for 4px only "if currently less",
+     and the existing radius is already more rounded than that. */
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -404,7 +517,8 @@ table.data-table tbody tr:hover {
   color: var(--sidebar-text);
   display: flex;
   flex-direction: column;
-  transition: width 0.18s ease;
+  overflow: hidden; /* clip labels as they collapse, so no truncation artifacts */
+  transition: width 0.2s ease, background 0.2s ease;
   z-index: 100;
 }
 
@@ -412,17 +526,44 @@ table.data-table tbody tr:hover {
   width: var(--sidebar-width-collapsed);
 }
 
+/* Every collapsible label — nav items, brand block, footer wordmark, control
+   button captions — fades its opacity and shrinks its max-width together, so
+   collapse/expand glides instead of snapping. The collapsed sidebar's
+   overflow:hidden clips whatever is mid-transition. */
+.nav-label,
+.brand-text {
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 160px;
+  transition: opacity 0.15s ease, max-width 0.2s ease;
+}
+
+.sidebar.is-collapsed .nav-label,
+.sidebar.is-collapsed .brand-text {
+  opacity: 0;
+  max-width: 0;
+}
+
 .sidebar-logo {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 20px 18px;
+  /* Separator between the brand block and the navigation. */
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.sidebar.is-collapsed .sidebar-logo {
+  justify-content: center;
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .sidebar-logo .mark {
   font-size: 22px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .sidebar-logo .brand-name {
@@ -452,12 +593,15 @@ table.data-table tbody tr:hover {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
+  /* Transparent rail on every item keeps icon alignment identical whether or
+     not the item is active; the active item colours it in (see below). */
+  border-left: 3px solid transparent;
   border-radius: var(--radius);
   color: rgba(255, 255, 255, 0.85);
   font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .nav-link:hover {
@@ -469,6 +613,8 @@ table.data-table tbody tr:hover {
   background: var(--sidebar-active);
   color: #fff;
   font-weight: 600;
+  /* 3px accent rail marks the current page in addition to the background. */
+  border-left-color: var(--accent);
 }
 
 .nav-link .nav-icon {
@@ -480,6 +626,53 @@ table.data-table tbody tr:hover {
 
 .sidebar.is-collapsed .nav-link {
   justify-content: center;
+  gap: 0;
+}
+
+/* ─── Sidebar controls: theme toggle + collapse ──────────────────── */
+
+.sidebar-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.ctrl-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.ctrl-btn .ctrl-icon {
+  font-size: 16px;
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.ctrl-btn .ctrl-icon.chevron {
+  font-size: 20px;
+}
+
+.sidebar.is-collapsed .ctrl-btn {
+  justify-content: center;
+  gap: 0;
 }
 
 .sidebar-footer {
@@ -492,24 +685,14 @@ table.data-table tbody tr:hover {
   gap: 4px;
 }
 
+.sidebar.is-collapsed .sidebar-footer {
+  align-items: center;
+}
+
 .sidebar-footer .mint {
   font-weight: 700;
   letter-spacing: 0.12em;
   color: rgba(255, 255, 255, 0.85);
-}
-
-.collapse-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: none;
-  color: #fff;
-  margin: 8px;
-  padding: 8px;
-  border-radius: var(--radius);
-  font-size: 14px;
-}
-
-.collapse-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
 }
 
 /* ─── StatCard ───────────────────────────────────────────────────── */
@@ -524,6 +707,13 @@ table.data-table tbody tr:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Lift the tile slightly on hover to signal it as a live, scannable metric. */
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
 }
 
 .stat-card .stat-head {
@@ -547,8 +737,8 @@ table.data-table tbody tr:hover {
 }
 
 .stat-card .stat-value {
-  font-size: 26px;
-  font-weight: 800;
+  font-size: 2rem;
+  font-weight: 700;
   line-height: 1.15;
 }
 
@@ -679,6 +869,38 @@ table.data-table tbody tr:hover {
   .letter-body {
     transition: none;
   }
+}
+
+/* ─── Scrollbars (WebKit/Chromium) ────────────────────────────────────
+   Thin, theme-aware scrollbars so the chrome stays quiet. Electron renders
+   on Chromium, so ::-webkit-scrollbar applies app-wide. */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-3);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text);
+}
+
+/* The sidebar is always dark navy, so its scrollbar uses translucent white
+   rather than the light-surface tokens to match its own surface. */
+.sidebar-nav::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* ─── Print stylesheet ───────────────────────────────────────────────
