@@ -20,6 +20,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Label,
+  LabelList,
   Legend,
   Pie,
   PieChart,
@@ -482,14 +484,30 @@ export default function Dashboard() {
     [analysis],
   );
 
-  const paymentChartData = useMemo(
-    () => paymentSplit.map((p) => ({ name: p.mode, value: p.count })),
+  // Payment-mode slices carry their share so the legend, tooltip and centre
+  // label all read the same %. groupByPaymentMode already sorts desc, so the
+  // legend reads largest-to-smallest. value = transaction count (the chart is a
+  // distribution of how transactions split across modes).
+  const paymentTotal = useMemo(
+    () => paymentSplit.reduce((s, p) => s + (p.count || 0), 0),
     [paymentSplit],
+  );
+  const paymentChartData = useMemo(
+    () => paymentSplit.map((p) => ({
+      name: p.mode,
+      value: p.count,
+      pct: paymentTotal ? +((p.count / paymentTotal) * 100).toFixed(1) : 0,
+    })),
+    [paymentSplit, paymentTotal],
   );
 
   // Theme-aware chart colours (re-resolved on theme flip), plus the derived
   // per-bar / per-slice palettes.
   const chart = useChartTheme();
+  const layerMax = useMemo(
+    () => Math.max(1, ...layerChartData.map((d) => d.amount || 0)),
+    [layerChartData],
+  );
   const layerBarColors = useMemo(() => {
     const max = Math.max(1, ...layerChartData.map((d) => d.amount || 0));
     const lo = hexToRgb(chart.brand);
@@ -651,7 +669,7 @@ export default function Dashboard() {
         <div className="card card-pad">
           <h3 style={{ fontSize: 15, marginBottom: 12 }}>Amount by Layer</h3>
           <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={layerChartData} margin={{ top: 8, right: 8, left: 8, bottom: 4 }}>
+            <BarChart data={layerChartData} margin={{ top: 24, right: 8, left: 8, bottom: 4 }}>
               <CartesianGrid vertical={false} stroke={chart.border} strokeDasharray="3 3" />
               <XAxis
                 dataKey="name"
@@ -674,6 +692,15 @@ export default function Dashboard() {
                 itemStyle={{ color: chart.text }}
               />
               <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
+                {/* Value on top of each bar; bars under 4% of the tallest skip
+                    the label (it would collide with the axis) — hover still
+                    shows the exact figure via the tooltip. */}
+                <LabelList
+                  dataKey="amount"
+                  position="top"
+                  formatter={(v) => (v >= layerMax * 0.04 ? formatCrore(v) : '')}
+                  style={{ fontSize: 11, fontWeight: 700, fill: chart.text }}
+                />
                 {layerChartData.map((_, i) => (
                   <Cell key={i} fill={layerBarColors[i]} />
                 ))}
@@ -701,16 +728,47 @@ export default function Dashboard() {
                 {paymentChartData.map((entry, i) => (
                   <Cell key={i} fill={paymentColors[entry.name] || chart.textMuted} />
                 ))}
+                {/* Use the empty donut hole for the running total. */}
+                <Label
+                  position="center"
+                  content={({ viewBox }) => {
+                    if (!viewBox || viewBox.cx == null) return null;
+                    const { cx, cy } = viewBox;
+                    return (
+                      <g>
+                        <text x={cx} y={cy - 8} textAnchor="middle" dominantBaseline="central"
+                          style={{ fontSize: 22, fontWeight: 800, fill: chart.text }}>
+                          {formatNumber(paymentTotal)}
+                        </text>
+                        <text x={cx} y={cy + 14} textAnchor="middle" dominantBaseline="central"
+                          style={{ fontSize: 10.5, fontWeight: 600, fill: chart.textMuted, letterSpacing: '0.06em' }}>
+                          TRANSACTIONS
+                        </text>
+                      </g>
+                    );
+                  }}
+                />
               </Pie>
               <Tooltip
-                formatter={(v, n) => [`${formatNumber(v)} txns`, n]}
+                formatter={(v, n) => {
+                  const pct = paymentTotal ? ((v / paymentTotal) * 100).toFixed(1) : '0';
+                  return [`${formatNumber(v)} txns (${pct}%)`, n];
+                }}
                 contentStyle={{ background: chart.cardBg, border: `1px solid ${chart.border}`, borderRadius: 8, color: chart.text }}
                 labelStyle={{ color: chart.text }}
                 itemStyle={{ color: chart.text }}
               />
               <Legend
                 wrapperStyle={{ fontSize: 12 }}
-                formatter={(value) => <span style={{ color: chart.text }}>{value}</span>}
+                formatter={(value) => {
+                  const d = paymentChartData.find((x) => x.name === value);
+                  return (
+                    <span style={{ color: chart.text }}>
+                      {value}
+                      {d ? <span style={{ color: chart.textMuted }}>{`  ${formatNumber(d.value)} (${d.pct}%)`}</span> : ''}
+                    </span>
+                  );
+                }}
               />
             </PieChart>
           </ResponsiveContainer>
