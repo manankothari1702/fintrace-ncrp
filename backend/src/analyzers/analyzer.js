@@ -1594,10 +1594,11 @@ function moneyFlowNetwork(txns, rollup) {
 
     const key = `${victim} ${benef}`;
     if (!edges.has(key)) {
-      edges.set(key, { source: victim, destination: benef, amount: 0, txn_count: 0, layers: new Set(), banks: new Set() });
+      edges.set(key, { source: victim, destination: benef, amount: 0, disputed: 0, txn_count: 0, layers: new Set(), banks: new Set() });
     }
     const e = edges.get(key);
-    e.amount += num(t.transaction_amount);
+    e.amount += num(t.transaction_amount);     // gross throughput on this edge
+    e.disputed += num(t.disputed_amount);       // fraud-traced portion (see F3)
     e.txn_count += 1;
     e.layers.add(layerOf(t.layer_no));
     if (str(t.beneficiary_bank)) e.banks.add(str(t.beneficiary_bank));
@@ -1612,6 +1613,7 @@ function moneyFlowNetwork(txns, rollup) {
       source: e.source,
       destination: e.destination,
       amount: round(e.amount),
+      disputed: round(e.disputed),
       txn_count: e.txn_count,
       layers: [...e.layers].sort((a, b) => a - b).join(','),
       banks: [...e.banks].join(', ') || null,
@@ -2144,7 +2146,11 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
   // Circular-flow detection (Feature 1): real simple cycles (length <= 6) in the
   // hop graph — distinct from money_flow_network.circular_flows, which only flags
   // single-account self-loops. detectCycles reuses the shared directed graph.
-  const circular_flows = runModule('cycleDetector', () => detectCycles(rows), []);
+  // withTotal surfaces the pre-cap count so the Money Flow page (and dossier) can
+  // caption the top-10 cycles table "top 10 of N" instead of looking complete.
+  const cycleResult = runModule('cycleDetector', () => detectCycles(rows, { withTotal: true }), { cycles: [], total: 0 });
+  const circular_flows = cycleResult.cycles;
+  const circular_cycle_count = cycleResult.total;
   // Account connectivity / aggregator analysis (Feature 2): per-account in/out
   // degree over the same hop graph, with collectors (in-degree >= 2) ranked.
   const connectivity = runModule(
@@ -2349,6 +2355,10 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     geography,
     money_flow_network,
     circular_flows,
+    // True count of multi-hop cycles before the top-10 cap (circular_flows is
+    // capped); lets the page caption "top 10 of N" honestly. Legacy snapshots
+    // lack this field — the frontend falls back to circular_flows.length.
+    circular_cycle_count,
     // Connectivity (Feature 2): full per-account in/out-degree table + the ranked
     // collector subset. `aggregators` is the collector list surfaced at the top
     // level for the summary JSON, the Excel "Account Connectivity" sheet, and the

@@ -27,7 +27,10 @@
  *                bank name is the parser's IFSC-first `beneficiary_bank`, never the
  *                raw "Action Taken By bank" text).
  *
- * Output is capped at the top {@link DEFAULT_CAP} cycles by amount.
+ * Output is capped at the top {@link DEFAULT_CAP} cycles by amount. The true
+ * number of simple cycles found (before the cap) is available via the
+ * `{ withTotal: true }` option, so a capped display can honestly caption
+ * "top N of M" instead of looking complete.
  *
  * @module backend/src/analysis/cycleDetector
  */
@@ -49,10 +52,12 @@ function round2(n) {
  * Detect simple directed cycles (length 2..maxLen) in the hop graph.
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched + deduped rows.
- * @param {{ maxLen?: number, cap?: number }} [opts]
+ * @param {{ maxLen?: number, cap?: number, withTotal?: boolean }} [opts]
  * @returns {Array<{ path: string[], length: number, amount: number,
- *   txns: number, banks: string[] }>} Sorted by amount desc, length asc, path asc;
- *   truncated to `cap` entries.
+ *   txns: number, banks: string[] }> | { cycles: Array<object>, total: number }}
+ *   By default the capped, sorted (amount desc, length asc, path asc) cycle list.
+ *   With `{ withTotal: true }`, `{ cycles, total }` where `total` is the count of
+ *   ALL simple cycles found before the cap (for an honest "top N of M" caption).
  */
 function detectCycles(txns, opts = {}) {
   const maxLen = Number.isInteger(opts.maxLen) && opts.maxLen >= 2 ? opts.maxLen : DEFAULT_MAX_LEN;
@@ -122,7 +127,11 @@ function detectCycles(txns, opts = {}) {
     (a.length - b.length) ||
     a.path.join('>').localeCompare(b.path.join('>')));
 
-  return enriched.slice(0, cap);
+  const top = enriched.slice(0, cap);
+  // The capped list is the historical return value (PDF/Excel/tests rely on it).
+  // `withTotal` additionally surfaces the pre-cap count so a top-10 table can be
+  // captioned truthfully — no second traversal, just the length already in hand.
+  return opts.withTotal ? { cycles: top, total: enriched.length } : top;
 }
 
 module.exports = { detectCycles, DEFAULT_MAX_LEN, DEFAULT_CAP };
