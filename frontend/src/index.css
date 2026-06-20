@@ -582,9 +582,15 @@ table.data-table tbody td.expanded-cell {
   border-color: color-mix(in srgb, var(--brand) 40%, transparent);
 }
 
+/* Raw brand navy is invisible on the dark card, and a 12%-brand pill fill is
+   indistinguishable from the card surface — so the pill reads as floating dim
+   text. In dark mode give it a real navy fill (clearly above the card), a
+   light blue-grey label, and a defined border, so it reads as a legible pill.
+   Lifts the LAYER and Top-banks pills from ~1:1 to ~7:1 contrast. */
 [data-theme='dark'] .badge.badge-brand {
-  color: color-mix(in srgb, var(--brand) 55%, #fff);
-  border-color: color-mix(in srgb, var(--brand) 55%, var(--text-muted));
+  background: color-mix(in srgb, var(--brand) 42%, var(--card-bg));
+  color: color-mix(in srgb, var(--brand) 28%, #fff);
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--text-muted));
 }
 
 /* ─── States: loading + error ────────────────────────────────────── */
@@ -1067,6 +1073,13 @@ table.data-table tbody td.expanded-cell {
   transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
+/* In dark mode the brand-light tint (#1e2540) sits almost on top of the dark
+   card it lives in, so the tiles barely read as tiles. Use surface-2, which is
+   a clear step above the card — the tiles now stand out as distinct cards. */
+[data-theme='dark'] .layer-flow-step {
+  background: var(--surface-2);
+}
+
 /* Quiet hover: a hair of lift + a brand-tinted border. The tiles aren't
    clickable, so this is a liveliness cue, not a click affordance. */
 .layer-flow-step:hover {
@@ -1081,15 +1094,28 @@ table.data-table tbody td.expanded-cell {
   border-top-color: var(--danger);
 }
 
-/* Flow-tile "Layer N" caption. Class-based (not inline) so brand navy can lift
-   to a legible lighter navy on the dark tile — same treatment as .badge-brand. */
+/* Flow-tile "Layer N" caption. Brand navy on the light tile; in dark a lighted
+   navy was still only ~1.4:1 against the tile, so the heading uses --text there
+   (near-white, ~13:1) — clearly the tile's heading, not a faint label. */
 .layer-flow-layer-no {
   font-weight: 800;
   color: var(--brand);
 }
 
 [data-theme='dark'] .layer-flow-layer-no {
-  color: color-mix(in srgb, var(--brand) 60%, #fff);
+  color: var(--text);
+}
+
+/* Cash-out count inside a flow tile. Danger red in light; in dark, pure
+   #c62828 is only ~2.7:1 on the tile, so it lifts toward a brighter red for
+   legibility while staying unmistakably red (red = danger grammar preserved). */
+.layer-flow-cashout {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+[data-theme='dark'] .layer-flow-cashout {
+  color: color-mix(in srgb, var(--danger) 62%, #fff);
 }
 
 .layer-flow-arrow {

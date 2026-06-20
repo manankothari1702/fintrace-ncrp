@@ -298,7 +298,7 @@ function FlowStep({ layer, isLast }) {
         <div style={{ fontSize: 13, fontWeight: 700 }} title={GROSS_TIP}>{formatCrore(layer.total_amount)}</div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {formatNumber(layer.account_count)} acct ·{' '}
-          <span style={hasCashout ? { color: 'var(--danger)', fontWeight: 700 } : undefined}>
+          <span className={hasCashout ? 'layer-flow-cashout' : undefined}>
             {formatNumber(layer.cashout_count)} cashout
           </span>
         </div>
