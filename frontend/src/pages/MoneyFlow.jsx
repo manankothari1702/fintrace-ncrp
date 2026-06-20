@@ -51,6 +51,14 @@ export default function MoneyFlow() {
   const aggregators = net?.aggregators || [];
   const circular = net?.circular_flows || [];
 
+  // TRUE totals of the full computed sets (the tables below stay capped at 10).
+  // Fall back to the displayed array length for legacy snapshots analysed before
+  // these count fields existed, so an old report degrades to its prior behaviour
+  // rather than rendering a blank card.
+  const edgeCount = net?.edge_count ?? edges.length;
+  const collectorCount = net?.collector_count ?? aggregators.length;
+  const circularCount = net?.circular_count ?? circular.length;
+
   const totals = useMemo(() => ({
     edgeAmount: edges.reduce((s, e) => s + (e.amount || 0), 0),
     topCollector: aggregators[0],
@@ -99,14 +107,15 @@ export default function MoneyFlow() {
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="Top Edges" value={formatNumber(edges.length)} subtitle="heaviest transfer routes" icon="🔗" color="var(--brand)" />
-        <StatCard title="Collector Accounts" value={formatNumber(aggregators.length)} subtitle="high fan-in accounts" icon="🕸️" color="var(--accent-orange)" />
-        <StatCard title="Circular Flows" value={formatNumber(circular.length)} subtitle="money routed back to itself" icon="🔁" color="var(--danger)" />
+        <StatCard title="Transfer Edges" value={formatNumber(edgeCount)} subtitle="distinct sender→receiver routes" icon="🔗" color="var(--brand)" />
+        <StatCard title="Collector Accounts" value={formatNumber(collectorCount)} subtitle="high fan-in (≥2 senders)" icon="🕸️" color="var(--accent-orange)" />
+        <StatCard title="Circular Flows" value={formatNumber(circularCount)} subtitle="money routed back to itself" icon="🔁" color="var(--danger)" />
       </div>
 
       {/* Top sender → receiver edges */}
       <div className="card card-pad" style={{ marginBottom: 20 }}>
-        <h3 style={{ fontSize: 15, marginBottom: 12 }}>Top Sender → Receiver Edges</h3>
+        <h3 style={{ fontSize: 15, marginBottom: 4 }}>Top Sender → Receiver Edges</h3>
+        <TopCaption shown={edges.length} total={edgeCount} noun="edges, by amount" />
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -140,9 +149,10 @@ export default function MoneyFlow() {
       {/* Aggregator / collector accounts */}
       <div className="card card-pad" style={{ marginBottom: 20 }}>
         <h3 style={{ fontSize: 15, marginBottom: 4 }}>Aggregator / Collector Accounts</h3>
-        <p className="subtitle" style={{ marginBottom: 12 }}>
-          Accounts that collect from many senders (high fan-in) — classic pooling points.
+        <p className="subtitle" style={{ marginBottom: 4 }}>
+          Accounts with ≥2 distinct senders funnelling in (high fan-in) — classic pooling points.
         </p>
+        <TopCaption shown={aggregators.length} total={collectorCount} noun="collectors, by fan-in" />
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -177,9 +187,10 @@ export default function MoneyFlow() {
       {circular.length > 0 && (
         <div className="card card-pad">
           <h3 style={{ fontSize: 15, marginBottom: 4 }}>Circular Flows</h3>
-          <p className="subtitle" style={{ marginBottom: 12 }}>
+          <p className="subtitle" style={{ marginBottom: 4 }}>
             Money routed back to the same account (wallet round-trips / self-referential legs).
           </p>
+          <TopCaption shown={circular.length} total={circularCount} noun="self-loops, by amount" />
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -203,5 +214,21 @@ export default function MoneyFlow() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Presentational helpers ──────────────────────────────────────────────────
+
+/**
+ * "Showing top N of M …" caption under a table whose display is capped at 10 while
+ * the summary card reports the true total M. Renders nothing when the table already
+ * shows everything (M ≤ N), so small reports stay uncluttered.
+ */
+function TopCaption({ shown, total, noun }) {
+  if (!(total > shown)) return null;
+  return (
+    <p className="subtitle" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
+      Showing top {formatNumber(shown)} of {formatNumber(total)} {noun}.
+    </p>
   );
 }

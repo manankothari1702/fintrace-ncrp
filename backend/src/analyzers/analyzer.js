@@ -1562,7 +1562,10 @@ function geographyAnalysis(txns) {
  *
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @param {Map<string, any>} rollup - Output of buildAccountRollup.
- * @returns {{ top_edges: Array<object>, aggregators: Array<object>, circular_flows: Array<object> }}
+ * @returns {{ top_edges: Array<object>, aggregators: Array<object>,
+ *   circular_flows: Array<object>, edge_count: number, collector_count: number,
+ *   circular_count: number }} The three arrays are capped at 10 for display; the
+ *   `*_count` fields are the true totals of the full sets (collectors = in-degree ≥ 2).
  */
 function moneyFlowNetwork(txns, rollup) {
   /** @type {Map<string, any>} */
@@ -1604,7 +1607,7 @@ function moneyFlowNetwork(txns, rollup) {
     o.dests.add(benef); o.out += num(t.transaction_amount);
   }
 
-  const top_edges = [...edges.values()]
+  const topEdgesAll = [...edges.values()]
     .map((e) => ({
       source: e.source,
       destination: e.destination,
@@ -1613,33 +1616,46 @@ function moneyFlowNetwork(txns, rollup) {
       layers: [...e.layers].sort((a, b) => a - b).join(','),
       banks: [...e.banks].join(', ') || null,
     }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 10);
+    .sort((a, b) => b.amount - a.amount);
 
-  // Aggregators: any account that received from ≥1 sender, ranked by fan-in.
-  const aggregators = [];
+  // Collectors: accounts with fan-in ≥ 2 (many senders funnelling into one — the
+  // classic mule-collector signal). The threshold matches connectivity.js's
+  // COLLECTOR_MIN_IN_DEGREE, so the on-screen collector list and the exported
+  // dossier's aggregator table agree on what a collector is. A single-sender
+  // account is NOT a collector (it used to pad this list at the in ≥ 1 threshold).
+  const COLLECTOR_MIN_IN_DEGREE = 2;
+  const collectorsAll = [];
   for (const a of rollup.values()) {
-    const out = outBy.get(a.account_no);
     const inDegree = a.senders ? a.senders.size : 0;
-    const outDegree = out ? out.dests.size : 0;
-    if (inDegree === 0 && outDegree === 0) continue;
-    aggregators.push({
+    if (inDegree < COLLECTOR_MIN_IN_DEGREE) continue;
+    const out = outBy.get(a.account_no);
+    collectorsAll.push({
       account_no: a.account_no,
       bank: a.bank_name,
       in_degree: inDegree,
-      out_degree: outDegree,
+      out_degree: out ? out.dests.size : 0,
       total_in: round(a.total_received),
       total_out: round(out ? out.out : 0),
     });
   }
-  aggregators.sort((a, b) => (b.in_degree - a.in_degree) || (b.total_in - a.total_in));
+  collectorsAll.sort((a, b) => (b.in_degree - a.in_degree) || (b.total_in - a.total_in));
 
-  const circular_flows = [...circular.values()]
+  const circularAll = [...circular.values()]
     .map((c) => ({ account_no: c.account_no, amount: round(c.amount), txn_count: c.txn_count }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 10);
+    .sort((a, b) => b.amount - a.amount);
 
-  return { top_edges, aggregators: aggregators.slice(0, 10), circular_flows };
+  // Counts reflect the FULL computed sets (NOT the top-10 display slice), so the
+  // page's summary cards report the true totals while the tables below stay
+  // capped at 10 (captioned "top 10 of N"). Without these, the cards showed the
+  // slice length (always 10), badly under-reporting the real scale.
+  return {
+    top_edges: topEdgesAll.slice(0, 10),
+    aggregators: collectorsAll.slice(0, 10),
+    circular_flows: circularAll.slice(0, 10),
+    edge_count: edges.size,
+    collector_count: collectorsAll.length,
+    circular_count: circularAll.length,
+  };
 }
 
 // ─── Module — recovery status ──────────────────────────────────────────
