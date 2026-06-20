@@ -572,6 +572,21 @@ table.data-table tbody td.expanded-cell {
   color: color-mix(in srgb, var(--accent) 55%, #fff);
 }
 
+/* Brand (navy) badge — e.g. the "Layer N" pill. Class-based (not inline) so it
+   can flip for dark mode: raw brand navy as text is near-invisible on the dark
+   card, so the label lifts to a lighter navy for AA contrast, exactly like the
+   success badge. The brand grammar (navy = structure) is preserved either way. */
+.badge.badge-brand {
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+}
+
+[data-theme='dark'] .badge.badge-brand {
+  color: color-mix(in srgb, var(--brand) 55%, #fff);
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--text-muted));
+}
+
 /* ─── States: loading + error ────────────────────────────────────── */
 
 .spinner {
@@ -1027,6 +1042,151 @@ table.data-table tbody td.expanded-cell {
   .letter-chevron,
   .letter-body {
     transition: none;
+  }
+}
+
+/* ─── Layers page ─────────────────────────────────────────────────────
+   The trail's horizontal flow strip + the expandable per-layer cards.
+   Light-touch polish: a danger top-stripe on layers that contain a cash-out
+   (the red = danger grammar), a quiet hover on the flow tiles, a rotating
+   expand chevron, and an inline info affordance for the gross-throughput and
+   forward-time clarifications. All token-based, so both themes hold. The
+   horizontal scroller inherits the thin themed scrollbar declared below. */
+
+.layer-flow-step {
+  flex: 0 0 auto;
+  text-align: center;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  /* Reserve the 3px top stripe on EVERY tile (transparent by default) so a
+     cash-out tile gaining its danger stripe never shifts the row's baseline. */
+  border-top: 3px solid transparent;
+  border-radius: var(--radius);
+  background: var(--brand-light);
+  min-width: 120px;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Quiet hover: a hair of lift + a brand-tinted border. The tiles aren't
+   clickable, so this is a liveliness cue, not a click affordance. */
+.layer-flow-step:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--brand) 45%, transparent);
+  box-shadow: var(--shadow);
+}
+
+/* A layer that contains a cash-out (money leaving the chain) earns a danger
+   top stripe — same red = danger grammar used across the app. */
+.layer-flow-step.has-cashout {
+  border-top-color: var(--danger);
+}
+
+/* Flow-tile "Layer N" caption. Class-based (not inline) so brand navy can lift
+   to a legible lighter navy on the dark tile — same treatment as .badge-brand. */
+.layer-flow-layer-no {
+  font-weight: 800;
+  color: var(--brand);
+}
+
+[data-theme='dark'] .layer-flow-layer-no {
+  color: color-mix(in srgb, var(--brand) 60%, #fff);
+}
+
+.layer-flow-arrow {
+  flex: 0 0 auto;
+  color: var(--accent-orange);
+  font-size: 22px;
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+/* In dark mode the orange flow arrow can read a touch dim against the deep
+   background; nudge it brighter so the trail's direction stays obvious. */
+[data-theme='dark'] .layer-flow-arrow {
+  color: color-mix(in srgb, var(--accent-orange) 80%, #fff);
+}
+
+/* Clickable per-layer card header. A subtle surface-3 wash on hover marks it
+   as the expand control; clipped to the card's rounded corners (see .layer-card). */
+.layer-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.layer-toggle:hover {
+  background: var(--surface-3);
+}
+
+/* overflow:hidden clips the full-bleed hover wash to the card's radius. */
+.layer-card {
+  overflow: hidden;
+}
+
+/* Expand chevron: one glyph that rotates 90° to point down when open. */
+.layer-chevron {
+  display: inline-block;
+  color: var(--brand);
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.layer-chevron[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+/* Brand navy is dark in dark mode; lift the chevron to the muted text colour
+   so it stays legible on the dark card. */
+[data-theme='dark'] .layer-chevron {
+  color: var(--text-muted);
+}
+
+/* Inline info affordance (gross-throughput / forward-time clarifications). A
+   bordered lowercase "i" — drawn from a border + a plain latin glyph, so it
+   needs no symbol-font fallback and stays crisp in both themes. */
+.info-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: help;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.info-dot:hover,
+.info-dot:focus-visible {
+  color: var(--brand);
+  outline: none;
+}
+
+[data-theme='dark'] .info-dot:hover,
+[data-theme='dark'] .info-dot:focus-visible {
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layer-flow-step,
+  .layer-chevron {
+    transition: none;
+  }
+  .layer-flow-step:hover {
+    transform: none;
   }
 }
 

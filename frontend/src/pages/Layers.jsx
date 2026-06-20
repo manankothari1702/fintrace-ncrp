@@ -20,6 +20,20 @@ import { formatCrore, formatINR, formatNumber, formatHours, getMuleRiskColor } f
 import { getLayers, getMules, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
+// Clarity copy surfaced by the correctness audit. The per-layer "total amount"
+// is GROSS THROUGHPUT — the sum of every transfer moving through the layer
+// (commingled account flow), which at deep layers balloons far past the traced
+// fraud (e.g. a single ₹18.4Cr pass-through whose disputed portion is ₹10k).
+// These tooltips keep an officer from reading that figure as "fraud here".
+const GROSS_TIP =
+  'Gross throughput — the total of every transfer amount moving through this layer '
+  + '(commingled account flow). This is NOT the fraud amount at this layer; see the '
+  + 'Disputed figure for the traced fraud portion.';
+const FWD_TIP =
+  'Average time from an account first receiving funds in this layer to the earliest '
+  + 'onward hop into the next layer that shares the case acknowledgement number. Large '
+  + 'values are real measured gaps (e.g. funds held before moving on), not errors.';
+
 export default function Layers() {
   const reportId = useActiveReportId();
 
@@ -117,8 +131,11 @@ export default function Layers() {
     <div className="page">
       <header className="page-header">
         <h1>Layer Analysis</h1>
-        <p className="subtitle">
-          {layers.length} layers · {formatCrore(totalTrailAmount)} moved through the trail
+        <p className="subtitle" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap' }}>
+          <strong style={{ color: 'var(--text)' }}>{layers.length}</strong>&nbsp;layers
+          &nbsp;·&nbsp;
+          <strong style={{ color: 'var(--text)' }}>{formatCrore(totalTrailAmount)}</strong>&nbsp;gross throughput
+          <InfoDot title={GROSS_TIP} />
         </p>
       </header>
 
@@ -140,27 +157,29 @@ export default function Layers() {
         {layers.map((l, i) => {
           const isOpen = expanded.has(l.layer_no);
           const accounts = mulesByLayer.get(l.layer_no) || [];
+          const isTerminal = i === layers.length - 1; // deepest layer = end of the trail
           return (
-            <div className="card" key={l.layer_no}>
+            <div className="card layer-card" key={l.layer_no}>
               <button
                 type="button"
+                className="layer-toggle"
                 onClick={() => toggle(l.layer_no)}
-                style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: 16,
-                  padding: '16px 20px', background: 'transparent', border: 'none', textAlign: 'left',
-                }}
                 aria-expanded={isOpen}
               >
-                <Badge color="var(--brand)">Layer {l.layer_no}</Badge>
+                <span className="badge badge-brand">Layer {l.layer_no}</span>
+                {isTerminal && (
+                  <Badge color="var(--text-muted)" dot={false}>Terminal</Badge>
+                )}
                 {l.txn_count != null && <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.txn_count)} txns</span>}
                 <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.account_count)} accounts</span>
-                <span style={{ fontWeight: 700 }}>{formatINR(l.total_amount)}</span>
-                <span style={{ color: 'var(--text-muted)' }}>disputed {formatINR(l.disputed_amount)}</span>
+                <span style={{ fontWeight: 800, fontSize: 16 }} title={GROSS_TIP}>{formatINR(l.total_amount)}</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>disputed {formatINR(l.disputed_amount)}</span>
                 <span className="spacer" style={{ flex: 1 }} />
-                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                  Avg forward: {l.avg_forward_time_hours == null ? '— (terminal)' : formatHours(l.avg_forward_time_hours)}
+                <span style={{ color: 'var(--text-muted)', fontSize: 13, display: 'inline-flex', alignItems: 'center' }}>
+                  Avg forward: {l.avg_forward_time_hours == null ? '—' : formatHours(l.avg_forward_time_hours)}
+                  <InfoDot title={FWD_TIP} />
                 </span>
-                <span style={{ fontSize: 14, color: 'var(--brand)' }}>{isOpen ? '▾' : '▸'}</span>
+                <span className="layer-chevron" data-open={isOpen} aria-hidden="true">▸</span>
               </button>
 
               {isOpen && (
@@ -169,16 +188,17 @@ export default function Layers() {
                     {l.txn_count != null && <Metric label="Transactions" value={formatNumber(l.txn_count)} />}
                     <Metric label="Accounts" value={formatNumber(l.account_count)} />
                     <Metric label="Banks" value={formatNumber(l.bank_count ?? l.unique_banks)} />
-                    <Metric label="Total Amount" value={formatINR(l.total_amount)} />
-                    <Metric label="Disputed" value={formatINR(l.disputed_amount)} />
+                    <Metric label="Gross throughput" info={GROSS_TIP} value={formatINR(l.total_amount)} />
+                    <Metric label="Disputed (fraud)" value={formatINR(l.disputed_amount)} />
                     <Metric label="Cashouts" value={formatNumber(l.cashout_count)} />
                     <Metric
                       label="Fan-out ratio"
-                      value={l.fan_out_ratio == null ? '— (terminal)' : `${l.fan_out_ratio}×`}
+                      value={l.fan_out_ratio == null ? '—' : `${l.fan_out_ratio}×`}
                     />
                     <Metric
                       label="Avg forward time"
-                      value={l.avg_forward_time_hours == null ? '— (terminal)' : formatHours(l.avg_forward_time_hours)}
+                      info={FWD_TIP}
+                      value={l.avg_forward_time_hours == null ? '—' : formatHours(l.avg_forward_time_hours)}
                     />
                   </div>
 
@@ -186,7 +206,7 @@ export default function Layers() {
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Top banks:</span>
                       {l.top_banks.map((b) => (
-                        <span key={b} className="badge" style={{ color: 'var(--brand)', borderColor: 'color-mix(in srgb, var(--brand) 40%, transparent)', background: 'color-mix(in srgb, var(--brand) 10%, transparent)' }}>{b}</span>
+                        <span key={b} className="badge badge-brand">{b}</span>
                       ))}
                     </div>
                   )}
@@ -242,31 +262,49 @@ export default function Layers() {
 
 // ─── Presentational helpers ──────────────────────────────────────────────────
 
-function Metric({ label, value }) {
+function Metric({ label, value, info }) {
   return (
     <div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'inline-flex', alignItems: 'center' }}>
+        {label}{info && <InfoDot title={info} />}
+      </div>
       <div style={{ fontSize: 18, fontWeight: 700 }}>{value}</div>
     </div>
   );
 }
 
+/**
+ * Inline info affordance — a bordered "i" with a native tooltip (same pattern
+ * the rest of the app uses for at-a-glance clarifications). Keyboard-focusable
+ * so the tooltip text is reachable, and exposed to assistive tech via aria-label.
+ */
+function InfoDot({ title }) {
+  return (
+    <span className="info-dot" title={title} tabIndex={0} role="img" aria-label={title}>i</span>
+  );
+}
+
 function FlowStep({ layer, isLast }) {
+  const hasCashout = (layer.cashout_count || 0) > 0;
   return (
     <>
       <div
-        style={{
-          flex: '0 0 auto', textAlign: 'center', padding: '12px 16px',
-          border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-          background: 'var(--brand-light)', minWidth: 120,
-        }}
+        className={`layer-flow-step${hasCashout ? ' has-cashout' : ''}`}
+        title={hasCashout
+          ? `Layer ${layer.layer_no} · ${formatNumber(layer.cashout_count)} cash-out${layer.cashout_count === 1 ? '' : 's'} (money leaving the chain)`
+          : undefined}
       >
-        <div style={{ fontWeight: 800, color: 'var(--brand)' }}>Layer {layer.layer_no}</div>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>{formatCrore(layer.total_amount)}</div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{formatNumber(layer.account_count)} acct · {formatNumber(layer.cashout_count)} cashout</div>
+        <div className="layer-flow-layer-no">Layer {layer.layer_no}</div>
+        <div style={{ fontSize: 13, fontWeight: 700 }} title={GROSS_TIP}>{formatCrore(layer.total_amount)}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {formatNumber(layer.account_count)} acct ·{' '}
+          <span style={hasCashout ? { color: 'var(--danger)', fontWeight: 700 } : undefined}>
+            {formatNumber(layer.cashout_count)} cashout
+          </span>
+        </div>
       </div>
       {!isLast && (
-        <span style={{ flex: '0 0 auto', color: 'var(--accent-orange)', fontSize: 22, fontWeight: 700, padding: '0 2px' }} aria-hidden="true">→</span>
+        <span className="layer-flow-arrow" aria-hidden="true">→</span>
       )}
     </>
   );
