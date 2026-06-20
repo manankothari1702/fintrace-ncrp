@@ -179,9 +179,16 @@ function IconShieldCheck({ color }) {
  * bar. recharts <LabelList> clones this with the bar geometry (x/y/width/value);
  * rotating the text -90° keeps a row of adjacent short-bar labels from colliding
  * (the failure mode of horizontal labels) while every layer's amount stays
- * visible. `fill` is passed in so it tracks the theme.
+ * visible.
+ *
+ * The theme colour is passed as `themeFill`, NOT `fill`, on purpose: recharts'
+ * <LabelList> clones this element and injects its OWN `fill` (the bar/Cell
+ * colour) on top, which would override a `fill` prop of ours — so in dark mode
+ * the labels rendered in the bar's navy/red instead of the theme text and
+ * vanished against the dark card. `themeFill` is not a prop recharts injects,
+ * so it survives the clone and the label tracks the theme in both modes.
  */
-function VerticalBarLabel({ x, y, width, value, fill }) {
+function VerticalBarLabel({ x, y, width, value, themeFill }) {
   if (value == null || x == null) return null;
   const cx = x + width / 2;
   const ly = y - 5;
@@ -192,7 +199,7 @@ function VerticalBarLabel({ x, y, width, value, fill }) {
       transform={`rotate(-90 ${cx} ${ly})`}
       textAnchor="start"
       dominantBaseline="central"
-      style={{ fontSize: 10.5, fontWeight: 700, fill }}
+      style={{ fontSize: 10.5, fontWeight: 700, fill: themeFill }}
     >
       {formatCrore(value)}
     </text>
@@ -777,7 +784,7 @@ export default function Dashboard() {
                     removes the horizontal collisions that plagued the cluster of
                     short layers — a row of compact ₹ figures would overlap, thin
                     vertical strips never do. */}
-                <LabelList dataKey="amount" content={<VerticalBarLabel fill={chart.text} />} />
+                <LabelList dataKey="amount" content={<VerticalBarLabel themeFill={chart.text} />} />
                 {layerChartData.map((_, i) => (
                   <Cell key={i} fill={layerBarColors[i]} />
                 ))}
