@@ -585,12 +585,13 @@ table.data-table tbody td.expanded-cell {
 /* Raw brand navy is invisible on the dark card, and a 12%-brand pill fill is
    indistinguishable from the card surface — so the pill reads as floating dim
    text. In dark mode give it a real navy fill (clearly above the card), a
-   light blue-grey label, and a defined border, so it reads as a legible pill.
-   Lifts the LAYER and Top-banks pills from ~1:1 to ~7:1 contrast. */
+   near-white label, and a defined border, so it reads as a legible pill.
+   Lifts the LAYER and Top-banks pill text from ~1:1 (muddy) to ~10:1, verified
+   on the rendered element (getComputedStyle), not just token math. */
 [data-theme='dark'] .badge.badge-brand {
-  background: color-mix(in srgb, var(--brand) 42%, var(--card-bg));
-  color: color-mix(in srgb, var(--brand) 28%, #fff);
-  border-color: color-mix(in srgb, var(--brand) 70%, var(--text-muted));
+  background: color-mix(in srgb, var(--brand) 55%, var(--card-bg));
+  color: color-mix(in srgb, var(--brand) 14%, #fff);
+  border-color: color-mix(in srgb, var(--brand) 85%, var(--text-muted));
 }
 
 /* ─── States: loading + error ────────────────────────────────────── */
@@ -1143,6 +1144,12 @@ table.data-table tbody td.expanded-cell {
   background: transparent;
   border: none;
   text-align: left;
+  /* The UA gives <button> color:buttontext (black). The global reset only sets
+     font-family/cursor on buttons, not color, so any child WITHOUT its own
+     color (the per-row amount) rendered black — fine on the light card, nearly
+     invisible on the dark one. Inherit the theme text colour so the amount is
+     the bright primary number it's meant to be. */
+  color: var(--text);
   transition: background 0.12s ease;
 }
 
