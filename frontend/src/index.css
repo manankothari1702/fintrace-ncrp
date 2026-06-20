@@ -117,7 +117,12 @@
     --sidebar-active: #1e2a4a;
     --border: #2a2f45;
     --text: #e8eaf0;
-    --text-muted: #8b92a9;
+    /* Muted/secondary text. Bumped from #8b92a9 (~5.4:1 on the dark card) to
+       ~7:1: the old value was AA-but-faint for the many small uppercase labels
+       and subtitles in dark mode (stat-card titles, captions, table subtext).
+       Still clearly subordinate to --text (~14:1), so hierarchy holds. Light
+       --text-muted (#5a6a7a in :root) is unchanged — it reads fine on white. */
+    --text-muted: #9da5bd;
     --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
 
