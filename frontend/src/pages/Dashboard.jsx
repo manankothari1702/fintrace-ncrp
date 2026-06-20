@@ -396,14 +396,24 @@ function DataQualityCard({ analysis, reportId }) {
 
 // ─── Milestone date card ───────────────────────────────────────────────────────
 
-function DateCard({ label, date, icon, color }) {
+// `untracked` is for milestones the engine never computes (e.g. refunds, which
+// are not captured from the source file). It renders a muted "Not tracked"
+// instead of a date, so a blank card never reads as a verified "zero / none"
+// data point. A normal missing date (genuinely not detected) still shows "—".
+function DateCard({ label, date, icon, color, untracked = false }) {
   return (
-    <div className="stat-card" style={{ borderLeftColor: color }}>
+    <div className="stat-card" style={{ borderLeftColor: untracked ? 'var(--text-muted)' : color }}>
       <div className="stat-head">
         <span className="stat-title">{label}</span>
         <span className="stat-icon" aria-hidden="true">{icon}</span>
       </div>
-      <div className="stat-value" style={{ color, fontSize: 20 }}>{date ? formatDate(date) : '—'}</div>
+      {untracked ? (
+        <div className="stat-value" style={{ color: 'var(--text-muted)', fontSize: 15, fontWeight: 600 }}>
+          Not tracked
+        </div>
+      ) : (
+        <div className="stat-value" style={{ color, fontSize: 20 }}>{date ? formatDate(date) : '—'}</div>
+      )}
     </div>
   );
 }
@@ -614,7 +624,15 @@ export default function Dashboard() {
   }
 
   const totalLayers = summary?.total_layers ?? report.total_layers;
-  const victimLoss = summary?.victim_loss_amount ?? report.total_disputed_amount;
+  // Headline victim loss = first-hop disputed money. On LEGACY snapshots that
+  // predate this field we must NOT fall back to total_disputed_amount: that is
+  // the all-layers trail sum (the same rupees re-counted as they traverse hops),
+  // so showing it as "Total Fraud" silently inflates the headline. Suppress the
+  // figure instead (value renders "—" via formatCrore(null)) and flag that the
+  // report needs re-analysis; the trail total is still shown in the subtitle,
+  // correctly labelled as trail disputed.
+  const hasVictimLoss = summary?.victim_loss_amount != null;
+  const victimLoss = hasVictimLoss ? summary.victim_loss_amount : null;
   const trailDisputed = summary?.total_trail_disputed ?? summary?.total_disputed_amount ?? report.total_disputed_amount;
   const uniqueTxns = summary?.unique_transactions ?? report.total_transactions;
   // Exact-duplicate transparency: the count the dedup system already computed
@@ -681,7 +699,9 @@ export default function Dashboard() {
         <StatCard
           title="Victim Loss (Total Fraud)"
           value={formatCrore(victimLoss)}
-          subtitle={`Trail disputed ${formatCrore(trailDisputed)} · ${formatNumber(uniqueTxns)} transactions`}
+          subtitle={hasVictimLoss
+            ? `Trail disputed ${formatCrore(trailDisputed)} · ${formatNumber(uniqueTxns)} transactions`
+            : `Requires re-analysis to compute · Trail disputed ${formatCrore(trailDisputed)} · ${formatNumber(uniqueTxns)} transactions`}
           icon={<IconBanknote color="var(--danger)" />}
           color="var(--danger)"
         />
@@ -693,7 +713,17 @@ export default function Dashboard() {
           icon={<IconUsers color="var(--accent-orange)" />}
           color="var(--accent-orange)"
         />
-        <StatCard title="Lien Eligible" value={formatCrore(lienEligibleTotal)} subtitle="recoverable balance" icon={<IconShieldCheck color="var(--accent)" />} color="var(--accent)" />
+        {/* Subtitle deliberately avoids the word "recoverable": this is the Σ
+            per-account lien-eligible (freezable) balance, which re-counts money
+            across layers and can exceed the loss — distinct from the Fund Trail
+            "Recoverable" residual below. Only that residual is labelled recoverable. */}
+        <StatCard
+          title="Lien Eligible"
+          value={formatCrore(lienEligibleTotal)}
+          subtitle={`freezable balance · ${formatNumber(analysis?.lien_calculation?.length || 0)} accounts`}
+          icon={<IconShieldCheck color="var(--accent)" />}
+          color="var(--accent)"
+        />
       </div>
 
       {/* Recovery / fund-trail bar */}
@@ -705,7 +735,9 @@ export default function Dashboard() {
           <DateCard label="First Fraud" date={timelineSummary.first_fraud_date} icon="🚨" color="var(--danger)" />
           <DateCard label="First Cashout" date={timelineSummary.first_cashout_date} icon="🏧" color="var(--accent-orange)" />
           <DateCard label="First Bank Action" date={timelineSummary.first_bank_action_date} icon="🏦" color="var(--brand)" />
-          <DateCard label="First Refund" date={timelineSummary.first_refund_date} icon="↩️" color="var(--accent)" />
+          {/* Refunds aren't computed from the NCRP source, so this is never a
+              verified "no refund" — show "Not tracked" rather than a bare dash. */}
+          <DateCard label="First Refund" untracked icon="↩️" color="var(--accent)" />
         </div>
       )}
 
@@ -881,7 +913,17 @@ export default function Dashboard() {
 
       {/* Top cashout locations */}
       <div className="card card-pad">
-        <h3 style={{ fontSize: 15, marginBottom: 12 }}>Top Cashout Locations</h3>
+        <h3 style={{ fontSize: 15, marginBottom: 4 }}>Top Cashout Locations</h3>
+        {/* Reconciliation note (Finding #5): this table lists GROSS withdrawal
+            legs (full ATM/POS amounts at each terminal), whereas the Fund Trail
+            "Cashed Out" figure above is the disputed-attributable (capped) share.
+            Both are correct; the table total reads higher. Explained here so the
+            difference is never a silent contradiction. */}
+        <p className="subtitle" style={{ marginTop: 0, marginBottom: 12 }}>
+          Gross withdrawal legs (full ATM/POS amounts per terminal). The Fund Trail
+          {' '}&ldquo;Cashed Out&rdquo; total above is the disputed-attributable (capped)
+          {' '}figure, so it reads lower than the sum of this table.
+        </p>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
