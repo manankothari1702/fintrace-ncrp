@@ -754,7 +754,10 @@ function buildAccountRollup(txns) {
       if (str(t.beneficiary_bank)) a.banks.add(str(t.beneficiary_bank));
       if (str(t.ifsc_code)) a.ifscs.add(str(t.ifsc_code));
       if (str(t.ack_no)) a.acks.add(str(t.ack_no));
-      if (str(t.victim_account)) a.senders.add(str(t.victim_account));
+      // Count distinct senders by CANONICAL identity, so zero-pad variants of one
+      // sender ("X" and "0000X") are one fan-in edge, not two (F9 in-degree). This
+      // feeds both the collector in_degree and the mule high-fan-in signal.
+      if (str(t.victim_account)) a.senders.add(canonicalAccountKey(t.victim_account));
       if (layer < a.minLayer) a.minLayer = layer;
       if (ms !== null && (a.firstReceiptMs === null || ms < a.firstReceiptMs)) a.firstReceiptMs = ms;
       const hState = str(t.state);
@@ -1579,20 +1582,32 @@ function moneyFlowNetwork(txns, rollup) {
   for (const t of txns) {
     const benef = str(t.beneficiary_account);
     const victim = str(t.victim_account);
+    // Canonical account identity (zero-pad collapse): "00000044021519366" and
+    // "44021519366" are ONE account. Keying edges, self-loops, and out-degree on
+    // these (not the raw forms) stops one account splitting into phantom suspects
+    // (F4/F8/F9), and matches buildAccountRollup's account identity.
+    const benefKey = canonicalAccountKey(benef);
+    const victimKey = canonicalAccountKey(victim);
 
     // Self-referential transfer rows (money routed back to the same account,
-    // e.g. wallet round-trips). EXIT / HOLD rows also carry benef === victim via
-    // the parser's cross-sheet join, but those are cash-out / freeze dispositions
-    // — not circular flow — so only OTHER-kind self-loops count here.
-    if (t.row_kind === ROW_KIND.OTHER && benef && victim && benef === victim) {
-      if (!circular.has(benef)) circular.set(benef, { account_no: benef, amount: 0, txn_count: 0 });
-      const c = circular.get(benef);
+    // e.g. wallet round-trips). Compared on CANONICAL keys, so a row whose victim
+    // and beneficiary are zero-pad variants of ONE account is a self-loop, not a
+    // phantom A->B edge (F4). HOP rows qualify too (a hop onto a padding variant of
+    // its own sender is still self-referential). EXIT / HOLD rows also carry
+    // benef === victim via the parser cross-sheet join, but they are cash-out /
+    // freeze dispositions, not circular flow, so the row_kind gate excludes them.
+    if ((t.row_kind === ROW_KIND.OTHER || t.row_kind === ROW_KIND.HOP)
+        && benef && victim && benefKey === victimKey) {
+      let c = circular.get(victimKey);
+      if (!c) { c = { account_no: benef, amount: 0, txn_count: 0 }; circular.set(victimKey, c); }
+      const disp = benef.length >= victim.length ? benef : victim; // most complete form
+      if (disp.length > c.account_no.length) c.account_no = disp;
       c.amount += num(t.transaction_amount); c.txn_count += 1;
       continue;
     }
     if (t.row_kind !== ROW_KIND.HOP || !benef || !victim) continue;
 
-    const key = `${victim} ${benef}`;
+    const key = `${victimKey} ${benefKey}`;
     if (!edges.has(key)) {
       edges.set(key, { source: victim, destination: benef, amount: 0, disputed: 0, txn_count: 0, layers: new Set(), banks: new Set() });
     }
@@ -1603,9 +1618,9 @@ function moneyFlowNetwork(txns, rollup) {
     e.layers.add(layerOf(t.layer_no));
     if (str(t.beneficiary_bank)) e.banks.add(str(t.beneficiary_bank));
 
-    if (!outBy.has(victim)) outBy.set(victim, { dests: new Set(), out: 0 });
-    const o = outBy.get(victim);
-    o.dests.add(benef); o.out += num(t.transaction_amount);
+    if (!outBy.has(victimKey)) outBy.set(victimKey, { dests: new Set(), out: 0 });
+    const o = outBy.get(victimKey);
+    o.dests.add(benefKey); o.out += num(t.transaction_amount);
   }
 
   const topEdgesAll = [...edges.values()]
@@ -1630,7 +1645,9 @@ function moneyFlowNetwork(txns, rollup) {
   for (const a of rollup.values()) {
     const inDegree = a.senders ? a.senders.size : 0;
     if (inDegree < COLLECTOR_MIN_IN_DEGREE) continue;
-    const out = outBy.get(a.account_no);
+    // outBy is keyed by canonical victim identity, so look it up the same way:
+    // an account that receives as "0000X" but sends as "X" still matches (F8).
+    const out = outBy.get(canonicalAccountKey(a.account_no));
     collectorsAll.push({
       account_no: a.account_no,
       bank: a.bank_name,
