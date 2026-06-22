@@ -923,7 +923,14 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
     // 1. Pass-through — full weight at/above the threshold, linear below.
     const passPts = num(w.passThrough) * Math.min(1, a.pass_through_ratio / PASS_THROUGH_FULL);
     if (a.pass_through_ratio >= PASS_THROUGH_FULL) {
-      reasons.push(`High pass-through (${Math.round(a.pass_through_ratio * 100)}% of inflow moved on)`);
+      // Honest gross-vs-traced wording. The ratio's numerator is gross onward /
+      // cash-out, its denominator is traced hop-inflow, so it can far exceed 100%
+      // for commingling conduits. Never surface an absurd ">100%" on a court-facing
+      // rationale — describe the behaviour instead. (The signal itself is unchanged;
+      // passPts already caps the ratio at 1.0 above.)
+      reasons.push(a.pass_through_ratio > 1
+        ? 'Pass-through conduit (onward / cash-out gross exceeds traced inflow)'
+        : `High pass-through (${Math.round(a.pass_through_ratio * 100)}% of inflow moved on)`);
     }
 
     // 2. Cashout speed — full if forwarded fast, decaying to zero by 24h.
@@ -1009,6 +1016,11 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
       pass_through_ratio: a.pass_through_ratio,
       total_received: a.total_received,
       total_forwarded: a.total_forwarded,
+      // Surfaced for the Mule page's gross-vs-traced transparency (F1/F2): the
+      // onward-only leg and the traced (disputed) inflow. Read straight from the
+      // rollup — neither feeds the score.
+      onward_forwarded: a.onward_forwarded,
+      disputed_received: a.disputed_received,
       total_cashout: a.total_cashed_out,
       forward_speed_hours: a.forward_speed_hours,
       appears_in_cases: appearsInCases,

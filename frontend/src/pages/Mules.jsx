@@ -18,7 +18,7 @@ import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
-import { formatINR, formatPercent, formatHours, getMuleRiskColor } from '../utils/format.js';
+import { formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getMules, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
@@ -35,6 +35,51 @@ function MuleScoreBar({ score }) {
         <div style={{ width: `${fill}%`, height: '100%', background: getMuleRiskColor(score), borderRadius: 4 }} />
       </div>
       <span style={{ fontWeight: 700, color: getMuleRiskColor(score), minWidth: 26, textAlign: 'right' }}>{score}</span>
+    </div>
+  );
+}
+
+// ─── Gross-conduit transparency (audit F2) ───────────────────────────────────
+
+// A freeze-relevant account (HIGH/MEDIUM) that MOVES a large GROSS sum but whose
+// TRACED (disputed) inflow is tiny is most likely a settlement / aggregator
+// account, not a dedicated mule — the score is driven by laundering-pattern
+// signals on gross flow. Surface a warning so it is not blind-frozen. Thresholds
+// are display-only; they never touch the score or risk label.
+const LOW_TRACED_MAX = 10000;      // traced (disputed) inflow below ₹10k = "low traced"
+const GROSS_CONDUIT_MIN = 100000;  // gross flow at/above ₹1L = a material conduit
+
+function isGrossConduit(m) {
+  const traced = m.disputed_received;
+  // Legacy snapshots predate disputed_received — don't guess, show no badge.
+  if (traced == null) return false;
+  if (m.risk_label !== 'HIGH' && m.risk_label !== 'MEDIUM') return false;
+  const grossFlow = Math.max(
+    m.total_received || 0, m.onward_forwarded || 0,
+    m.total_cashout || 0, m.total_forwarded || 0,
+  );
+  return traced < LOW_TRACED_MAX && grossFlow >= GROSS_CONDUIT_MIN;
+}
+
+// Risk badge + (when applicable) the gross-conduit warning chip, stacked.
+function RiskCell({ m }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+      <Badge variant="risk" value={m.mule_score} />
+      {isGrossConduit(m) && (
+        <span
+          title="Large gross flow but small traced (disputed) inflow — likely a settlement/aggregator account. Verify traced exposure before freezing."
+          style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: '0.02em', whiteSpace: 'nowrap',
+            padding: '2px 6px', borderRadius: 4,
+            color: 'var(--accent-orange)',
+            border: '1px solid color-mix(in srgb, var(--accent-orange) 45%, transparent)',
+            background: 'color-mix(in srgb, var(--accent-orange) 14%, transparent)',
+          }}
+        >
+          ⚠ GROSS CONDUIT · LOW TRACED
+        </span>
+      )}
     </div>
   );
 }
@@ -89,13 +134,30 @@ export default function Mules() {
     { accessorKey: 'bank_name', header: 'Bank', cell: ({ getValue }) => getValue() || '—' },
     { accessorKey: 'layer_no', header: 'Layer', cell: ({ getValue }) => `L${getValue()}` },
     { accessorKey: 'mule_score', header: 'Mule Score', cell: ({ getValue }) => <MuleScoreBar score={getValue()} /> },
-    { accessorKey: 'pass_through_ratio', header: 'Pass-Through', cell: ({ getValue }) => formatPercent(getValue()) },
-    { accessorKey: 'total_received', header: 'Received', cell: ({ getValue }) => formatINR(getValue()) },
+    // F2 — gross inflow and TRACED (disputed) inflow side by side, so an officer
+    // sees real fraud exposure, not just gross throughput, before freezing.
+    { accessorKey: 'total_received', header: 'Received (gross)', cell: ({ getValue }) => formatINR(getValue()) },
+    {
+      accessorKey: 'disputed_received',
+      header: 'Traced Fraud In',
+      cell: ({ getValue }) => formatINR(getValue()),
+    },
+    // F1 — the explicit onward leg replaces the old "Pass-Through %", whose
+    // gross-over-traced ratio produced impossible values (e.g. 3908%). Falls back
+    // to (total_forwarded − cashed-out) on legacy snapshots lacking the field.
+    {
+      id: 'onward_forwarded',
+      header: 'Forwarded',
+      accessorFn: (m) => (m.onward_forwarded != null
+        ? m.onward_forwarded
+        : (m.total_forwarded != null && m.total_cashout != null ? m.total_forwarded - m.total_cashout : null)),
+      cell: ({ getValue }) => formatINR(getValue()),
+    },
     { accessorKey: 'total_cashout', header: 'Cashed Out', cell: ({ getValue }) => formatINR(getValue()) },
     { accessorKey: 'channels', header: 'Channels', cell: ({ getValue }) => (getValue() || []).join(', ') || '—' },
     { accessorKey: 'forward_speed_hours', header: 'Fwd Speed', cell: ({ getValue }) => formatHours(getValue()) },
-    { accessorKey: 'risk_label', header: 'Risk', cell: ({ row }) => <Badge variant="risk" value={row.original.mule_score} /> },
-    { accessorKey: 'appears_in_cases', header: 'Cases' },
+    { accessorKey: 'risk_label', header: 'Risk', cell: ({ row }) => <RiskCell m={row.original} /> },
+    { accessorKey: 'appears_in_cases', header: 'Cases (incl. prior complaints)' },
   ];
 
   // Lazily load this account's transactions when the row is expanded; show the
@@ -153,13 +215,29 @@ export default function Mules() {
     <div className="page">
       <header className="page-header">
         <h1>Mule Account Detection</h1>
-        <p className="subtitle">{mules.length} flagged accounts scored across 11 laundering signals (expand a row for the reasons).</p>
+        <p className="subtitle">
+          {formatNumber(mules.length)} accounts scored across 11 laundering signals · {formatNumber(riskCounts.HIGH)} high-risk (expand a row for the reasons).
+        </p>
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score ≥ 70" icon="🔴" color="var(--danger)" />
         <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 40–69" icon="🟠" color="var(--accent-orange)" />
         <StatCard title="Low Risk" value={riskCounts.LOW} subtitle="score < 40" icon="🟢" color="var(--accent)" />
+      </div>
+
+      {/* Gross-vs-traced transparency (audit F2/F5). Risk is a laundering-PATTERN
+          signal computed on gross flow; it is NOT a measure of traced fraud. The
+          two are surfaced separately so a freeze decision is informed. */}
+      <div
+        className="card card-pad"
+        style={{ marginBottom: 16, borderLeft: '4px solid var(--accent-orange)', fontSize: 13, lineHeight: 1.55 }}
+      >
+        <strong style={{ color: 'var(--text)' }}>Risk reflects laundering-pattern signals on gross flow — verify traced exposure before freezing.</strong>{' '}
+        <span style={{ color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text)' }}>Received (gross)</strong>, <strong style={{ color: 'var(--text)' }}>Forwarded</strong> and <strong style={{ color: 'var(--text)' }}>Cashed Out</strong> are full transaction legs (cashed-out is the gross ATM/POS withdrawal). <strong style={{ color: 'var(--text)' }}>Traced Fraud In</strong> is the disputed amount actually traced to the account, which follows only the fraud money — so an account can legitimately show large gross flow with a small traced figure, and cashed-out can exceed traced received.{' '}
+          <span style={{ color: 'var(--accent-orange)', fontWeight: 700 }}>⚠ GROSS CONDUIT · LOW TRACED</span> flags likely settlement/aggregator accounts (large gross, &lt; {formatINR(LOW_TRACED_MAX)} traced) — confirm real exposure first.
+        </span>
       </div>
 
       <DataTable
