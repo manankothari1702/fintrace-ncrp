@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ResponsiveContainer, Sankey, Tooltip } from 'recharts';
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
@@ -19,6 +20,213 @@ import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber } from '../utils/format.js';
 import { getReport, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useChartTheme } from '../utils/useChartTheme.js';
+
+// ─── Layer-flow Sankey (Phase 1) ─────────────────────────────────────────────
+
+/**
+ * Map the backend's id-based layer_flows ({ nodes, links }) to the index-based
+ * shape recharts <Sankey> wants, picking the active measure (disputed | gross)
+ * as each link's width. Links with a zero value in the active measure are
+ * dropped (e.g. on-hold has no disputed-traced portion in the source data), and
+ * any node left unreferenced after that is removed so recharts never lays out a
+ * dangling node. Both gross and disputed are kept on every link for the tooltip.
+ */
+function buildSankeyData(lf, mode) {
+  if (!lf || !Array.isArray(lf.nodes) || !Array.isArray(lf.links)) return null;
+  const links = lf.links
+    .map((l) => ({ ...l, value: mode === 'disputed' ? l.disputed : l.gross }))
+    .filter((l) => l.value > 0);
+  if (!links.length) return null;
+  const used = new Set();
+  links.forEach((l) => { used.add(l.source); used.add(l.target); });
+  const nodes = lf.nodes.filter((n) => used.has(n.id));
+  if (nodes.length < 2) return null;
+  const idx = new Map(nodes.map((n, i) => [n.id, i]));
+  return {
+    nodes: nodes.map((n) => ({ name: n.label, kind: n.kind, layer: n.layer, id: n.id })),
+    links: links.map((l) => ({
+      source: idx.get(l.source), target: idx.get(l.target),
+      value: l.value, gross: l.gross, disputed: l.disputed,
+    })),
+  };
+}
+
+// Node colour grammar: cash-out = danger, on-hold = orange, victim inflow =
+// accent (recovery green), laundering layers = brand navy.
+function nodeColor(node, theme) {
+  if (node.id === 'sink:cashout') return theme.danger;
+  if (node.id === 'sink:hold') return theme.accentOrange;
+  if (node.kind === 'origin') return theme.accent;
+  return theme.brand;
+}
+
+/**
+ * Custom Sankey node: a theme-filled bar plus a two-line label (name + throughput
+ * ₹). Colours are passed as EXPLICIT theme props and the label carries a card-bg
+ * halo (paint-order stroke) — the same fix the donut/bar labels use — so it stays
+ * legible over any band in BOTH light and dark mode. Sink labels sit to the left
+ * of their bar (they're right-most); every other label sits to the right.
+ */
+function LayerNode({ x, y, width, height, payload, theme }) {
+  if (x == null || payload == null) return null;
+  const isSink = payload.kind === 'sink';
+  const color = nodeColor(payload, theme);
+  const labelX = isSink ? x - 9 : x + width + 9;
+  const anchor = isSink ? 'end' : 'start';
+  // Deep layers carry near-zero flow, so their nodes bunch up at the right and
+  // adjacent labels collide on one baseline. Stagger the label block up/down by
+  // layer parity so consecutive layers never share a line; origin/sinks (always
+  // well separated at the ends) stay centred on the node.
+  const stagger = payload.kind === 'layer' ? (payload.layer % 2 === 0 ? 17 : -17) : 0;
+  const cy = y + height / 2 + stagger;
+  const halo = {
+    paintOrder: 'stroke', stroke: theme.cardBg, strokeWidth: 3.5, strokeLinejoin: 'round',
+  };
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={Math.max(height, 1)} fill={color} rx={2} />
+      <text x={labelX} y={cy - 8} textAnchor={anchor} dominantBaseline="central"
+        style={{ fontSize: 12, fontWeight: 700, fill: theme.text, ...halo }}>
+        {payload.name}
+      </text>
+      <text x={labelX} y={cy + 9} textAnchor={anchor} dominantBaseline="central"
+        style={{ fontSize: 11, fontWeight: 600, fill: theme.textMuted, ...halo }}>
+        {formatINR(payload.value)}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * Custom Sankey link: a curved band whose strokeWidth IS recharts' value-scaled
+ * linkWidth. Coloured by destination — cash-out red, on-hold orange, forward navy.
+ * Per-link amounts live in the hover tooltip (not always-on labels) to keep the
+ * diagram uncluttered.
+ */
+function LayerLink({
+  sourceX, sourceY, targetX, targetY, sourceControlX, targetControlX, linkWidth, payload, theme,
+}) {
+  if (sourceX == null) return null;
+  const tgt = (payload && payload.target) || {};
+  const color = tgt.id === 'sink:cashout' ? theme.danger
+    : tgt.id === 'sink:hold' ? theme.accentOrange
+      : theme.brand;
+  return (
+    <path
+      d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`}
+      fill="none"
+      stroke={color}
+      strokeWidth={Math.max(1, linkWidth)}
+      strokeOpacity={theme.theme === 'dark' ? 0.42 : 0.3}
+    />
+  );
+}
+
+/** Tooltip: a link shows source→target with BOTH gross and disputed; a node shows
+ *  its throughput in the active measure. */
+function FlowTooltip({ active, payload, theme, mode }) {
+  if (!active || !payload || !payload.length) return null;
+  // recharts Sankey wraps the datum twice: payload[0].payload is its own geometry
+  // props, and OUR node/link object sits at .payload.payload. For a link, source
+  // and target there are resolved node OBJECTS (not the original indices).
+  const data = payload[0] && payload[0].payload && payload[0].payload.payload;
+  if (!data) return null;
+  const box = {
+    background: theme.cardBg, border: `1px solid ${theme.border}`, borderRadius: 8,
+    padding: '8px 10px', fontSize: 12, color: theme.text, boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+  };
+  const isLink = data.source && typeof data.source === 'object'
+    && data.target && typeof data.target === 'object';
+  if (isLink) {
+    return (
+      <div style={box}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{data.source.name} → {data.target.name}</div>
+        <div>Gross: <strong>{formatINR(data.gross)}</strong></div>
+        <div style={{ color: theme.textMuted }}>Disputed: {formatINR(data.disputed)}</div>
+      </div>
+    );
+  }
+  return (
+    <div style={box}>
+      <div style={{ fontWeight: 700, marginBottom: 2 }}>{data.name}</div>
+      <div style={{ color: theme.textMuted }}>
+        {mode === 'disputed' ? 'Disputed' : 'Gross'} throughput: {formatINR(data.value)}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The layer-aggregated money-flow Sankey: victim inflow → L1 → L2 → … with
+ * per-layer cash-out / on-hold terminal sinks, link width = amount. Defaults to
+ * the DISPUTED (fraud-traced) measure with a toggle to GROSS (commingled), which
+ * can dwarf disputed at deep layers once clean money is pooled in. It is a
+ * directed-acyclic view: circular trails / self-loops can't appear and live in
+ * the tables below.
+ */
+function LayerFlowSankey({ layerFlows, theme }) {
+  const [mode, setMode] = useState('disputed');
+  const data = useMemo(() => buildSankeyData(layerFlows, mode), [layerFlows, mode]);
+  if (!data) return null;
+
+  const layerCount = data.nodes.filter((n) => n.kind === 'layer').length;
+  // Taller for longer trails so thin deep-layer bands stay separable.
+  const height = Math.min(720, Math.max(380, layerCount * 52 + 120));
+
+  return (
+    <div className="card card-pad" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 4 }}>Layer-by-Layer Money Flow</h3>
+          <p className="subtitle" style={{ marginBottom: 0 }}>
+            Width = amount moving from each layer to the next, with cash-out / on-hold sinks. Hover a band for its gross &amp; disputed totals.
+          </p>
+        </div>
+        <div className="seg" role="group" aria-label="Flow measure" style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+          {[['disputed', 'Disputed'], ['gross', 'Gross']].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setMode(key)}
+              aria-pressed={mode === key}
+              style={{
+                border: 'none', cursor: 'pointer', padding: '6px 14px', fontSize: 13, fontWeight: 600,
+                background: mode === key ? 'var(--brand)' : 'transparent',
+                color: mode === key ? 'var(--text-on-solid)' : 'var(--text-muted)',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <ResponsiveContainer width="100%" height={height}>
+          <Sankey
+            data={data}
+            nodeWidth={13}
+            nodePadding={Math.max(14, Math.min(28, Math.round(height / (layerCount + 2))))}
+            linkCurvature={0.5}
+            iterations={64}
+            margin={{ top: 16, right: 132, bottom: 16, left: 16 }}
+            node={<LayerNode theme={theme} />}
+            link={<LayerLink theme={theme} />}
+          >
+            <Tooltip content={<FlowTooltip theme={theme} mode={mode} />} />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
+
+      <p className="subtitle" style={{ marginTop: 10, marginBottom: 0, fontSize: 12, lineHeight: 1.5 }}>
+        Layer-aggregated, directed-acyclic view.{' '}
+        <strong style={{ color: 'var(--text)' }}>Disputed</strong> traces the fraud money; <strong style={{ color: 'var(--text)' }}>Gross</strong> is everything that moved on each leg (commingled), so it can balloon at deep layers.
+        Circular trails and self-loops route money backwards and cannot be drawn in this flow — see the tables below.
+      </p>
+    </div>
+  );
+}
 
 export default function MoneyFlow() {
   const reportId = useActiveReportId();
@@ -46,9 +254,14 @@ export default function MoneyFlow() {
     return () => { cancelled = true; };
   }, [reportId]);
 
+  const theme = useChartTheme();
+
   const net = report?.analysis_json?.money_flow_network;
   const edges = net?.top_edges || [];
   const aggregators = net?.aggregators || [];
+  // Bounded layer→layer + disposition graph for the Sankey (Phase 1). Absent on
+  // legacy snapshots analysed before this field existed → the chart is skipped.
+  const layerFlows = net?.layer_flows;
   // Direct self-loops (A→A, OTHER-kind benef=victim) — money_flow_network.circular_flows.
   const circular = net?.circular_flows || [];
   // Real multi-hop cycles (A→B→…→A) from the shared cycle detector. Already computed
@@ -120,6 +333,10 @@ export default function MoneyFlow() {
         <StatCard title="Self-Loops" value={formatNumber(circularCount)} subtitle="direct A→A round-trips" icon="🔁" color="var(--accent-orange)" />
         <StatCard title="Multi-Hop Cycles" value={formatNumber(cycleCount)} subtitle="money routed back through a loop" icon="🔄" color="var(--danger)" />
       </div>
+
+      {/* Layer-aggregated money-flow Sankey (Phase 1). Sits above the detail
+          tables: the at-a-glance trail first, the line-item evidence below. */}
+      {layerFlows && <LayerFlowSankey layerFlows={layerFlows} theme={theme} />}
 
       {/* Top sender → receiver edges */}
       <div className="card card-pad" style={{ marginBottom: 20 }}>

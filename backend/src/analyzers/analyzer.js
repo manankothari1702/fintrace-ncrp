@@ -1570,6 +1570,70 @@ function geographyAnalysis(txns) {
  *   circular_count: number }} The three arrays are capped at 10 for display; the
  *   `*_count` fields are the true totals of the full sets (collectors = in-degree ≥ 2).
  */
+/**
+ * Shape the per-layer aggregate gathered in {@link moneyFlowNetwork} into a
+ * Sankey-ready { nodes, links } graph: an origin (victim inflow) node, one node
+ * per laundering layer, and two terminal sink nodes (cashed out / on hold).
+ * Each link carries BOTH the gross and the disputed (fraud-traced) sum, so the
+ * page can toggle between the two views without a second backend shape.
+ *
+ * Honest by construction. Every HOP rupee is a forward band, every EXIT rupee a
+ * cash-out sink link, every HOLD rupee an on-hold sink link. Forward bands are
+ * consecutive: money received AT layer N is, by the NCRP layering definition,
+ * money FROM layer N-1, so each band keys on the row's own (authoritative)
+ * layer_no. A gap in the source file's layer numbering folds forward to the
+ * nearest lower present layer rather than inventing an empty phantom layer.
+ * Backward / cyclic movement (money returning to an earlier account) cannot be
+ * drawn in a DAG, so it is surfaced in the Circular Trails / Self-Loops tables —
+ * never silently dropped. Inflow per layer ties to layerAnalysis.total_amount.
+ *
+ * @param {Map<number, {inG:number,inD:number,coG:number,coD:number,hoG:number,hoD:number}>} layerAgg
+ * @returns {{nodes:Array,links:Array}|null} null when there is no layer flow.
+ */
+function buildLayerFlows(layerAgg) {
+  if (!layerAgg || layerAgg.size === 0) return null;
+  const layers = [...layerAgg.keys()].sort((a, b) => a - b);
+  const links = [];
+  let prev = 'origin'; // backbone tail: the last node a forward band reached
+
+  for (const L of layers) {
+    const r = layerAgg.get(L);
+    const id = `L${L}`;
+    const hasInflow = r.inG > 0 || r.inD > 0;
+    if (hasInflow) {
+      links.push({ source: prev, target: id, gross: round(r.inG), disputed: round(r.inD) });
+      prev = id;
+    }
+    // Sinks hang off this layer when it received a hop; otherwise off the last
+    // real backbone layer (defensive: an EXIT/HOLD row whose layer never saw a
+    // hop — rare — is still attributed and shown, never dropped).
+    const sinkSource = hasInflow ? id : prev;
+    if (r.coG > 0 || r.coD > 0) {
+      links.push({ source: sinkSource, target: 'sink:cashout', gross: round(r.coG), disputed: round(r.coD) });
+    }
+    if (r.hoG > 0 || r.hoD > 0) {
+      links.push({ source: sinkSource, target: 'sink:hold', gross: round(r.hoG), disputed: round(r.hoD) });
+    }
+  }
+
+  if (links.length === 0) return null;
+
+  // Node list in render order: origin, layers ascending, then sinks. Emit only
+  // nodes a link actually references.
+  const referenced = new Set();
+  for (const l of links) { referenced.add(l.source); referenced.add(l.target); }
+  const nodes = [];
+  if (referenced.has('origin')) nodes.push({ id: 'origin', kind: 'origin', label: 'Victims' });
+  for (const L of layers) {
+    const id = `L${L}`;
+    if (referenced.has(id)) nodes.push({ id, kind: 'layer', layer: L, label: `Layer ${L}` });
+  }
+  if (referenced.has('sink:cashout')) nodes.push({ id: 'sink:cashout', kind: 'sink', label: 'Cashed Out' });
+  if (referenced.has('sink:hold')) nodes.push({ id: 'sink:hold', kind: 'sink', label: 'On Hold' });
+
+  return { nodes, links };
+}
+
 function moneyFlowNetwork(txns, rollup) {
   /** @type {Map<string, any>} */
   const edges = new Map();
@@ -1578,6 +1642,15 @@ function moneyFlowNetwork(txns, rollup) {
   const outBy = new Map();
   /** @type {Map<string, any>} */
   const circular = new Map();
+  // Per-layer rollup for the layer-flow Sankey (Phase 1). Gathered in the SAME
+  // single pass below — { inflow, cash-out, on-hold } × { gross, disputed }.
+  /** @type {Map<number, {inG:number,inD:number,coG:number,coD:number,hoG:number,hoD:number}>} */
+  const layerAgg = new Map();
+  const bumpLayer = (L) => {
+    let r = layerAgg.get(L);
+    if (!r) { r = { inG: 0, inD: 0, coG: 0, coD: 0, hoG: 0, hoD: 0 }; layerAgg.set(L, r); }
+    return r;
+  };
 
   for (const t of txns) {
     const benef = str(t.beneficiary_account);
@@ -1588,6 +1661,20 @@ function moneyFlowNetwork(txns, rollup) {
     // (F4/F8/F9), and matches buildAccountRollup's account identity.
     const benefKey = canonicalAccountKey(benef);
     const victimKey = canonicalAccountKey(victim);
+
+    // Layer-flow rollup (Phase 1 Sankey): every row contributes here, before the
+    // self-loop / edge branches below `continue` out. HOP rows feed the forward
+    // band into their destination layer (layerOf(t)); EXIT / HOLD rows feed the
+    // per-layer cash-out / on-hold sinks. Mirrors layerAnalysis's row handling, so
+    // inflow per layer reconciles with that module's total_amount.
+    const lf = layerOf(t.layer_no);
+    if (t.row_kind === ROW_KIND.HOP) {
+      const r = bumpLayer(lf); r.inG += num(t.transaction_amount); r.inD += num(t.disputed_amount);
+    } else if (t.row_kind === ROW_KIND.EXIT) {
+      const r = bumpLayer(lf); r.coG += num(t.transaction_amount); r.coD += num(t.disputed_amount);
+    } else if (t.row_kind === ROW_KIND.HOLD) {
+      const r = bumpLayer(lf); r.hoG += num(t.transaction_amount); r.hoD += num(t.disputed_amount);
+    }
 
     // Self-referential transfer rows (money routed back to the same account,
     // e.g. wallet round-trips). Compared on CANONICAL keys, so a row whose victim
@@ -1674,6 +1761,10 @@ function moneyFlowNetwork(txns, rollup) {
     edge_count: edges.size,
     collector_count: collectorsAll.length,
     circular_count: circularAll.length,
+    // Bounded layer→layer + disposition aggregate for the Money Flow Sankey
+    // (Phase 1). Tens of nodes/links even at 50k txns, so it is safe to persist;
+    // the full per-account edge list is NOT persisted (only top_edges above).
+    layer_flows: buildLayerFlows(layerAgg),
   };
 }
 
