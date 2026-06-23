@@ -54,14 +54,30 @@ export default function Lien() {
         if (cancelled) return;
         const calc = report.analysis_json?.lien_calculation || [];
         const byAccount = new Map(calc.map((c) => [c.account_no, c]));
+        // Accounts whose bank could NOT be confirmed from a valid IFSC — the exact
+        // actionable freeze-target set the Data Quality page flags. A Section 102
+        // letter would target an unverified bank, so the row gets a "verify bank"
+        // caution. Reused as-is from the analysis snapshot; never recomputed here.
+        const freezeTargets = new Set(
+          report.analysis_json?.data_quality_summary?.freeze_target_accounts || [],
+        );
         setLiens(lienRows.map((l) => {
           const c = byAccount.get(l.account_no) || {};
           return {
             ...l,
+            // Full derivation legs (from the analyzer snapshot) so the table
+            // reconciles on its face: Received − Forwarded − Cash-out − On Hold
+            // = Gross; Lien Eligible = min(Gross, Disputed cap). All read as-is.
             total_received: c.total_received ?? null,
+            onward_forwarded: c.onward_forwarded ?? null,
+            total_cashed_out: c.total_cashed_out ?? null,
+            total_on_hold: c.total_on_hold ?? null,
             total_forwarded: c.total_forwarded ?? null,
+            gross_balance: c.gross_balance ?? null,
+            disputed_received: c.disputed_received ?? null,
             lien_eligible_amount: c.lien_eligible_amount ?? l.lien_amount ?? 0,
             layer_no: c.layer_no ?? null,
+            needs_bank_verify: freezeTargets.has(l.account_no),
           };
         }));
       })
@@ -150,8 +166,8 @@ export default function Lien() {
 
   const downloadTemplate = () => {
     // Lien-request worksheet for the bank. Phase 6 may swap CSV for a true .xlsx.
-    const header = ['Account No', 'Bank', 'IFSC', 'Layer', 'Total Received', 'Total Forwarded', 'Lien Eligible', 'Status'];
-    const rows = liens.map((l) => [l.account_no, l.bank_name, l.ifsc_code, `L${l.layer_no}`, l.total_received, l.total_forwarded, l.lien_eligible_amount, l.lien_status]);
+    const header = ['Account No', 'Bank', 'IFSC', 'Layer', 'Received', 'Forwarded', 'Cash-out', 'On Hold', 'Gross Balance', 'Disputed Inflow', 'Lien Eligible', 'Status', 'Bank Verified'];
+    const rows = liens.map((l) => [l.account_no, l.bank_name, l.ifsc_code, `L${l.layer_no}`, l.total_received, l.onward_forwarded, l.total_cashed_out, l.total_on_hold, l.gross_balance, l.disputed_received, l.lien_eligible_amount, l.lien_status, l.needs_bank_verify ? 'VERIFY' : 'IFSC-confirmed']);
     const csv = [header, ...rows].map((r) => r.map((c) => `"${String(c ?? '')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     const a = document.createElement('a');
@@ -243,8 +259,12 @@ export default function Lien() {
                 <th>IFSC</th>
                 <th>Layer</th>
                 <th style={{ textAlign: 'right' }}>Received</th>
-                <th style={{ textAlign: 'right' }}>Forwarded</th>
-                <th style={{ textAlign: 'right' }}>Lien Eligible</th>
+                <th style={{ textAlign: 'right' }} title="Forwarded onward to the next layer">Forwarded</th>
+                <th style={{ textAlign: 'right' }} title="Withdrawn as cash (ATM / POS / AEPS)">Cash-out</th>
+                <th style={{ textAlign: 'right' }} title="Funds already frozen / on hold">On Hold</th>
+                <th style={{ textAlign: 'right' }} title="Gross residue = Received − Forwarded − Cash-out − On Hold">Gross</th>
+                <th style={{ textAlign: 'right' }} title="Disputed (fraud-attributed) inflow — the cap on lien-eligible">Disputed cap</th>
+                <th style={{ textAlign: 'right' }} title="min(Gross, Disputed cap) — the amount placed in the freeze letter">Lien Eligible</th>
                 <th>Status</th>
                 <th>Applied</th>
                 <th>Remarks</th>
@@ -252,17 +272,33 @@ export default function Lien() {
             </thead>
             <tbody>
               {liens.length === 0 ? (
-                <tr><td colSpan={11}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail was already withdrawn as cash, so there is no remaining balance to place a lien on.</div></td></tr>
+                <tr><td colSpan={15}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail has left the beneficiary accounts (forwarded onward, withdrawn as cash, or already on hold), so there is no remaining balance to place a lien on.</div></td></tr>
               ) : (
                 liens.map((l) => (
                   <tr key={l.id}>
                     <td><input type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} aria-label={`Select ${l.account_no}`} /></td>
                     <td>{l.account_no}</td>
-                    <td>{l.bank_name || '—'}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span>{l.bank_name || '—'}</span>
+                        {l.needs_bank_verify && (
+                          <span
+                            className="freeze-flag"
+                            title="Bank not confirmed from a valid IFSC — verify the freeze target before issuing this lien letter."
+                          >
+                            ⚠ verify bank
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td>{l.ifsc_code || '—'}</td>
                     <td>{l.layer_no == null ? '—' : `L${l.layer_no}`}</td>
                     <td style={{ textAlign: 'right' }}>{formatINR(l.total_received)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_forwarded)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatINR(l.onward_forwarded)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_cashed_out)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_on_hold)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatINR(l.gross_balance)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatINR(l.disputed_received)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatINR(l.lien_eligible_amount)}</td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

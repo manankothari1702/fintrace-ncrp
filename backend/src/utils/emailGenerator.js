@@ -287,18 +287,27 @@ function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
   const letterDateStr = formatDate(new Date().toISOString());
 
   // Group accounts by bank, preserving first-seen order within each bank.
+  // The grouping KEY is the bank name lower-cased (whitespace is already
+  // collapsed by sanitizeIdentifier), so pure case/spacing variants of one bank
+  // — e.g. "Bank of Baroda (Including …)" and "(including …)" — fold into ONE
+  // letter instead of two. Normalisation is deliberately conservative (case +
+  // whitespace only): genuinely different names keep their own letter. The
+  // first-seen original spelling is kept for display in the letter heading.
   /** @type {Map<string, Array<{ account_no: string, ifsc_code: string|null, amount: number }>>} */
   const byBank = new Map();
+  /** @type {Map<string, string>} normalised key → first-seen display name. */
+  const bankDisplay = new Map();
   for (const acc of Array.isArray(lienAccounts) ? lienAccounts : []) {
     if (!acc) continue;
     // bank_name comes from the same uploaded Excel cells as account_no — same
     // sanitisation applies (control chars / quotes / brackets stripped).
     const bankName = sanitizeIdentifier(acc.bank_name) || 'Unknown Bank';
+    const bankKey = bankName.toLowerCase();
     const amount = num(
       acc.lien_amount ?? acc.lien_eligible_amount ?? acc.disputed_amount ?? acc.recoverableAmount
     );
-    if (!byBank.has(bankName)) byBank.set(bankName, []);
-    byBank.get(bankName).push({
+    if (!byBank.has(bankKey)) { byBank.set(bankKey, []); bankDisplay.set(bankKey, bankName); }
+    byBank.get(bankKey).push({
       // Account numbers + IFSC come from untrusted Excel cells. Strip anything
       // that could break monospace alignment, escape into HTML, or smuggle
       // control sequences into a mail-client renderer.
@@ -309,8 +318,9 @@ function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
   }
 
   const emails = [];
-  for (const bankName of [...byBank.keys()].sort()) {
-    const accounts = byBank.get(bankName);
+  for (const bankKey of [...byBank.keys()].sort()) {
+    const accounts = byBank.get(bankKey);
+    const bankName = bankDisplay.get(bankKey);
     const totalDisputed = accounts.reduce((s, a) => s + a.amount, 0);
     emails.push({
       report_id: reportId,

@@ -640,6 +640,34 @@ table.data-table tbody td.expanded-cell {
   border-color: color-mix(in srgb, var(--accent-orange) 55%, transparent);
 }
 
+/* ─── Freeze-target verify flag (Lien Tracker) ───────────────────────────
+   A DANGER caution on a lien row whose bank could NOT be confirmed from a
+   valid IFSC — a Section 102 freeze letter is about to target an unverified
+   bank (the same condition the Data Quality page reports as its red status).
+   Same squared-off shape as the gross-conduit flag, but the red danger
+   grammar. In dark the red text lifts toward white (same blend as the
+   high-risk tier) so it clears AA on the dark danger surface — measured on the
+   rendered node, ~6.8:1 dark / ~4.9:1 light. */
+.freeze-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+[data-theme='dark'] .freeze-flag {
+  color: color-mix(in srgb, var(--danger) 55%, #fff);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
 /* ─── States: loading + error ────────────────────────────────────── */
 
 .spinner {

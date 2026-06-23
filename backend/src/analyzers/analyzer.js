@@ -1111,11 +1111,21 @@ function lienCalculation(rollup) {
       cap_excess: capExcess,                          // gross_balance − lien (excluded as non-disputed)
       excluded_reason: excludedReason,
       lien_eligible_amount: lien,
+      // Court-defensible justification: the printed legs subtract to the GROSS
+      // RESIDUE (received − forwarded − cash-out − on-hold), then the disputed-
+      // inflow cap is stated explicitly, so the final lien figure always follows
+      // from the text on its face — even when the cap floors a crore-scale
+      // pass-through to a few thousand rupees. grossBal, capExcess and the
+      // disputed inflow are reused from above; nothing is recomputed.
       note:
-        `Received ${formatINR(received)}; forwarded ${formatINR(onward)} onward, ` +
-        `${formatINR(exits)} withdrawn as cash, ${formatINR(hold)} already on hold. ` +
-        `${formatINR(lien)} remains unaccounted-for — ` +
-        `request lien (subject to available balance at bank).`,
+        `Received ${formatINR(received)}; ${formatINR(onward)} forwarded onward, ` +
+        `${formatINR(exits)} cash-out, ${formatINR(hold)} on hold → ` +
+        `gross residue ${formatINR(grossBal)}. ` +
+        (capExcess > 0.005
+          ? `Lien capped at the disputed (fraud-attributed) inflow ${formatINR(num(a.disputed_received))} ` +
+            `(${formatINR(capExcess)} non-disputed pass-through excluded). `
+          : `Fully within the disputed inflow ${formatINR(num(a.disputed_received))}. `) +
+        `Request lien on ${formatINR(lien)} (subject to available balance at bank).`,
     });
   }
   return rows.sort((a, b) => b.lien_eligible_amount - a.lien_eligible_amount);
