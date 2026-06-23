@@ -148,11 +148,23 @@ const IFSC_BANK_MAP = {
   PKGB: 'Karnataka Gramin Bank',              // verified: PKGB0010536 (ex Pragathi Krishna Gramin Bank)
   KLGB: 'Kerala Gramin Bank',                 // verified: KLGB0040683
 
-  // Deliberately NOT mapped: PPIW (prepaid-instrument/wallet pseudo-IFSC) and
-  // prefixes whose institution could not be verified with certainty (SMNB,
-  // UNBA, STCB) — those stay flagged UNKNOWN_IFSC_PREFIX for IO review rather
-  // than risking a confidently-wrong name on a lien letter.
+  // Deliberately NOT mapped: PPIW (prepaid-instrument/wallet pseudo-IFSC, see
+  // WALLET_PSEUDO_IFSC_PREFIXES) and prefixes whose institution could not be
+  // verified with certainty (SMNB, UNBA, STCB) — those stay flagged
+  // UNKNOWN_IFSC_PREFIX for IO review rather than risking a confidently-wrong
+  // name on a lien letter.
 };
+
+// Pseudo-IFSC prefixes that satisfy the IFSC SYNTAX but are NOT RBI bank codes:
+// prepaid-instrument / wallet rails. An NCRP "Ifsc Code" cell of e.g.
+// "PPIW0881822" is a wallet reference, not a bank — the nodal operator named in
+// the text column is the entity to serve notice on. These are classified
+// NO_IFSC (wallet), NEVER UNKNOWN_IFSC_PREFIX: the latter's reviewer note invites
+// the IO to "extend the map", but mapping a wallet pseudo-IFSC would silently
+// resolve EVERY future wallet account on that prefix to one bank with no flag —
+// a downstream attribution bug. Kept in sync with the IFSC_BANK_MAP
+// "Deliberately NOT mapped" note above.
+const WALLET_PSEUDO_IFSC_PREFIXES = new Set(['PPIW']);
 
 // Aliases / known-bad text labels that some PA/PG exports emit. Used ONLY for
 // normalising the raw text before comparison, never to override a valid IFSC.
@@ -180,10 +192,18 @@ function normaliseBankName(name) {
   if (s in TEXT_ALIASES && TEXT_ALIASES[s] === null) return '';
   // strip merger parentheticals e.g. "(including ...)"
   s = s.replace(/\(.*?\)/g, ' ');
+  const tidy = (x) => x.replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   // drop common, non-distinguishing tokens
-  s = s.replace(/\b(bank|of|india|ltd|limited|the|payments|payment|small|finance|co-?operative)\b/g, ' ');
-  s = s.replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return s;
+  const stripped = tidy(s.replace(/\b(bank|of|india|ltd|limited|the|payments|payment|small|finance|co-?operative)\b/g, ' '));
+  // A few REAL bank names ("Bank of India") consist ENTIRELY of these generic
+  // tokens and would otherwise reduce to '' — which makes sameBank() treat them
+  // as matching ANY name, silently hiding genuine IFSC↔text disagreements (and
+  // undercounting the "auto-corrected" data-quality figure). When the aggressive
+  // strip leaves nothing, fall back to the punctuation-/case-normalised full name
+  // so a distinguishing token survives. This only ever turns '' into non-'',
+  // so sameBank() can gain comparisons (catch real mismatches) but never lose a
+  // match that already held — no other bank's resolution is affected.
+  return stripped || tidy(s);
 }
 
 /** Are two bank names "the same institution" for mismatch detection? */
@@ -199,6 +219,20 @@ function cleanIfsc(ifsc) {
   if (ifsc == null) return null;
   const s = String(ifsc).trim().toUpperCase();
   return VALID_IFSC.test(s) ? s : null;
+}
+
+/**
+ * Is this value a wallet / prepaid-instrument pseudo-IFSC (valid IFSC shape but a
+ * non-bank rail, e.g. PPIW…)? Such values are resolved as NO_IFSC, so a NO_IFSC
+ * row that still carries a syntactically-valid IFSC is, by construction, one of
+ * these — the reviewer note distinguishes them from genuinely IFSC-less rows.
+ *
+ * @param {unknown} ifsc
+ * @returns {boolean}
+ */
+function isWalletPseudoIfsc(ifsc) {
+  const ci = cleanIfsc(ifsc);
+  return ci != null && WALLET_PSEUDO_IFSC_PREFIXES.has(ci.slice(0, 4));
 }
 
 /**
@@ -233,6 +267,21 @@ function resolveBank(input = {}) {
   }
 
   const prefix = ifsc.slice(0, 4).toUpperCase();
+
+  // Wallet / prepaid-instrument pseudo-IFSC (e.g. PPIW): valid IFSC SHAPE but not
+  // a bank code. Treat exactly like a missing IFSC — the text names the nodal
+  // wallet operator to serve notice on. Flag NO_IFSC (wallet), not
+  // UNKNOWN_IFSC_PREFIX: this prefix must never be added to IFSC_BANK_MAP.
+  if (WALLET_PSEUDO_IFSC_PREFIXES.has(prefix)) {
+    return {
+      bank: rawBank || 'Unknown',
+      ifsc: null,
+      source: 'TEXT',
+      flag: FLAGS.NO_IFSC,
+      rawBank,
+    };
+  }
+
   const fromIfsc = IFSC_BANK_MAP[prefix];
 
   // Known prefix -> IFSC is authoritative.
@@ -268,7 +317,9 @@ module.exports = {
   normaliseBankName,
   sameBank,
   cleanIfsc,
+  isWalletPseudoIfsc,
   IFSC_BANK_MAP,
+  WALLET_PSEUDO_IFSC_PREFIXES,
   FLAGS,
   VALID_IFSC,
 };

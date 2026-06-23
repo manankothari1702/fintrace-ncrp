@@ -1174,12 +1174,18 @@ function lienExclusions(rollup) {
  * @param {string|null} raw raw source-file text
  * @returns {string}
  */
-function bankFlagMessage(flag, bank, raw) {
+function bankFlagMessage(flag, bank, raw, ifsc) {
   const said = raw ? `"${raw}"` : 'a different value';
   switch (flag) {
     case 'IFSC_TEXT_MISMATCH':
       return `IFSC resolves to ${bank}; source file text said ${said} — letter uses ${bank} (verify).`;
     case 'NO_IFSC':
+      if (ifsc && VALID_IFSC.test(String(ifsc).trim().toUpperCase())) {
+        // Valid IFSC SHAPE but classified NO_IFSC → a wallet / prepaid-instrument
+        // pseudo-IFSC (e.g. PPIW…), resolved to the text-named nodal operator. Do
+        // NOT advise mapping the prefix — it is not a bank code.
+        return `"${ifsc}" is a wallet / prepaid-instrument reference, not a bank IFSC; name "${bank}" taken from text — verify the nodal entity / wallet operator (do not map this prefix).`;
+      }
       return `No IFSC present (wallet / PA / PG account). Name "${bank}" taken from text — confirm the correct nodal entity.`;
     case 'INVALID_IFSC':
       return `IFSC was unparseable. Name "${bank}" taken from text — confirm the correct nodal entity.`;
@@ -1235,7 +1241,7 @@ function dataQuality(txns) {
       raw_bank: raw,
       bank_source: str(t.bank_source),
       bank_flag: flag,
-      message: bankFlagMessage(flag, bank, raw),
+      message: bankFlagMessage(flag, bank, raw, ifsc),
     });
   }
   // Mismatches first (most actionable), then by account for stable ordering.
