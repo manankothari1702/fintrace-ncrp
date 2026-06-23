@@ -11,7 +11,7 @@
  * account_no. Status changes call saveLien optimistically with rollback.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import StatCard from '../components/StatCard.jsx';
@@ -33,7 +33,17 @@ export default function Lien() {
   const [saveError, setSaveError] = useState(null);
   const [savingId, setSavingId] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(() => new Set());
   const [toast, setToast] = useState(null);
+
+  // Per-row expand toggle: the verbose justification + the full reconciling
+  // breakdown live in an expandable detail row (matching the Mules page), so the
+  // worksheet itself stays compact and uniform-height.
+  const toggleExpand = (id) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   // Persisted lien rows (status/applied_date/remarks) carry only what the DB
   // stores; the per-account analysis (received/forwarded/eligible/layer) lives
@@ -221,15 +231,15 @@ export default function Lien() {
       <header className="page-header">
         <h1>Lien Tracker</h1>
         <p className="subtitle">
-          Total lien-eligible: <strong style={{ color: 'var(--accent)', fontSize: 16 }}>{formatINR(summary.eligible)}</strong>
+          Total lien-eligible: <strong className="money-accent" style={{ fontSize: 16 }}>{formatINR(summary.eligible)}</strong>
         </p>
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         <StatCard title="Total Eligible" value={formatCrore(summary.eligible)} icon="💰" color="var(--accent)" />
-        <StatCard title="Lien Applied" value={formatCrore(summary.applied)} icon="📨" color="var(--brand)" />
+        <StatCard title="Lien Applied" value={formatCrore(summary.applied)} icon="📨" color="var(--brand-text)" />
         <StatCard title="Lien Success" value={formatCrore(summary.success)} icon="✅" color="var(--accent)" />
-        <StatCard title="Recovery Rate" value={formatPercent(summary.recoveryRate, 1)} subtitle="success ÷ eligible" icon="📈" color="var(--accent-orange)" />
+        <StatCard title="Recovery Rate" value={formatPercent(summary.recoveryRate, 1)} subtitle="success ÷ eligible" icon="📈" color={summary.recoveryRate > 0 ? 'var(--accent)' : 'var(--accent-orange)'} />
       </div>
 
       {saveError && (
@@ -248,81 +258,138 @@ export default function Lien() {
         </div>
 
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table lien-table">
             <thead>
               <tr>
                 <th style={{ width: 36 }}>
                   <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
                 </th>
+                <th style={{ width: 28 }} aria-label="Expand" />
                 <th>Account No.</th>
                 <th>Bank</th>
                 <th>IFSC</th>
                 <th>Layer</th>
                 <th style={{ textAlign: 'right' }}>Received</th>
-                <th style={{ textAlign: 'right' }} title="Forwarded onward to the next layer">Forwarded</th>
-                <th style={{ textAlign: 'right' }} title="Withdrawn as cash (ATM / POS / AEPS)">Cash-out</th>
-                <th style={{ textAlign: 'right' }} title="Funds already frozen / on hold">On Hold</th>
-                <th style={{ textAlign: 'right' }} title="Gross residue = Received − Forwarded − Cash-out − On Hold">Gross</th>
-                <th style={{ textAlign: 'right' }} title="Disputed (fraud-attributed) inflow — the cap on lien-eligible">Disputed cap</th>
-                <th style={{ textAlign: 'right' }} title="min(Gross, Disputed cap) — the amount placed in the freeze letter">Lien Eligible</th>
+                <th style={{ textAlign: 'right' }} title="min(Gross residue, Disputed cap) — the amount placed in the freeze letter. Expand a row for the full derivation.">Lien Eligible</th>
                 <th>Status</th>
                 <th>Applied</th>
-                <th>Remarks</th>
               </tr>
             </thead>
             <tbody>
               {liens.length === 0 ? (
-                <tr><td colSpan={15}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail has left the beneficiary accounts (forwarded onward, withdrawn as cash, or already on hold), so there is no remaining balance to place a lien on.</div></td></tr>
+                <tr><td colSpan={10}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail has left the beneficiary accounts (forwarded onward, withdrawn as cash, or already on hold), so there is no remaining balance to place a lien on.</div></td></tr>
               ) : (
-                liens.map((l) => (
-                  <tr key={l.id}>
-                    <td><input type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} aria-label={`Select ${l.account_no}`} /></td>
-                    <td>{l.account_no}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        <span>{l.bank_name || '—'}</span>
-                        {l.needs_bank_verify && (
-                          <span
-                            className="freeze-flag"
-                            title="Bank not confirmed from a valid IFSC — verify the freeze target before issuing this lien letter."
+                liens.map((l) => {
+                  const isOpen = expanded.has(l.id);
+                  return (
+                    <Fragment key={l.id}>
+                      <tr className={isOpen ? 'lien-row-open' : undefined}>
+                        <td><input type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} aria-label={`Select ${l.account_no}`} /></td>
+                        <td>
+                          <button
+                            type="button"
+                            className={`row-expander${isOpen ? ' is-open' : ''}`}
+                            aria-expanded={isOpen}
+                            aria-label={isOpen ? 'Hide breakdown' : 'Show breakdown'}
+                            title={isOpen ? 'Hide breakdown' : 'Show the recoverable-balance breakdown & justification'}
+                            onClick={() => toggleExpand(l.id)}
                           >
-                            ⚠ verify bank
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td>{l.ifsc_code || '—'}</td>
-                    <td>{l.layer_no == null ? '—' : `L${l.layer_no}`}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_received)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.onward_forwarded)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_cashed_out)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.total_on_hold)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.gross_balance)}</td>
-                    <td style={{ textAlign: 'right' }}>{formatINR(l.disputed_received)}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatINR(l.lien_eligible_amount)}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <select
-                          className="select"
-                          value={l.lien_status}
-                          disabled={savingId === l.id}
-                          onChange={(e) => handleStatusChange(l, e.target.value)}
-                          style={{ padding: '4px 6px', fontSize: 12 }}
-                        >
-                          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                        {savingId === l.id && <span className="spinner" style={{ width: 12, height: 12 }} />}
-                      </div>
-                    </td>
-                    <td>{formatDate(l.applied_date)}</td>
-                    <td style={{ maxWidth: 220, color: 'var(--text-muted)' }}>{l.remarks || '—'}</td>
-                  </tr>
-                ))
+                            ▸
+                          </button>
+                        </td>
+                        <td style={{ fontFamily: 'var(--font-mono)' }}>{l.account_no}</td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span
+                              title={l.bank_name || undefined}
+                              style={{ display: 'inline-block', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}
+                            >
+                              {l.bank_name || '—'}
+                            </span>
+                            {l.needs_bank_verify && (
+                              <span
+                                className="freeze-flag"
+                                title="Bank not confirmed from a valid IFSC — verify the freeze target before issuing this lien letter."
+                              >
+                                ⚠ verify bank
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ fontFamily: 'var(--font-mono)' }}>{l.ifsc_code || '—'}</td>
+                        <td>{l.layer_no == null ? '—' : `L${l.layer_no}`}</td>
+                        <td style={{ textAlign: 'right' }}>{formatINR(l.total_received)}</td>
+                        <td className="money-accent" style={{ textAlign: 'right', fontWeight: 700 }}>{formatINR(l.lien_eligible_amount)}</td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <select
+                              className="select"
+                              value={l.lien_status}
+                              disabled={savingId === l.id}
+                              onChange={(e) => handleStatusChange(l, e.target.value)}
+                              style={{ padding: '4px 6px', fontSize: 12 }}
+                            >
+                              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                            {savingId === l.id && <span className="spinner" style={{ width: 12, height: 12 }} />}
+                          </div>
+                        </td>
+                        <td>{formatDate(l.applied_date)}</td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={10} className="expanded-cell">
+                            <LienBreakdown lien={l} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Expanded detail: reconciling breakdown + full justification ─────────────
+
+/**
+ * The per-row detail panel: the lien-eligible figure derived left-to-right
+ * (Received − Forwarded − Cash-out − On Hold = Gross residue, capped at the
+ * Disputed inflow), followed by the full plain-language justification note.
+ * Pure presentation — every value is read straight from the merged row.
+ */
+function LienBreakdown({ lien: l }) {
+  const capped = l.gross_balance != null && l.disputed_received != null
+    && (Number(l.gross_balance) - Number(l.lien_eligible_amount)) > 0.005;
+
+  const Term = ({ op, label, value, final = false }) => (
+    <div className="lien-calc-term">
+      {op && <span className="lien-calc-op">{op}</span>}
+      <span className={`lien-calc-box${final ? ' is-final' : ''}`}>
+        <span className="lien-calc-label">{label}</span>
+        <span className={`lien-calc-val${final ? ' money-accent' : ''}`}>{formatINR(value)}</span>
+      </span>
+    </div>
+  );
+
+  return (
+    <div className="lien-detail">
+      <h4 className="lien-detail-title">How the lien-eligible figure is derived</h4>
+      <div className="lien-calc">
+        <Term label="Received" value={l.total_received} />
+        <Term op="−" label="Forwarded" value={l.onward_forwarded} />
+        <Term op="−" label="Cash-out" value={l.total_cashed_out} />
+        <Term op="−" label="On Hold" value={l.total_on_hold} />
+        <Term op="=" label="Gross residue" value={l.gross_balance} />
+        <Term op={capped ? 'capped at' : 'within'} label="Disputed inflow" value={l.disputed_received} />
+        <Term op="=" label="Lien Eligible" value={l.lien_eligible_amount} final />
+      </div>
+      {l.remarks && <p className="lien-detail-note">{l.remarks}</p>}
     </div>
   );
 }
