@@ -54,6 +54,14 @@
   --accent-orange: #e65100;  /* orange — alert / risk */
   --danger: #c62828;         /* red — high risk */
 
+  /* Risk-tier text/number colours (mule score, risk pill, risk stat-cards).
+     In light mode they ARE the grammar colours; the dark block lifts them
+     toward white so the same red/orange/green stays legible on the dark card
+     (raw --danger as text is only ~3:1 there). Hue is preserved — grammar holds. */
+  --risk-high: var(--danger);
+  --risk-medium: var(--accent-orange);
+  --risk-low: var(--accent);
+
   /* Surfaces */
   --bg: #f4f6fa;             /* page background */
   --card-bg: #ffffff;
@@ -134,6 +142,14 @@
     --danger-bg: #2e0f0f;
 
     --brand-light: #1e2540;
+
+    /* Lift the risk grammar for legible text/numbers on the dark card. Measured
+       on the rendered element (getComputedStyle), not token math: raw --danger
+       ~3:1, these clear AA (≥4.5:1) for the score number + risk pill while still
+       reading unmistakably red / orange / green. */
+    --risk-high: color-mix(in srgb, var(--danger) 55%, #fff);
+    --risk-medium: color-mix(in srgb, var(--accent-orange) 68%, #fff);
+    --risk-low: color-mix(in srgb, var(--accent) 52%, #fff);
   }
 }
 
@@ -597,6 +613,31 @@ table.data-table tbody td.expanded-cell {
   background: color-mix(in srgb, var(--brand) 55%, var(--card-bg));
   color: color-mix(in srgb, var(--brand) 14%, #fff);
   border-color: color-mix(in srgb, var(--brand) 85%, var(--text-muted));
+}
+
+/* ─── Gross-conduit caution flag (Mule page) ─────────────────────────────
+   A WARNING flag, deliberately NOT a risk tier: squared-off (4px, not the
+   999px risk pill) and keyed to the orange warning grammar with the warning
+   surface tint, so it reads as a separate "verify before freezing" caution,
+   not a fourth risk level. Orange lifts toward white in dark for AA contrast. */
+.conduit-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--accent-orange);
+  background: var(--warning-bg);
+  border: 1px solid color-mix(in srgb, var(--accent-orange) 45%, transparent);
+}
+
+[data-theme='dark'] .conduit-flag {
+  color: color-mix(in srgb, var(--accent-orange) 70%, #fff);
+  border-color: color-mix(in srgb, var(--accent-orange) 55%, transparent);
 }
 
 /* ─── States: loading + error ────────────────────────────────────── */

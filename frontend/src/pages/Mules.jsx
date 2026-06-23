@@ -68,14 +68,8 @@ function RiskCell({ m }) {
       <Badge variant="risk" value={m.mule_score} />
       {isGrossConduit(m) && (
         <span
+          className="conduit-flag"
           title="Large gross flow but small traced (disputed) inflow — likely a settlement/aggregator account. Verify traced exposure before freezing."
-          style={{
-            fontSize: 10, fontWeight: 700, letterSpacing: '0.02em', whiteSpace: 'nowrap',
-            padding: '2px 6px', borderRadius: 4,
-            color: 'var(--accent-orange)',
-            border: '1px solid color-mix(in srgb, var(--accent-orange) 45%, transparent)',
-            background: 'color-mix(in srgb, var(--accent-orange) 14%, transparent)',
-          }}
         >
           ⚠ GROSS CONDUIT · LOW TRACED
         </span>
@@ -131,7 +125,25 @@ export default function Mules() {
 
   const columns = [
     { accessorKey: 'account_no', header: 'Account No.' },
-    { accessorKey: 'bank_name', header: 'Bank', cell: ({ getValue }) => getValue() || '—' },
+    {
+      accessorKey: 'bank_name',
+      header: 'Bank',
+      // Truncate long bank names ("Punjab National Bank (incl. …)") to one line
+      // with the full name on hover, so rows keep a uniform height (B4 density).
+      cell: ({ getValue }) => {
+        const v = getValue();
+        return v
+          ? (
+            <span
+              title={v}
+              style={{ display: 'inline-block', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}
+            >
+              {v}
+            </span>
+          )
+          : '—';
+      },
+    },
     { accessorKey: 'layer_no', header: 'Layer', cell: ({ getValue }) => `L${getValue()}` },
     { accessorKey: 'mule_score', header: 'Mule Score', cell: ({ getValue }) => <MuleScoreBar score={getValue()} /> },
     // F2 — gross inflow and TRACED (disputed) inflow side by side, so an officer
@@ -172,7 +184,7 @@ export default function Mules() {
           <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, margin: 0 }}>
             {m.suspicion_reasons.map((reason, i) => (
               <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
-                <span style={{ color: 'var(--danger)' }} aria-hidden="true">▸</span>
+                <span style={{ color: 'var(--risk-high)' }} aria-hidden="true">▸</span>
                 <span>{reason}</span>
               </li>
             ))}
@@ -221,9 +233,9 @@ export default function Mules() {
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score ≥ 70" icon="🔴" color="var(--danger)" />
-        <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 40–69" icon="🟠" color="var(--accent-orange)" />
-        <StatCard title="Low Risk" value={riskCounts.LOW} subtitle="score < 40" icon="🟢" color="var(--accent)" />
+        <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score ≥ 70" icon="🔴" color="var(--risk-high)" />
+        <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 40–69" icon="🟠" color="var(--risk-medium)" />
+        <StatCard title="Low Risk" value={riskCounts.LOW} subtitle="score < 40" icon="🟢" color="var(--risk-low)" />
       </div>
 
       {/* Gross-vs-traced transparency (audit F2/F5). Risk is a laundering-PATTERN
@@ -236,7 +248,7 @@ export default function Mules() {
         <strong style={{ color: 'var(--text)' }}>Risk reflects laundering-pattern signals on gross flow — verify traced exposure before freezing.</strong>{' '}
         <span style={{ color: 'var(--text-muted)' }}>
           <strong style={{ color: 'var(--text)' }}>Received (gross)</strong>, <strong style={{ color: 'var(--text)' }}>Forwarded</strong> and <strong style={{ color: 'var(--text)' }}>Cashed Out</strong> are full transaction legs (cashed-out is the gross ATM/POS withdrawal). <strong style={{ color: 'var(--text)' }}>Traced Fraud In</strong> is the disputed amount actually traced to the account, which follows only the fraud money — so an account can legitimately show large gross flow with a small traced figure, and cashed-out can exceed traced received.{' '}
-          <span style={{ color: 'var(--accent-orange)', fontWeight: 700 }}>⚠ GROSS CONDUIT · LOW TRACED</span> flags likely settlement/aggregator accounts (large gross, &lt; {formatINR(LOW_TRACED_MAX)} traced) — confirm real exposure first.
+          <span style={{ color: 'var(--risk-medium)', fontWeight: 700 }}>⚠ GROSS CONDUIT · LOW TRACED</span> flags likely settlement/aggregator accounts (large gross, &lt; {formatINR(LOW_TRACED_MAX)} traced) — confirm real exposure first.
         </span>
       </div>
 

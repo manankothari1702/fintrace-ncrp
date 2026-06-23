@@ -134,9 +134,12 @@ export function formatHours(hours) {
  */
 export function getMuleRiskColor(score) {
   const n = toNumber(score) ?? 0;
-  if (n >= 70) return 'var(--danger)';
-  if (n >= 40) return 'var(--accent-orange)';
-  return 'var(--accent)';
+  // Theme-aware risk-tier tokens: identical to the grammar colours in light
+  // mode, lifted toward white in dark mode so the score number / risk pill /
+  // risk stat-cards stay AA-legible on the dark card. Thresholds unchanged.
+  if (n >= 70) return 'var(--risk-high)';
+  if (n >= 40) return 'var(--risk-medium)';
+  return 'var(--risk-low)';
 }
 
 /** Risk band label for a score, e.g. 82 → "HIGH". */
