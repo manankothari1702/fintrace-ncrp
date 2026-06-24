@@ -104,11 +104,14 @@ export default function Transactions() {
   // Filter options derived from the report's ACTUAL data (banks + layers).
   const [facets, setFacets] = useState({ banks: [], layers: [] });
   const [bankSearch, setBankSearch] = useState('');
+  // Bank multi-select dropdown open state.
+  const [bankOpen, setBankOpen] = useState(false);
   // CSV export streams every filtered page, so it has its own busy flag.
   const [exporting, setExporting] = useState(false);
 
   const searchTimer = useRef(null);
   const scrollRef = useRef(null);
+  const bankRef = useRef(null);
 
   // Sync filter state → URL query params (preserving reportId) so a refresh or
   // shared link restores the same view. `replace` keeps history uncluttered.
@@ -164,15 +167,27 @@ export default function Transactions() {
     return () => { cancelled = true; };
   }, [reportId]);
 
-  // Keyboard: Escape collapses the filter panel (the only modal-like surface on
-  // this page) so an officer can clear the chrome and focus the table.
+  // Keyboard: Escape closes the bank dropdown first (if open), otherwise
+  // collapses the filter panel — layered so one Escape never does both.
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && showFilters) setShowFilters(false);
+      if (e.key !== 'Escape') return;
+      if (bankOpen) { setBankOpen(false); return; }
+      if (showFilters) setShowFilters(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showFilters]);
+  }, [showFilters, bankOpen]);
+
+  // Close the bank dropdown on an outside click (standard popover behaviour).
+  useEffect(() => {
+    if (!bankOpen) return undefined;
+    const onDown = (e) => {
+      if (bankRef.current && !bankRef.current.contains(e.target)) setBankOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [bankOpen]);
 
   // Debounce the search box (300ms) → folds into filters.page = 1.
   const onSearchChange = (value) => {
@@ -197,7 +212,8 @@ export default function Transactions() {
     const next = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
     return { ...f, [key]: next, page: 1 };
   });
-  const clearFilters = () => { setFilters(EMPTY_FILTERS); setSearchText(''); setBankSearch(''); };
+  const clearFilters = () => { setFilters(EMPTY_FILTERS); setSearchText(''); setBankSearch(''); setBankOpen(false); };
+  const clearBanks = () => setFilters((f) => ({ ...f, banks: [], page: 1 }));
 
   const rows = resp?.data || [];
 
@@ -339,7 +355,7 @@ export default function Transactions() {
         </div>
 
         {showFilters && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+          <div className="txn-filter-grid">
             <FilterGroup label="Layer">
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {facets.layers.length === 0 ? (
@@ -357,44 +373,70 @@ export default function Transactions() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label={`Bank${filters.banks.length ? ` (${filters.banks.length})` : ''}`}>
-              <input
-                className="input"
-                placeholder="Filter banks…"
-                value={bankSearch}
-                onChange={(e) => setBankSearch(e.target.value)}
-                style={{ width: '100%', marginBottom: 6, fontSize: 12 }}
-              />
-              <div className="bankfilter-list">
-                {facets.banks.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 6px' }}>—</div>
-                ) : visibleBanks.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 6px' }}>No banks match.</div>
-                ) : visibleBanks.map(({ name, count }) => (
-                  <label key={name} className="bankfilter-row">
-                    <input type="checkbox" checked={filters.banks.includes(name)} onChange={() => toggleInList('banks', name)} />
-                    <span className="bankfilter-name" title={name}>{name}</span>
-                    <span className="bankfilter-count">{formatNumber(count)}</span>
-                  </label>
-                ))}
+            <FilterGroup label="Bank">
+              <div className="bank-select" ref={bankRef}>
+                <button
+                  type="button"
+                  className={`bank-trigger${bankOpen ? ' is-open' : ''}${filters.banks.length === 0 ? ' is-placeholder' : ''}`}
+                  onClick={() => setBankOpen((o) => !o)}
+                  aria-expanded={bankOpen}
+                  aria-haspopup="listbox"
+                  disabled={facets.banks.length === 0}
+                >
+                  <span className="bank-trigger-label">
+                    {filters.banks.length === 0
+                      ? 'All banks'
+                      : `${filters.banks.length} bank${filters.banks.length === 1 ? '' : 's'} selected`}
+                  </span>
+                  <span className="bank-trigger-chevron" aria-hidden="true">▾</span>
+                </button>
+
+                {bankOpen && (
+                  <div className="bank-popover" role="listbox" aria-label="Filter by bank">
+                    <div className="bank-search">
+                      <SearchIcon />
+                      <input
+                        className="bank-search-input"
+                        placeholder="Search banks…"
+                        value={bankSearch}
+                        onChange={(e) => setBankSearch(e.target.value)}
+                        autoFocus
+                      />
+                      {bankSearch && (
+                        <button type="button" className="bank-search-clear" onClick={() => setBankSearch('')} aria-label="Clear search">✕</button>
+                      )}
+                    </div>
+                    <div className="bank-popover-head">
+                      <span>{bankSearch ? `${visibleBanks.length} of ${formatNumber(facets.banks.length)}` : `${formatNumber(facets.banks.length)} banks`}</span>
+                      {filters.banks.length > 0 && (
+                        <button type="button" className="bank-clear-link" onClick={clearBanks}>Clear {filters.banks.length}</button>
+                      )}
+                    </div>
+                    <div className="bank-list">
+                      {visibleBanks.length === 0 ? (
+                        <div className="bank-empty">No banks match &ldquo;{bankSearch}&rdquo;.</div>
+                      ) : visibleBanks.map(({ name, count }) => (
+                        <label key={name} className="bank-row">
+                          <input type="checkbox" checked={filters.banks.includes(name)} onChange={() => toggleInList('banks', name)} />
+                          <span className="bank-row-name" title={name}>{name}</span>
+                          <span className="bank-row-count">{formatNumber(count)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {filters.banks.length > 0 && (
+                  <div className="bank-chips">
+                    {filters.banks.map((name) => (
+                      <span key={name} className="bank-chip">
+                        <span className="bank-chip-name" title={name}>{name}</span>
+                        <button type="button" className="bank-chip-x" onClick={() => toggleInList('banks', name)} aria-label={`Remove ${name}`}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
-              {facets.banks.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 5, fontSize: 11, color: 'var(--text-muted)' }}>
-                  <span>{bankSearch ? `${visibleBanks.length} of ${facets.banks.length} banks` : `${formatNumber(facets.banks.length)} banks`}</span>
-                  {filters.banks.length > 0 && (
-                    <>
-                      <span className="spacer" style={{ flex: 1 }} />
-                      <button
-                        type="button"
-                        onClick={() => setFilters((f) => ({ ...f, banks: [], page: 1 }))}
-                        style={{ border: 'none', background: 'none', color: 'var(--brand-text)', fontWeight: 600, cursor: 'pointer', padding: 0, fontSize: 11 }}
-                      >
-                        Clear {filters.banks.length} selected
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </FilterGroup>
 
             <FilterGroup label="Payment Mode">
@@ -522,9 +564,19 @@ export default function Transactions() {
 function FilterGroup({ label, children }) {
   return (
     <div>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>{label}</div>
+      <div className="txn-filter-label">{label}</div>
       {children}
     </div>
+  );
+}
+
+// Inline magnifier for the bank search field (no icon dependency).
+function SearchIcon() {
+  return (
+    <svg className="bank-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.5" />
+      <line x1="10.6" y1="10.6" x2="14" y2="14" strokeLinecap="round" />
+    </svg>
   );
 }
 
