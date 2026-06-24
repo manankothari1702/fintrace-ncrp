@@ -32,6 +32,16 @@ const EXPORT_PAGE_SIZE = 500;
 // spot the big movements at a glance while scanning a long trail.
 const HIGH_AMOUNT_THRESHOLD = 100000;
 
+// Monospace for identifier columns (account / IFSC / UTR) — fixed advance keeps
+// digits column-aligned, matching the Lien / Money Flow tables.
+const MONO = { fontFamily: 'var(--font-mono)' };
+// Single-line ellipsis for long free-text cells (bank, name); pair with a title
+// tooltip — same pattern as the Mules / Lien / Data Quality tables.
+const TRUNC_CELL = {
+  display: 'inline-block', maxWidth: 190, overflow: 'hidden',
+  textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom',
+};
+
 const EMPTY_FILTERS = {
   page: 1,
   limit: 100,
@@ -355,19 +365,36 @@ export default function Transactions() {
                 onChange={(e) => setBankSearch(e.target.value)}
                 style={{ width: '100%', marginBottom: 6, fontSize: 12 }}
               />
-              <div style={{ maxHeight: 150, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 6 }}>
+              <div className="bankfilter-list">
                 {facets.banks.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 2px' }}>—</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 6px' }}>—</div>
                 ) : visibleBanks.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 2px' }}>No banks match.</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 6px' }}>No banks match.</div>
                 ) : visibleBanks.map(({ name, count }) => (
-                  <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '3px 2px', cursor: 'pointer' }}>
+                  <label key={name} className="bankfilter-row">
                     <input type="checkbox" checked={filters.banks.includes(name)} onChange={() => toggleInList('banks', name)} />
-                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>{name}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{formatNumber(count)}</span>
+                    <span className="bankfilter-name" title={name}>{name}</span>
+                    <span className="bankfilter-count">{formatNumber(count)}</span>
                   </label>
                 ))}
               </div>
+              {facets.banks.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 5, fontSize: 11, color: 'var(--text-muted)' }}>
+                  <span>{bankSearch ? `${visibleBanks.length} of ${facets.banks.length} banks` : `${formatNumber(facets.banks.length)} banks`}</span>
+                  {filters.banks.length > 0 && (
+                    <>
+                      <span className="spacer" style={{ flex: 1 }} />
+                      <button
+                        type="button"
+                        onClick={() => setFilters((f) => ({ ...f, banks: [], page: 1 }))}
+                        style={{ border: 'none', background: 'none', color: 'var(--brand-text)', fontWeight: 600, cursor: 'pointer', padding: 0, fontSize: 11 }}
+                      >
+                        Clear {filters.banks.length} selected
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </FilterGroup>
 
             <FilterGroup label="Payment Mode">
@@ -435,21 +462,21 @@ export default function Transactions() {
                         <td style={{ whiteSpace: 'nowrap', borderLeft: isDuplicate ? '3px solid var(--accent-orange)' : undefined }}>
                           {isDuplicate ? (
                             <span
+                              className="dup-flag"
                               title="Exact duplicate — this leg is re-listed across NCRP sheets and is EXCLUDED from every total (shown here for completeness)."
-                              style={{ marginRight: 4, color: 'var(--accent-orange)', fontWeight: 700 }}
                             >
                               ⧉
                             </span>
                           ) : null}
-                          {t.same_day_cashout ? <span title="Same-day cashout" style={{ marginRight: 4 }}>⚡</span> : null}
+                          {t.same_day_cashout ? <span title="Same-day cashout — withdrawn the day it was received" style={{ marginRight: 4 }}>⚡</span> : null}
                           {formatDateTimeUTC(t.transaction_date)}
                         </td>
-                        <td>{t.beneficiary_account || '—'}</td>
-                        <td>{t.beneficiary_name || '—'}</td>
-                        <td>{t.beneficiary_bank || '—'}</td>
-                        <td>{t.ifsc_code || '—'}</td>
+                        <td style={MONO}>{t.beneficiary_account || '—'}</td>
+                        <td>{t.beneficiary_name ? <span style={TRUNC_CELL} title={t.beneficiary_name}>{t.beneficiary_name}</span> : '—'}</td>
+                        <td>{t.beneficiary_bank ? <span style={TRUNC_CELL} title={t.beneficiary_bank}>{t.beneficiary_bank}</span> : '—'}</td>
+                        <td style={MONO}>{t.ifsc_code || '—'}</td>
                         <td
-                          style={{ textAlign: 'right', fontWeight: 600, color: isHighValue ? 'var(--accent-orange)' : undefined }}
+                          style={{ textAlign: 'right', fontWeight: 600, color: isHighValue ? 'var(--accent-orange-text)' : undefined }}
                           title={isHighValue ? 'High-value transaction (over ₹1,00,000)' : undefined}
                         >
                           {formatINR(t.transaction_amount)}
@@ -457,7 +484,7 @@ export default function Transactions() {
                         <td style={{ textAlign: 'right' }}>{formatINR(t.disputed_amount)}</td>
                         <td>{t.payment_mode || '—'}</td>
                         <td>L{t.layer_no}</td>
-                        <td>{t.utr_no || '—'}</td>
+                        <td style={MONO}>{t.utr_no || '—'}</td>
                         <td>{t.city || '—'}</td>
                         <td>{t.state || '—'}</td>
                       </tr>
@@ -507,12 +534,8 @@ function Chip({ active, onClick, children, title }) {
       type="button"
       onClick={onClick}
       title={title}
-      style={{
-        padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-        border: `1px solid ${active ? 'var(--brand)' : 'var(--border)'}`,
-        background: active ? 'var(--brand)' : 'var(--card-bg)',
-        color: active ? 'var(--text-on-solid)' : 'var(--text)',
-      }}
+      aria-pressed={active}
+      className={`chip${active ? ' is-active' : ''}`}
     >
       {children}
     </button>

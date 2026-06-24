@@ -59,6 +59,13 @@
   --accent-orange: #e65100;  /* orange — alert / risk */
   --danger: #c62828;         /* red — high risk */
 
+  /* Orange as small TEXT (₹1L+ amounts, the ⧉ duplicate flag). Raw --accent-orange
+     is ~9:1 on white but only ~4.4:1 on the dark card — just sub-AA for 13px text.
+     The dark block lifts it toward white (measured ~6.7:1) the same way the risk
+     tiers and brand text are lifted; light keeps the true orange. Hue preserved, so
+     the "orange = alert" grammar holds. */
+  --accent-orange-text: var(--accent-orange);
+
   /* Risk-tier text/number colours (mule score, risk pill, risk stat-cards).
      In light mode they ARE the grammar colours; the dark block lifts them
      toward white so the same red/orange/green stays legible on the dark card
@@ -160,6 +167,10 @@
        toward white for legible brand-coloured stat numbers (~4.7:1, measured
        on the rendered node); the hue stays navy so the grammar holds. */
     --brand-text: color-mix(in srgb, var(--brand) 60%, #fff);
+
+    /* Lift the orange-as-text for ₹1L amounts + the ⧉ duplicate flag (~6.7:1
+       on the dark card vs ~4.4:1 raw); orange hue preserved. */
+    --accent-orange-text: color-mix(in srgb, var(--accent-orange) 68%, #fff);
   }
 }
 
@@ -1407,6 +1418,106 @@ table.data-table tbody td.expanded-cell {
   .layer-flow-step:hover {
     transform: none;
   }
+}
+
+/* ─── Transactions page — filter chips + searchable bank filter ───────────
+   The filter panel's Layer chips and the (98-bank) searchable Bank list. All
+   token-based so both themes hold; the active chip uses the brand fill + white
+   text (text-on-solid) that reads in either theme. */
+
+/* Pill chip (Layer L1…Lmax). Replaces the old inline-styled chip so it can carry
+   a hover affordance and a clear active state. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.chip:hover {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+}
+
+.chip.is-active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--text-on-solid);
+}
+
+.chip.is-active:hover {
+  background: var(--brand);
+  filter: brightness(1.08);
+}
+
+/* Searchable bank filter: a scrollable list of checkable rows with per-bank
+   counts. The whole row is the click target; hover and checked states are
+   tinted so selections stay scannable in a long list without reordering. */
+.bankfilter-list {
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  background: var(--card-bg);
+}
+
+.bankfilter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.bankfilter-row:hover {
+  background: var(--surface-2);
+}
+
+/* :has() is supported in the Electron/Chromium renderer — highlight a row whose
+   checkbox is checked so the current selection reads at a glance. */
+.bankfilter-row:has(input:checked) {
+  background: var(--brand-light);
+}
+
+.bankfilter-row input {
+  accent-color: var(--brand);
+  flex: 0 0 auto;
+}
+
+.bankfilter-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bankfilter-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+/* The ⧉ exact-duplicate flag in the Date cell. An informational marker (not an
+   error): the orange-as-text token (theme-lifted) keeps it legible without going
+   alarm-red. The duplicate row also carries a 3px orange left rule (inline). */
+.dup-flag {
+  margin-right: 4px;
+  font-weight: 700;
+  color: var(--accent-orange-text);
+  cursor: help;
 }
 
 /* ─── Scrollbars (WebKit/Chromium) ────────────────────────────────────
