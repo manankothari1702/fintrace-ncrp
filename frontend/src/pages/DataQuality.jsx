@@ -22,9 +22,12 @@ import { getDataQuality, getReport, friendlyErrorMessage, ApiError } from '../ut
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 // Parse-warning code → display label + colour for the self-healing audit panel.
+// Caution rows use --risk-medium (the theme-aware orange): identical to raw
+// --accent-orange on white, but lifted toward white on the dark card so the pill
+// label clears AA (raw orange measured 4.0:1 dark, sub-AA for an 11px badge).
 const PARSE_WARNING_META = {
-  FUZZY_SHEET_MATCH: { label: 'Sheet matched by similarity', color: 'var(--accent-orange)' },
-  FUZZY_COLUMN_MATCH: { label: 'Column matched by similarity', color: 'var(--accent-orange)' },
+  FUZZY_SHEET_MATCH: { label: 'Sheet matched by similarity', color: 'var(--risk-medium)' },
+  FUZZY_COLUMN_MATCH: { label: 'Column matched by similarity', color: 'var(--risk-medium)' },
   INFORMATIONAL_COLUMN_MISSING: { label: 'Column missing (degraded)', color: 'var(--text-muted)' },
 };
 
@@ -32,11 +35,13 @@ function parseWarningMeta(code) {
   return PARSE_WARNING_META[code] || { label: code || '—', color: 'var(--text-muted)' };
 }
 
-// Flag → display label + colour. Mismatches are the most actionable (the letter
-// bank differs from the source text), so they get the warning colour.
+// Flag → display label + colour. Caution flags use --risk-medium (theme-aware
+// orange — same hue as --accent-orange, lifted for AA on the dark card); the
+// muted flags keep --text-muted (already theme-aware, ~6:1 dark). FREEZE TARGET
+// (rendered separately below) carries the strongest danger grammar.
 const FLAG_META = {
-  IFSC_TEXT_MISMATCH: { label: 'IFSC vs text', color: 'var(--accent-orange)' },
-  UNKNOWN_IFSC_PREFIX: { label: 'Unknown prefix', color: 'var(--accent-orange)' },
+  IFSC_TEXT_MISMATCH: { label: 'IFSC vs text', color: 'var(--risk-medium)' },
+  UNKNOWN_IFSC_PREFIX: { label: 'Unknown prefix', color: 'var(--risk-medium)' },
   INVALID_IFSC: { label: 'Invalid IFSC', color: 'var(--text-muted)' },
   NO_IFSC: { label: 'No IFSC (wallet/PA/PG)', color: 'var(--text-muted)' },
 };
@@ -44,6 +49,14 @@ const FLAG_META = {
 function flagMeta(flag) {
   return FLAG_META[flag] || { label: flag || '—', color: 'var(--text-muted)' };
 }
+
+// Long bank names ("Punjab National Bank (including Oriental Bank of Commerce
+// and United Bank of India)") are clipped to a tooltip so the column stays
+// uniform — same single-line ellipsis pattern as the Mules / Lien tables.
+const TRUNC_CELL = {
+  display: 'inline-block', maxWidth: 220, overflow: 'hidden',
+  textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom',
+};
 
 export default function DataQuality() {
   const reportId = useActiveReportId();
@@ -165,22 +178,22 @@ export default function DataQuality() {
               value={counts.freezeTargets}
               subtitle="lien-table accounts, unconfirmed bank"
               icon="⛔"
-              color={counts.freezeTargets > 0 ? 'var(--danger)' : 'var(--accent)'}
+              color={counts.freezeTargets > 0 ? 'var(--risk-high)' : 'var(--risk-low)'}
             />
             <StatCard
               title="Actionable flags"
               value={counts.actionable}
               subtitle="need bank verification"
               icon="🔎"
-              color={counts.actionable > 0 ? 'var(--accent-orange)' : 'var(--accent)'}
+              color={counts.actionable > 0 ? 'var(--risk-medium)' : 'var(--risk-low)'}
             />
-            <StatCard title="Auto-corrected from IFSC" value={counts.mismatch} subtitle="source text disagreed (resolved)" icon="✓" color="var(--brand)" />
+            <StatCard title="Auto-corrected from IFSC" value={counts.mismatch} subtitle="source text disagreed (resolved)" icon="✓" color="var(--brand-text)" />
           </>
         ) : (
           <>
-            <StatCard title="Accounts to verify" value={counts.total} icon="🔎" color="var(--accent-orange)" />
-            <StatCard title="IFSC vs text mismatch" value={counts.mismatch} subtitle="letter uses the IFSC bank" icon="⚠️" color="var(--accent-orange)" />
-            <StatCard title="Wallet / no IFSC" value={counts.noIfsc} subtitle="confirm nodal entity" icon="👛" color="var(--brand)" />
+            <StatCard title="Accounts to verify" value={counts.total} icon="🔎" color="var(--risk-medium)" />
+            <StatCard title="IFSC vs text mismatch" value={counts.mismatch} subtitle="letter uses the IFSC bank" icon="⚠️" color="var(--risk-medium)" />
+            <StatCard title="Wallet / no IFSC" value={counts.noIfsc} subtitle="confirm nodal entity" icon="👛" color="var(--brand-text)" />
           </>
         )}
       </div>
@@ -216,12 +229,16 @@ export default function DataQuality() {
                       <td>
                         {r.account_no}
                         {r.severity === 'actionable' && r.freeze_target && (
-                          <div><Badge color="var(--danger)">Freeze target</Badge></div>
+                          <div><Badge color="var(--risk-high)">Freeze target</Badge></div>
                         )}
                       </td>
-                      <td style={{ fontWeight: 600 }}>{r.bank || '—'}</td>
+                      <td style={{ fontWeight: 600 }}>
+                        <span title={r.bank || undefined} style={TRUNC_CELL}>{r.bank || '—'}</span>
+                      </td>
                       <td>{r.ifsc_code || '—'}</td>
-                      <td style={{ color: 'var(--text-muted)' }}>{r.raw_bank || '(blank)'}</td>
+                      <td style={{ color: 'var(--text-muted)' }}>
+                        <span title={r.raw_bank || undefined} style={{ ...TRUNC_CELL, maxWidth: 180 }}>{r.raw_bank || '(blank)'}</span>
+                      </td>
                       <td>
                         <Badge color={r.severity === 'informational' ? 'var(--text-muted)' : meta.color}>
                           {meta.label}
