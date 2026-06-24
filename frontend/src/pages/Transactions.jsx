@@ -17,14 +17,17 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonLine } from '../components/Skeleton.jsx';
-import { formatINR, formatDateTime, formatNumber } from '../utils/format.js';
-import { getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { formatINR, formatDateTimeUTC, formatNumber } from '../utils/format.js';
+import { getTransactions, getTransactionFacets, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 const PAGE_SIZES = [100, 250, 500];
 const PAYMENT_MODES = ['UPI', 'IMPS', 'NEFT', 'RTGS', 'ATM', 'POS', 'AEPS', 'HOLD'];
-const BANKS = ['HDFC Bank', 'ICICI Bank', 'SBI', 'Axis Bank', 'Kotak', 'Yes Bank'];
 const CASH_EXIT_MODES = new Set(['ATM', 'POS']);
+// Page size used to stream the FULL filtered set into the CSV export (server cap
+// is 500). Kept separate from the on-screen PAGE_SIZES so a UI change never
+// silently shrinks an export.
+const EXPORT_PAGE_SIZE = 500;
 // High-value transactions (over ₹1,00,000) are tinted orange so an officer can
 // spot the big movements at a glance while scanning a long trail.
 const HIGH_AMOUNT_THRESHOLD = 100000;
@@ -61,6 +64,23 @@ function filtersFromParams(sp) {
   };
 }
 
+// Build the server-side filter params (everything except pagination) from the
+// filter state. Shared by the on-screen fetch and the CSV export so the export
+// can never apply a different filter than what is displayed.
+function serverParams(filters) {
+  return {
+    layer: filters.layers.length ? filters.layers.join(',') : undefined,
+    bank: filters.banks.length ? filters.banks.join(',') : undefined,
+    payment_mode: filters.payment_mode || undefined,
+    date_from: filters.date_from || undefined,
+    // make date_to inclusive of the whole day (backend compares the raw string)
+    date_to: filters.date_to ? `${filters.date_to}T23:59:59` : undefined,
+    min_amount: filters.min_amount !== '' ? filters.min_amount : undefined,
+    max_amount: filters.max_amount !== '' ? filters.max_amount : undefined,
+    search: filters.search || undefined,
+  };
+}
+
 export default function Transactions() {
   const [searchParams, setSearchParams] = useSearchParams();
   const reportId = useActiveReportId();
@@ -71,6 +91,11 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showFilters, setShowFilters] = useState(true);
+  // Filter options derived from the report's ACTUAL data (banks + layers).
+  const [facets, setFacets] = useState({ banks: [], layers: [] });
+  const [bankSearch, setBankSearch] = useState('');
+  // CSV export streams every filtered page, so it has its own busy flag.
+  const [exporting, setExporting] = useState(false);
 
   const searchTimer = useRef(null);
   const scrollRef = useRef(null);
@@ -107,19 +132,7 @@ export default function Transactions() {
       return undefined;
     }
 
-    const params = {
-      page: filters.page,
-      limit: filters.limit,
-      layer: filters.layers.length ? filters.layers.join(',') : undefined,
-      bank: filters.banks.length ? filters.banks.join(',') : undefined,
-      payment_mode: filters.payment_mode || undefined,
-      date_from: filters.date_from || undefined,
-      // make date_to inclusive of the whole day (backend compares the raw string)
-      date_to: filters.date_to ? `${filters.date_to}T23:59:59` : undefined,
-      min_amount: filters.min_amount !== '' ? filters.min_amount : undefined,
-      max_amount: filters.max_amount !== '' ? filters.max_amount : undefined,
-      search: filters.search || undefined,
-    };
+    const params = { ...serverParams(filters), page: filters.page, limit: filters.limit };
 
     getTransactions(reportId, params)
       .then((r) => { if (!cancelled) setResp(r); })
@@ -128,6 +141,18 @@ export default function Transactions() {
 
     return () => { cancelled = true; };
   }, [filters, reportId]);
+
+  // Fetch the report's distinct banks + layers ONCE per report, so the Bank and
+  // Layer filters offer the values that actually exist in the data (unfiltered)
+  // — never a hardcoded option that matches zero rows.
+  useEffect(() => {
+    let cancelled = false;
+    if (!reportId) { setFacets({ banks: [], layers: [] }); return undefined; }
+    getTransactionFacets(reportId)
+      .then((f) => { if (!cancelled) setFacets({ banks: f.banks || [], layers: f.layers || [] }); })
+      .catch(() => { if (!cancelled) setFacets({ banks: [], layers: [] }); });
+    return () => { cancelled = true; };
+  }, [reportId]);
 
   // Keyboard: Escape collapses the filter panel (the only modal-like surface on
   // this page) so an officer can clear the chrome and focus the table.
@@ -162,7 +187,7 @@ export default function Transactions() {
     const next = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
     return { ...f, [key]: next, page: 1 };
   });
-  const clearFilters = () => { setFilters(EMPTY_FILTERS); setSearchText(''); };
+  const clearFilters = () => { setFilters(EMPTY_FILTERS); setSearchText(''); setBankSearch(''); };
 
   const rows = resp?.data || [];
 
@@ -186,17 +211,53 @@ export default function Transactions() {
     + (filters.min_amount !== '' ? 1 : 0) + (filters.max_amount !== '' ? 1 : 0) + (filters.search ? 1 : 0)
   ), [filters]);
 
-  const exportCsv = () => {
-    const header = ['Date', 'Account', 'Name', 'Bank', 'IFSC', 'Amount', 'Disputed', 'Mode', 'Layer', 'UTR', 'City', 'State'];
-    const lines = [header.join(',')];
-    for (const t of rows) {
-      lines.push([t.transaction_date, t.beneficiary_account, t.beneficiary_name, t.beneficiary_bank, t.ifsc_code, t.transaction_amount, t.disputed_amount, t.payment_mode, t.layer_no, t.utr_no, t.city, t.state]
-        .map((c) => `"${String(c ?? '')}"`).join(','));
+  // Banks shown in the filter list: matched by the search box, but ALWAYS keep
+  // selected ones visible (so a selection never disappears when you type).
+  const visibleBanks = useMemo(() => {
+    const q = bankSearch.trim().toLowerCase();
+    const list = facets.banks || [];
+    if (!q) return list;
+    return list.filter((b) => b.name.toLowerCase().includes(q) || filters.banks.includes(b.name));
+  }, [facets.banks, bankSearch, filters.banks]);
+
+  // Export the ENTIRE current filtered set, not just the visible page. Streams
+  // every server page (limit 500) and assembles one CSV. Raw values are written
+  // verbatim (exact paise preserved); a Duplicate column carries the exact-
+  // duplicate flag so the exported evidence is self-documenting.
+  const exportCsv = async () => {
+    if (!reportId || exporting) return;
+    setExporting(true);
+    try {
+      const header = ['Date', 'Account', 'Name', 'Bank', 'IFSC', 'Amount', 'Disputed', 'Mode', 'Layer', 'UTR', 'City', 'State', 'Duplicate'];
+      const lines = [header.join(',')];
+      const base = serverParams(filters);
+      let page = 1;
+      let total = Infinity;
+      let fetched = 0;
+      while (fetched < total) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await getTransactions(reportId, { ...base, page, limit: EXPORT_PAGE_SIZE });
+        total = r.total;
+        for (const t of r.data) {
+          lines.push([
+            t.transaction_date, t.beneficiary_account, t.beneficiary_name, t.beneficiary_bank,
+            t.ifsc_code, t.transaction_amount, t.disputed_amount, t.payment_mode, t.layer_no,
+            t.utr_no, t.city, t.state, t.is_duplicate ? 'YES' : '',
+          ].map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','));
+        }
+        fetched += r.data.length;
+        if (!r.data.length || page >= (r.total_pages || 1)) break;
+        page += 1;
+      }
+      const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'transactions.csv'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setExporting(false);
     }
-    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = 'transactions.csv'; a.click();
-    URL.revokeObjectURL(url);
   };
 
   if (error) {
@@ -219,7 +280,25 @@ export default function Transactions() {
     <div className="page">
       <header className="page-header">
         <h1>All Transactions</h1>
-        <p className="subtitle">{resp ? `${formatNumber(resp.total)} transactions` : 'Loading…'} · cashout rows tinted red, ⚡ marks same-day cashouts, amounts over ₹1L in orange</p>
+        <p className="subtitle">
+          {!resp ? 'Loading…' : (
+            activeFilterCount > 0
+              ? `Showing ${formatNumber(resp.total)} of ${formatNumber(resp.report_total ?? resp.total)} ledger rows`
+              : `${formatNumber(resp.report_total ?? resp.total)} ledger rows`
+                + (resp.unique_hops != null ? ` · ${formatNumber(resp.unique_hops)} distinct hops` : '')
+                + (resp.duplicate_total ? ` · ${formatNumber(resp.duplicate_total)} exact duplicate${resp.duplicate_total === 1 ? '' : 's'} ⧉` : '')
+          )}
+          {' · '}cashout rows tinted red, ⚡ same-day cashouts, ⧉ exact duplicates, amounts over ₹1L in orange
+        </p>
+        {resp && (
+          <p className="subtitle" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.45 }}>
+            Raw evidence ledger — every leg from the source sheets, incl. ATM/POS/HOLD dispositions and
+            {' '}the {formatNumber(resp.duplicate_total || 0)} exact-duplicate leg{(resp.duplicate_total || 0) === 1 ? '' : 's'} the
+            {' '}dedup system flags (⧉) but excludes from every total. The Dashboard counts
+            {' '}{resp.unique_hops != null ? formatNumber(resp.unique_hops) : 'the'} distinct hops; per-layer counts here are
+            {' '}raw rows (incl. dispositions &amp; duplicates), so they read higher than the Layers page&rsquo;s deduped hop counts.
+          </p>
+        )}
       </header>
 
       {/* Collapsible filter panel */}
@@ -238,23 +317,55 @@ export default function Transactions() {
           />
           <span className="spacer" />
           {activeFilterCount > 0 && <button type="button" className="btn btn-sm" onClick={clearFilters}>Clear all</button>}
-          <button type="button" className="btn btn-sm" onClick={exportCsv} disabled={rows.length === 0}>⬇ Export CSV</button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={exportCsv}
+            disabled={exporting || !resp || resp.total === 0}
+            title="Exports the full current filtered set (all pages), not just the visible page"
+          >
+            {exporting ? '… Exporting' : '⬇ Export CSV'}
+          </button>
         </div>
 
         {showFilters && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
             <FilterGroup label="Layer">
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {[0, 1, 2, 3, 4].map((l) => (
-                  <Chip key={l} active={filters.layers.includes(l)} onClick={() => toggleInList('layers', l)}>L{l}</Chip>
+                {facets.layers.length === 0 ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+                ) : facets.layers.map(({ layer, count }) => (
+                  <Chip
+                    key={layer}
+                    active={filters.layers.includes(layer)}
+                    onClick={() => toggleInList('layers', layer)}
+                    title={`${formatNumber(count)} row${count === 1 ? '' : 's'}`}
+                  >
+                    L{layer}
+                  </Chip>
                 ))}
               </div>
             </FilterGroup>
 
-            <FilterGroup label="Bank">
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {BANKS.map((b) => (
-                  <Chip key={b} active={filters.banks.includes(b)} onClick={() => toggleInList('banks', b)}>{b}</Chip>
+            <FilterGroup label={`Bank${filters.banks.length ? ` (${filters.banks.length})` : ''}`}>
+              <input
+                className="input"
+                placeholder="Filter banks…"
+                value={bankSearch}
+                onChange={(e) => setBankSearch(e.target.value)}
+                style={{ width: '100%', marginBottom: 6, fontSize: 12 }}
+              />
+              <div style={{ maxHeight: 150, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 6 }}>
+                {facets.banks.length === 0 ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 2px' }}>—</div>
+                ) : visibleBanks.length === 0 ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 2px' }}>No banks match.</div>
+                ) : visibleBanks.map(({ name, count }) => (
+                  <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '3px 2px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={filters.banks.includes(name)} onChange={() => toggleInList('banks', name)} />
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>{name}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{formatNumber(count)}</span>
+                  </label>
                 ))}
               </div>
             </FilterGroup>
@@ -313,11 +424,25 @@ export default function Transactions() {
                     const t = rows[vi.index];
                     const isCashout = CASH_EXIT_MODES.has(t.payment_mode) || t.cashout_mode === 'ATM_WITHDRAWAL' || t.cashout_mode === 'POS_PURCHASE';
                     const isHighValue = Number(t.transaction_amount) > HIGH_AMOUNT_THRESHOLD;
+                    const isDuplicate = !!t.is_duplicate;
+                    // Cashout (red) wins the row tint when a row is both; a duplicate
+                    // always carries the ⧉ badge + a left accent so it reads through.
+                    const rowStyle = {};
+                    if (isCashout) rowStyle.background = 'color-mix(in srgb, var(--danger) 8%, transparent)';
+                    else if (isDuplicate) rowStyle.background = 'color-mix(in srgb, var(--text-muted) 12%, transparent)';
                     return (
-                      <tr key={t.id} style={isCashout ? { background: 'color-mix(in srgb, var(--danger) 8%, transparent)' } : undefined}>
-                        <td style={{ whiteSpace: 'nowrap' }}>
+                      <tr key={t.id} style={rowStyle}>
+                        <td style={{ whiteSpace: 'nowrap', borderLeft: isDuplicate ? '3px solid var(--accent-orange)' : undefined }}>
+                          {isDuplicate ? (
+                            <span
+                              title="Exact duplicate — this leg is re-listed across NCRP sheets and is EXCLUDED from every total (shown here for completeness)."
+                              style={{ marginRight: 4, color: 'var(--accent-orange)', fontWeight: 700 }}
+                            >
+                              ⧉
+                            </span>
+                          ) : null}
                           {t.same_day_cashout ? <span title="Same-day cashout" style={{ marginRight: 4 }}>⚡</span> : null}
-                          {formatDateTime(t.transaction_date)}
+                          {formatDateTimeUTC(t.transaction_date)}
                         </td>
                         <td>{t.beneficiary_account || '—'}</td>
                         <td>{t.beneficiary_name || '—'}</td>
@@ -376,11 +501,12 @@ function FilterGroup({ label, children }) {
   );
 }
 
-function Chip({ active, onClick, children }) {
+function Chip({ active, onClick, children, title }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       style={{
         padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: 'pointer',
         border: `1px solid ${active ? 'var(--brand)' : 'var(--border)'}`,

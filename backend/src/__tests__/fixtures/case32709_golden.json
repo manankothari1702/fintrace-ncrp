@@ -71,16 +71,16 @@
   "feature5_dayOfWeek": {
     "weekdayOrder": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
     "byWeekday": {
-      "Monday": { "txns": 52, "totalAmount": 77820.09 },
-      "Tuesday": { "txns": 13, "totalAmount": 15449.6 },
+      "Monday": { "txns": 37, "totalAmount": 55909.17 },
+      "Tuesday": { "txns": 9, "totalAmount": 13085 },
       "Wednesday": { "txns": 10, "totalAmount": 5729.2 },
-      "Thursday": { "txns": 0, "totalAmount": 0 },
-      "Friday": { "txns": 1, "totalAmount": 1000 },
+      "Thursday": { "txns": 1, "totalAmount": 1000 },
+      "Friday": { "txns": 0, "totalAmount": 0 },
       "Saturday": { "txns": 1, "totalAmount": 1000 },
-      "Sunday": { "txns": 66, "totalAmount": 204453.53 }
+      "Sunday": { "txns": 85, "totalAmount": 228729.05 }
     },
     "undated": { "txns": 11, "totalAmount": 0 },
     "datedTxns": 143,
-    "note": "Dated (143) + Undated (11) == 154 deduped legs. Weekday is the IST calendar day of each leg. The restored ₹409.56 leg dates to 2025-09-28 18:32 UTC == 2025-09-29 IST (Monday), so Monday gains one ₹1400 leg."
+    "note": "Dated (143) + Undated (11) == 154 deduped legs. Weekday is the source file's wall-clock calendar day. CORRECTED by the date-timezone fix (Transactions audit #1): the analyzer's istDayKey / dayOfWeek were adding the IST offset to timestamps already stored as IST wall-clock relabelled UTC, pushing every leg at/after 18:30 onto the next weekday. These counts now match the true calendar weekday of each source date, verified independently (e.g. the ₹409.56 leg dated 2025-09-28 18:32 is Sunday, not Monday). Pre-fix buckets were Mon 52 / Tue 13 / Thu 0 / Fri 1 / Sun 66."
   }
 }

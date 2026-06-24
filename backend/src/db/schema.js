@@ -88,6 +88,7 @@ const CREATE_TABLES = Object.freeze([
     bank_flag            TEXT,
     same_day_cashout     INTEGER DEFAULT 0,
     cashout_mode         TEXT,
+    is_duplicate         INTEGER DEFAULT 0,
     FOREIGN KEY (report_id) REFERENCES ncrp_reports(id) ON DELETE CASCADE
   )`,
 
@@ -232,6 +233,14 @@ const COLUMN_MIGRATIONS = Object.freeze([
   // parse-audit trail. Never affects a financial figure.
   { table: 'ncrp_reports', column: 'parse_warnings',
     ddl: 'ALTER TABLE ncrp_reports ADD COLUMN parse_warnings TEXT' },
+
+  // v0.5.0 — Transactions raw-evidence view. Per-row exact-duplicate flag so the
+  // flat ledger table can MARK the re-listed legs that the dedup system collapses
+  // (shown but flagged), keeping the raw evidence view self-documenting. Written
+  // by the analyzer write-back from its single dedup definition; 0 for the kept
+  // first occurrence and every non-duplicate row, 1 for an exact-duplicate leg.
+  { table: 'ncrp_transactions', column: 'is_duplicate',
+    ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN is_duplicate INTEGER DEFAULT 0' },
 ]);
 
 /**

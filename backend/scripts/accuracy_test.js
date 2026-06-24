@@ -84,11 +84,17 @@ const GOLD = {
   //   1,065,298 − 544,282.95 − 139,649.18 − 0 = 381,365.87.
   // (Was 336,218.86 when the residual subtracted the uncapped ₹5.89L sum.)
   recoverable_residual: 381365.87,
-  // 28, not 27: fix/disputed-reconciliation-409 corrected the exact-duplicate
-  // key to include sender + disputed amount, so a genuine same-day ATM cash-out
-  // (acct 50100851063711, UTR 270324046951, ₹20,000, 2025-12-10) that the old
-  // loose key wrongly collapsed is now retained and counted.
-  same_day_cashouts: 28,
+  // 39: corrected from 28 by the date-timezone fix (Transactions audit #1). NCRP
+  // source timestamps are the file's IST wall-clock RELABELLED as UTC (the parser
+  // does not shift IST→UTC; see ncrpParser.parseDate). The analyzer's istDayKey
+  // was ADDING the IST offset again, so any same-day ATM cash-out whose receipt
+  // or withdrawal fell at/after 18:30 wall-clock was pushed onto the next
+  // calendar day and wrongly NOT counted as same-day. Formatting the stored
+  // value's UTC day directly (= the source wall-clock day) recovers those genuine
+  // same-day cash-outs: 28 → 39. (The earlier dedup-key note — that a ₹20,000
+  // 2025-12-10 cash-out was previously over-collapsed — still holds; this TZ
+  // correction is additive on top of it.)
+  same_day_cashouts: 39,
   top_lien_account: '00000005906495023',
   top_lien_amount: 94300,
   top_mule_score: 99,

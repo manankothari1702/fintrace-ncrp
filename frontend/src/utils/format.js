@@ -87,7 +87,11 @@ export function formatDate(dateStr) {
 }
 
 /**
- * "15 Jan 2024, 10:30 AM" — date + 12-hour clock.
+ * "15 Jan 2024, 10:30 AM" — date + 12-hour clock, in the LOCAL zone.
+ *
+ * Use this for true UTC instants the app generates itself (upload time, action
+ * timestamps), where the officer expects their own wall-clock. For NCRP SOURCE
+ * timestamps use {@link formatDateTimeUTC} instead — see its note.
  *
  * @param {string|Date|null|undefined} dateStr
  * @returns {string}
@@ -100,6 +104,32 @@ export function formatDateTime(dateStr) {
   const meridiem = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12 || 12;
   return `${formatDate(d)}, ${hours}:${minutes} ${meridiem}`;
+}
+
+/**
+ * "15 Jan 2024, 10:30 AM" — date + 12-hour clock, read in UTC.
+ *
+ * NCRP source timestamps (transaction_date, and the analyzer's first/last dates)
+ * are stored as the source file's IST wall-clock RELABELLED as UTC — the parser
+ * does not shift IST→UTC (see backend ncrpParser.parseDate). So to show the
+ * officer the EXACT wall-clock printed in the source file we must read the
+ * components in UTC, not the local zone. On an IST machine (the deployment
+ * target) the local zone would add +5:30 to every timestamp and roll any source
+ * time at/after 18:30 onto the next calendar day — i.e. show the wrong date for
+ * the raw evidence table. This formatter is the display half of Transactions
+ * audit #1; the analyzer's calendar-day logic was corrected to match.
+ *
+ * @param {string|Date|null|undefined} dateStr
+ * @returns {string}
+ */
+export function formatDateTimeUTC(dateStr) {
+  const d = toDate(dateStr);
+  if (!d) return DASH;
+  let hours = d.getUTCHours();
+  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
+  const meridiem = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${hours}:${minutes} ${meridiem}`;
 }
 
 /** Plain integer with Indian grouping, e.g. 12500 → "12,500". */

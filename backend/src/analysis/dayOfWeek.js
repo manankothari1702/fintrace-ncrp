@@ -8,9 +8,12 @@
  * are kept in a separate "Undated" bucket so the visible counts still foot to the
  * full leg total — nothing is silently dropped.
  *
- * IST (UTC+5:30) is used because NCRP is an Indian system and "which day" is an
- * Indian-clock concept — consistent with the rest of the analyzer's calendar-day
- * logic. Pure, synchronous, deterministic (weekday order is fixed Mon→Sun).
+ * The weekday is the IST weekday because NCRP is an Indian system and "which
+ * day" is an Indian-clock concept. Source timestamps are stored as the file's
+ * IST wall-clock relabelled UTC (the parser does not shift IST→UTC), so the UTC
+ * weekday already IS the IST weekday — consistent with the rest of the
+ * analyzer's calendar-day logic (see analyzer.istDayKey). Pure, synchronous,
+ * deterministic (weekday order is fixed Mon→Sun).
  *
  * @module backend/src/analysis/dayOfWeek
  */
@@ -18,9 +21,6 @@
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 dayjs.extend(utc);
-
-/** IST is UTC+5:30. */
-const IST_OFFSET_MINUTES = 330;
 
 /** dayjs .day(): 0=Sunday … 6=Saturday. */
 const WEEKDAY_NAME = Object.freeze([
@@ -71,7 +71,10 @@ function dayOfWeekBreakdown(txns) {
       undatedAmount += amt;
       continue;
     }
-    const weekday = WEEKDAY_NAME[dayjs.utc(ms).add(IST_OFFSET_MINUTES, 'minute').day()];
+    // Source timestamps are IST wall-clock relabelled UTC (the parser does not
+    // shift IST→UTC), so the UTC weekday IS the IST weekday — adding an offset
+    // would double-count it and push any time ≥ 18:30 onto the next weekday.
+    const weekday = WEEKDAY_NAME[dayjs.utc(ms).day()];
     const bucket = byDay.get(weekday);
     bucket.txns += 1;
     bucket.totalAmount += amt;

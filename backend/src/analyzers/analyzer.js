@@ -52,9 +52,6 @@ const CASHOUT_POLICY = CASHOUT_POLICIES.CAP_AT_RECEIVED;
 
 // ─── Constants ───────────────────────────────────────────────────────
 
-/** IST is UTC+5:30. Used for "same calendar day" comparisons (FR-12). */
-const IST_OFFSET_MINUTES = 330;
-
 /** Cashout classifications (FR-11). */
 const CASHOUT_MODE = Object.freeze({
   ATM: 'ATM_WITHDRAWAL',
@@ -233,8 +230,15 @@ function diffHours(aIso, bIso) {
 }
 
 /**
- * Calendar-day key (YYYY-MM-DD) in IST for an ISO instant. Two timestamps
+ * Calendar-day key (YYYY-MM-DD) for an NCRP source timestamp. Two timestamps
  * share a "same day" iff this key matches. Returns null for bad input.
+ *
+ * NCRP source timestamps are stored as the file's IST wall-clock RELABELLED as
+ * UTC — the parser does NOT shift IST→UTC (see ncrpParser.parseDate, which does
+ * `Date.UTC(y, m, d, h, …)` on the raw wall-clock components). So the stored
+ * value read as UTC already IS the IST calendar day; we format the UTC
+ * components directly. Adding an IST offset here would double-count it and push
+ * any source time ≥ 18:30 into the next day (the "wrong calendar day" bug).
  *
  * @param {unknown} iso
  * @returns {string|null}
@@ -242,7 +246,7 @@ function diffHours(aIso, bIso) {
 function istDayKey(iso) {
   const m = toMs(iso);
   if (m === null) return null;
-  return dayjs.utc(m).add(IST_OFFSET_MINUTES, 'minute').format('YYYY-MM-DD');
+  return dayjs.utc(m).format('YYYY-MM-DD');
 }
 
 // ─── Cashout classification (FR-11) ───────────────────────────────────
@@ -2177,21 +2181,39 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     txns.map((t) => ({ ...t, cashout_mode: CASHOUT_MODE.UNKNOWN, same_day_cashout: 0 }))
   );
 
-  // Optional write-back of derived columns. Wrap the whole sweep in a single
-  // SQLite transaction: on a 50k-row file this is the difference between one
-  // fsync and 50k of them (each bare UPDATE auto-commits otherwise), and was
-  // the dominant cost of analysing a large report. better-sqlite3's
-  // db.transaction() returns a function that runs the body atomically.
+  // Deduplicate the SAME money re-listed across channel sheets before any
+  // analysis (BUG 1). The collapse keeps the FIRST occurrence of each exact-
+  // duplicate key; analysis runs on the collapsed set so amounts and counts
+  // aren't multiplied. Computed BEFORE the write-back so the write-back can also
+  // stamp each row's `is_duplicate` flag.
+  const deduped = runModule('dedupe', () => dedupeRows(enriched), { rows: enriched, removed: 0 });
+  const rows = deduped.rows;
+  const duplicateCount = deduped.removed;
+  // IDs that survived de-dup (the first occurrences). Any raw row whose id is
+  // NOT in this set is an exact-duplicate re-listing — it is flagged, never
+  // dropped, so the raw evidence ledger (Transactions page) can mark it while
+  // every aggregate still excludes it. Keyed on the analyzer's single dedup
+  // definition (dedupeRows), so the per-row flag can never drift from the count.
+  const keptIds = new Set(
+    rows.map((t) => t.id).filter((id) => id !== undefined && id !== null)
+  );
+
+  // Optional write-back of derived columns (same_day_cashout, cashout_mode,
+  // is_duplicate). Wrap the whole sweep in a single SQLite transaction: on a
+  // 50k-row file this is the difference between one fsync and 50k of them (each
+  // bare UPDATE auto-commits otherwise), and was the dominant cost of analysing
+  // a large report. better-sqlite3's db.transaction() runs the body atomically.
   let transactionsUpdated = 0;
   if (options && options.db) {
     transactionsUpdated = runModule('cashoutWriteback', () => {
-      const writeAll = options.db.transaction((rows) => {
+      const writeAll = options.db.transaction((rawRows) => {
         let n = 0;
-        for (const t of rows) {
+        for (const t of rawRows) {
           if (t.id === undefined || t.id === null) continue;
           n += updateTransactionCashout(options.db, t.id, {
             same_day_cashout: t.same_day_cashout,
             cashout_mode: t.cashout_mode,
+            is_duplicate: !keptIds.has(t.id),
           });
         }
         return n;
@@ -2199,13 +2221,6 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
       return writeAll(enriched);
     }, 0);
   }
-
-  // Deduplicate the SAME money re-listed across channel sheets before any
-  // analysis (BUG 1). Write-back above already stamped every raw row; analysis
-  // runs on the collapsed set so amounts and counts aren't multiplied.
-  const deduped = runModule('dedupe', () => dedupeRows(enriched), { rows: enriched, removed: 0 });
-  const rows = deduped.rows;
-  const duplicateCount = deduped.removed;
 
   // Shared rollup (mule + lien depend on it). If it fails, those two modules
   // fall back to empty via their own runModule wrappers using an empty Map.
@@ -2457,9 +2472,11 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
       lien_table_total: round(liens.reduce((s, l) => s + num(l.lien_eligible_amount), 0)),
       // Accounts whose bank attribution needs IO review (see data_quality).
       bank_flags_count: data_quality.length,
+      // Source timestamps are IST wall-clock relabelled UTC (see istDayKey), so
+      // the UTC day IS the IST day — no offset add (that double-shifted ≥18:30).
       fraud_start_date: earliest === null
         ? null
-        : dayjs.utc(earliest).add(IST_OFFSET_MINUTES, 'minute').format('YYYY-MM-DD'),
+        : dayjs.utc(earliest).format('YYYY-MM-DD'),
     };
   }, {
     total_transactions: enriched.length, unique_transactions: 0, duplicate_count: duplicateCount,

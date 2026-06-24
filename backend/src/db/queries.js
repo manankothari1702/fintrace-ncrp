@@ -89,7 +89,8 @@ const SQL_INSERT_TRANSACTION = `
 const SQL_UPDATE_TRANSACTION_CASHOUT = `
   UPDATE ncrp_transactions
      SET same_day_cashout = @same_day_cashout,
-         cashout_mode     = @cashout_mode
+         cashout_mode     = @cashout_mode,
+         is_duplicate     = @is_duplicate
    WHERE id = @id
 `;
 
@@ -681,17 +682,18 @@ function upsertRepeatAccount(db, accountData) {
 }
 
 /**
- * Write back the two analyzer-derived columns (`same_day_cashout`,
- * `cashout_mode`) onto a single transaction row, addressed by primary key.
+ * Write back the analyzer-derived columns (`same_day_cashout`, `cashout_mode`,
+ * `is_duplicate`) onto a single transaction row, addressed by primary key.
  *
- * `same_day_cashout` is coerced to 0/1 (truthy → 1) and `cashout_mode` is
- * coerced to null when omitted, mirroring the INSERT path's normalisation so
- * an analyzer pass never binds NULL into the boolean column or undefined into
- * the text column.
+ * `same_day_cashout` and `is_duplicate` are coerced to 0/1 (truthy → 1) and
+ * `cashout_mode` is coerced to null when omitted, mirroring the INSERT path's
+ * normalisation so an analyzer pass never binds NULL into a boolean column or
+ * undefined into the text column.
  *
  * @param {Database.Database} db
  * @param {number} id - Primary key of the ncrp_transactions row.
- * @param {{ same_day_cashout?: boolean|number, cashout_mode?: string|null }} patch
+ * @param {{ same_day_cashout?: boolean|number, cashout_mode?: string|null,
+ *   is_duplicate?: boolean|number }} patch
  * @returns {number} Rows affected (0 if id not found).
  */
 function updateTransactionCashout(db, id, patch) {
@@ -702,6 +704,7 @@ function updateTransactionCashout(db, id, patch) {
     id,
     same_day_cashout: patch && patch.same_day_cashout ? 1 : 0,
     cashout_mode:     nz(patch && patch.cashout_mode),
+    is_duplicate:     patch && patch.is_duplicate ? 1 : 0,
   };
   return getOrPrepare(db, SQL_UPDATE_TRANSACTION_CASHOUT).run(params).changes;
 }

@@ -886,13 +886,61 @@ function createNcrpRouter(db) {
        LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 
+    // Report-level (unfiltered) totals so the raw-evidence header can label this
+    // as the RAW LEDGER (incl. exact duplicates) and reconcile with the
+    // Dashboard's distinct-hop count — the two must never silently contradict.
+    // `total` above stays the FILTERED count; these describe the whole report.
+    const analysisSnap = parseAnalysis(report);
+    const reportTotal = report.total_transactions != null
+      ? report.total_transactions
+      : db.prepare('SELECT COUNT(*) AS n FROM ncrp_transactions WHERE report_id = ?')
+        .get(report.id).n;
+    const uniqueHops = analysisSnap && analysisSnap.summary
+      && analysisSnap.summary.unique_transactions != null
+      ? analysisSnap.summary.unique_transactions
+      : null;
+    const duplicateTotal = analysisSnap && analysisSnap.summary
+      && analysisSnap.summary.duplicate_count != null
+      ? analysisSnap.summary.duplicate_count
+      : db.prepare('SELECT COUNT(*) AS n FROM ncrp_transactions WHERE report_id = ? AND is_duplicate = 1')
+        .get(report.id).n;
+
     res.json({
       data,
       total,
       page,
       limit,
       total_pages: total === 0 ? 0 : Math.ceil(total / limit),
+      report_total: reportTotal,
+      unique_hops: uniqueHops,
+      duplicate_total: duplicateTotal,
     });
+  });
+
+  // GET /api/ncrp/:id/transaction-facets — distinct filter values PRESENT in the
+  // report (unfiltered), so the Transactions page builds Bank / Layer filters
+  // from the ACTUAL data instead of a hardcoded guess. A hardcoded "SBI"/"Kotak"
+  // chip matched zero rows (the data stores "State Bank of India" / "Kotak
+  // Mahindra Bank"), silently returning a false "no transactions" for the
+  // largest banks; deriving the options from the data makes every option real.
+  router.get('/ncrp/:id/transaction-facets', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const banks = db.prepare(`
+      SELECT beneficiary_bank AS name, COUNT(*) AS count
+        FROM ncrp_transactions
+       WHERE report_id = ? AND beneficiary_bank IS NOT NULL AND TRIM(beneficiary_bank) <> ''
+       GROUP BY beneficiary_bank
+       ORDER BY count DESC, name ASC
+    `).all(report.id);
+    const layers = db.prepare(`
+      SELECT layer_no AS layer, COUNT(*) AS count
+        FROM ncrp_transactions
+       WHERE report_id = ? AND layer_no IS NOT NULL
+       GROUP BY layer_no
+       ORDER BY layer_no ASC
+    `).all(report.id);
+    res.json({ banks, layers });
   });
 
   // GET /api/ncrp/:id/layers — per-layer aggregates. Served from the analysis

@@ -125,6 +125,18 @@ export const getTransactions = (id, params = {}) =>
   api.get(`/ncrp/${id}/transactions`, { params }).then((r) => r.data);
 
 /**
+ * Distinct filter values actually PRESENT in a report (unfiltered), so the
+ * Transactions page builds its Bank / Layer filters from the real data instead
+ * of a hardcoded list (which silently matched zero rows for banks stored under a
+ * different canonical name).
+ * @param {number} id
+ * @returns {Promise<{ banks: Array<{ name: string, count: number }>,
+ *   layers: Array<{ layer: number, count: number }> }>}
+ */
+export const getTransactionFacets = (id) =>
+  api.get(`/ncrp/${id}/transaction-facets`).then((r) => r.data);
+
+/**
  * Full payment-mode distribution for a report — `{ modes: [{ mode, count,
  * amount }], total }`, aggregated server-side over ALL transactions (not a
  * page). Drives the dashboard donut.
