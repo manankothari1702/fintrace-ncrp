@@ -440,23 +440,23 @@ export default function Transactions() {
             </FilterGroup>
 
             <FilterGroup label="Payment Mode">
-              <select className="select" value={filters.payment_mode} onChange={(e) => setFilter({ payment_mode: e.target.value })}>
+              <select className="select" value={filters.payment_mode} onChange={(e) => setFilter({ payment_mode: e.target.value })} style={{ width: '100%' }}>
                 <option value="">All modes</option>
                 {PAYMENT_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
             </FilterGroup>
 
             <FilterGroup label="Date Range">
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input type="date" className="input" value={filters.date_from} onChange={(e) => setFilter({ date_from: e.target.value })} />
-                <input type="date" className="input" value={filters.date_to} onChange={(e) => setFilter({ date_to: e.target.value })} />
+              <div className="filter-range">
+                <input type="date" className="input" aria-label="From date" value={filters.date_from} onChange={(e) => setFilter({ date_from: e.target.value })} />
+                <input type="date" className="input" aria-label="To date" value={filters.date_to} onChange={(e) => setFilter({ date_to: e.target.value })} />
               </div>
             </FilterGroup>
 
             <FilterGroup label="Amount Range (₹)">
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input type="number" className="input" placeholder="Min" value={filters.min_amount} onChange={(e) => setFilter({ min_amount: e.target.value })} style={{ width: 100 }} />
-                <input type="number" className="input" placeholder="Max" value={filters.max_amount} onChange={(e) => setFilter({ max_amount: e.target.value })} style={{ width: 100 }} />
+              <div className="filter-range" style={{ '--range-basis': '4.5rem' }}>
+                <input type="number" className="input" placeholder="Min" aria-label="Minimum amount" value={filters.min_amount} onChange={(e) => setFilter({ min_amount: e.target.value })} />
+                <input type="number" className="input" placeholder="Max" aria-label="Maximum amount" value={filters.max_amount} onChange={(e) => setFilter({ max_amount: e.target.value })} />
               </div>
             </FilterGroup>
           </div>

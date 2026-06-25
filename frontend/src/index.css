@@ -1445,6 +1445,24 @@ table.data-table tbody td.expanded-cell {
   margin-bottom: 7px;
 }
 
+/* Date / Amount "from–to" pairs. The two inputs sit side by side when the group
+   cell is wide enough and wrap to stacked when it isn't — so neither input ever
+   overflows the group into its neighbour. min-width:0 lets the native date input
+   (which has an intrinsic min-width) shrink to its cell instead of forcing the
+   overflow that collided the Date and Amount groups. --range-basis tunes the
+   side-by-side threshold per group (wider for dates, narrower for amounts). */
+.filter-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-range > .input {
+  flex: 1 1 var(--range-basis, 7rem);
+  min-width: 0;
+  width: auto;
+}
+
 /* Pill chip (Layer L1…Lmax). Uniform min-width so L1 and L11 align in the wrap. */
 .chip {
   display: inline-flex;
