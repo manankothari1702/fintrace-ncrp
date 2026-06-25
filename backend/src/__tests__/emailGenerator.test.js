@@ -11,6 +11,8 @@
 
 const {
   generateDraftEmails,
+  buildEmailArtifacts,
+  composeLetterText,
   DEFAULT_OFFICER,
   _internals,
 } = require('../utils/emailGenerator');
@@ -21,6 +23,7 @@ const {
   buildSubject,
   buildAccountTable,
   sanitizeIdentifier,
+  sanitizeBankName,
 } = _internals;
 
 // ─── formatMoney ─────────────────────────────────────────────────────
@@ -181,5 +184,104 @@ describe('generateDraftEmails', () => {
     });
     expect(emails[0].body).toContain('Insp. Sharma');
     expect(emails[0].body).toContain('99999');
+  });
+
+  test('letter body carries NO baked-in Date line (date is injected at render)', () => {
+    const emails = generateDraftEmails(1, [
+      { account_no: 'A1', bank_name: 'HDFC Bank', ifsc_code: 'HDFC0001', lien_amount: 1000 },
+    ]);
+    expect(emails[0].body).not.toMatch(/^Date:/m);
+  });
+
+  test('long composite bank names are NOT truncated in heading or body', () => {
+    const longName = 'Punjab National Bank (including Oriental Bank of Commerce and United Bank of India)';
+    const emails = generateDraftEmails(1, [
+      { account_no: 'A1', bank_name: longName, ifsc_code: 'PUNB0079320', lien_amount: 1000 },
+    ]);
+    expect(emails[0].bank_name).toBe(longName); // full, un-truncated
+    expect(emails[0].body).toContain('United Bank of India)'); // closing paren survives
+    expect(emails[0].body).not.toContain('and Un\n'); // the old 64-char mid-word cut
+  });
+
+  test('complaint-date wording softens when the date is absent', () => {
+    const without = generateDraftEmails(1, [
+      { account_no: 'A1', bank_name: 'HDFC Bank', lien_amount: 1000 },
+    ], { ack_no: 'NCRP9', complaint_date: null });
+    expect(without[0].body).toContain('Reference: NCRP Acknowledgement No. NCRP9.');
+    expect(without[0].body).not.toContain('complaint dated —');
+    expect(without[0].body).not.toMatch(/from\s+—\s+to date/);
+    expect(without[0].body).toContain('complete statement of account for the');
+
+    const withDate = generateDraftEmails(1, [
+      { account_no: 'A1', bank_name: 'HDFC Bank', lien_amount: 1000 },
+    ], { ack_no: 'NCRP9', complaint_date: '2024-03-01T00:00:00.000Z' });
+    expect(withDate[0].body).toContain('complaint dated 01 Mar 2024');
+    // "...from\n       01 Mar 2024 to date." — the date+tail sit on one line.
+    expect(withDate[0].body).toContain('01 Mar 2024 to date');
+  });
+});
+
+// ─── composeLetterText ───────────────────────────────────────────────
+describe('composeLetterText', () => {
+  test('prepends a UTC Date line to a date-free body', () => {
+    expect(composeLetterText('BODY', '2026-06-25T03:00:00.000Z'))
+      .toBe('Date: 25 Jun 2026\n\nBODY');
+  });
+});
+
+// ─── sanitizeBankName ─────────────────────────────────────────────────
+describe('sanitizeBankName', () => {
+  test('keeps long names whole (no 64-char cap) but still strips markup', () => {
+    const longName = 'Punjab National Bank (including Oriental Bank of Commerce and United Bank of India)';
+    expect(sanitizeBankName(longName)).toBe(longName);
+    expect(sanitizeBankName('Acme<>&Bank')).toBe('AcmeBank');
+  });
+});
+
+// ─── buildEmailArtifacts — partition into letters + non-actionable sections ──
+describe('buildEmailArtifacts', () => {
+  const liens = [
+    { account_no: '0793208100657578', ifsc_code: 'PUNB0079320', bank_name: 'Punjab National Bank', lien_eligible_amount: 3000 },
+    { account_no: '111111', ifsc_code: 'HDFC0001', bank_name: 'HDFC Bank', lien_eligible_amount: 2000 },
+    { account_no: 'NA', ifsc_code: null, bank_name: 'Paytm', lien_eligible_amount: 500 },
+    { account_no: '9692464349@ybl', ifsc_code: null, bank_name: 'Slice Small Finance Bank', lien_eligible_amount: 122.82 },
+    { account_no: 'XXXX', ifsc_code: null, bank_name: 'UNITY SMALL FINANCE BANK', lien_eligible_amount: 40 },
+  ];
+
+  test('only actionable bank accounts become letters; wallet/masked are separated', () => {
+    const { emails, wallet_instruments, masked_accounts } = buildEmailArtifacts(7, liens, { ack_no: 'NCRP1' });
+    const letterBanks = emails.map((e) => e.bank_name).sort();
+    expect(letterBanks).toEqual(['HDFC Bank', 'Punjab National Bank']);
+    // No letter is addressed to a wallet/PA.
+    expect(emails.some((e) => /paytm/i.test(e.bank_name))).toBe(false);
+    expect(wallet_instruments.map((w) => w.bank_name).sort())
+      .toEqual(['Paytm', 'Slice Small Finance Bank']);
+    expect(masked_accounts.map((m) => m.bank_name)).toEqual(['UNITY SMALL FINANCE BANK']);
+  });
+
+  test('no actionable account number appears under a masked/wallet row in a letter', () => {
+    const { emails } = buildEmailArtifacts(7, liens, {});
+    const allLetterAccts = emails.flatMap((e) => e.account_list);
+    expect(allLetterAccts).not.toContain('NA');
+    expect(allLetterAccts).not.toContain('XXXX');
+    expect(allLetterAccts).not.toContain('9692464349@ybl');
+  });
+
+  test('letters + wallet + masked totals reconcile to the full lien total (to the paisa)', () => {
+    const { emails, wallet_instruments, masked_accounts } = buildEmailArtifacts(7, liens, {});
+    // Sum each letter's account amounts back out of its rendered table TOTAL.
+    const letterTotal = emails.reduce((s, e) => {
+      const m = e.body.match(/TOTAL\s+Rs\. ([\d,]+\.\d{2})/);
+      return s + (m ? Number(m[1].replace(/,/g, '')) : 0);
+    }, 0);
+    const walletTotal = wallet_instruments.reduce((s, w) => s + w.amount, 0);
+    const maskedTotal = masked_accounts.reduce((s, m) => s + m.amount, 0);
+    const full = liens.reduce((s, l) => s + l.lien_eligible_amount, 0);
+    expect(Math.round((letterTotal + walletTotal + maskedTotal) * 100)).toBe(Math.round(full * 100));
+  });
+
+  test('empty input → empty letters and empty sections', () => {
+    expect(buildEmailArtifacts(1, [])).toEqual({ emails: [], wallet_instruments: [], masked_accounts: [] });
+    expect(buildEmailArtifacts(1, null)).toEqual({ emails: [], wallet_instruments: [], masked_accounts: [] });
   });
 });

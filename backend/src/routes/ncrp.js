@@ -55,7 +55,7 @@ const {
 const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
 const { generateReportExcel } = require('../utils/excelGenerator');
-const { generateDraftEmails } = require('../utils/emailGenerator');
+const { generateDraftEmails, buildEmailArtifacts } = require('../utils/emailGenerator');
 
 // ─── On-disk locations (backend/uploads, backend/exports) ────────────
 //
@@ -1040,30 +1040,77 @@ function createNcrpRouter(db) {
     }
   });
 
-  // GET /api/ncrp/:id/emails — draft letters (generated on first access).
+  // GET /api/ncrp/:id/emails — draft letters + the two non-actionable sections.
+  //
+  // Returns { emails, wallet_instruments, masked_accounts }. The actionable
+  // §102 letters are persisted (one row per bank → stable id + sent-status); the
+  // wallet/PA/VPA and masked-account sections are DERIVED on read (the
+  // instruments stay visible but are never served a bank freeze notice — see
+  // lib/instrumentClassifier). The three buckets reconcile to the full lien
+  // total. Persisted letters are regenerated when they no longer match the
+  // freshly-derived set (re-analysis, or this build moving wallet/masked rows
+  // out of the letters), preserving sent-status by bank name.
   router.get('/ncrp/:id/emails', (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
-    let emails = stmt.emails.all(report.id);
-    if (emails.length === 0) {
-      const liens = stmt.liens.all(report.id);
-      if (liens.length > 0) {
-        const ci = stmt.caseInfo.get(report.id) || {};
-        const generated = generateDraftEmails(report.id, liens, {
-          ack_no: ci.ack_no ?? null,
-          complaint_date: ci.complaint_date ?? null,
-          total_disputed_amount: report.total_disputed_amount ?? 0,
-        });
-        const insertAll = db.transaction(() => {
-          for (const e of generated) insertDraftEmail(db, e);
-        });
-        insertAll();
-        emails = stmt.emails.all(report.id);
+    const analysis = parseAnalysis(report) || {};
+    // Prefer the refreshed analysis snapshot (carries bank_flag / IFSC needed
+    // for the wallet/masked classification); fall back to persisted lien_records.
+    const lienSource = Array.isArray(analysis.lien_calculation) && analysis.lien_calculation.length
+      ? analysis.lien_calculation
+      : stmt.liens.all(report.id);
+    const ci = stmt.caseInfo.get(report.id) || {};
+    const caseInfo = {
+      ack_no: ci.ack_no ?? null,
+      complaint_date: ci.complaint_date ?? null,
+      total_disputed_amount: report.total_disputed_amount ?? 0,
+    };
+    // The "verify bank" set: lien accounts whose bank could NOT be confirmed
+    // from a valid IFSC — identical to the Lien ⚠ flag and the PDF reviewer note.
+    const freezeSet = new Set(
+      (analysis.data_quality_summary && analysis.data_quality_summary.freeze_target_accounts) || []
+    );
+
+    const { emails: fresh, wallet_instruments, masked_accounts } =
+      buildEmailArtifacts(report.id, lienSource, caseInfo);
+
+    const persisted = stmt.emails.all(report.id).map((e) => ({
+      ...e, account_list: parseAccountList(e.account_list),
+    }));
+    const want = new Map(fresh.map((e) => [e.bank_name, e]));
+    let needsRegen = persisted.length !== fresh.length;
+    if (!needsRegen) {
+      for (const p of persisted) {
+        const w = want.get(p.bank_name);
+        if (!w || w.subject !== p.subject || w.body !== p.body
+          || JSON.stringify(w.account_list) !== JSON.stringify(p.account_list)) {
+          needsRegen = true; break;
+        }
       }
     }
+    if (needsRegen) {
+      const statusByBank = new Map(persisted.map((e) => [e.bank_name, e.status]));
+      const regen = db.transaction(() => {
+        stmt.delEmails.run(report.id);
+        for (const e of fresh) {
+          insertDraftEmail(db, {
+            ...e, status: statusByBank.get(e.bank_name) === 'sent' ? 'sent' : 'draft',
+          });
+        }
+      });
+      regen();
+    }
 
-    res.json(emails.map((e) => ({ ...e, account_list: parseAccountList(e.account_list) })));
+    const rows = stmt.emails.all(report.id).map((e) => {
+      const account_list = parseAccountList(e.account_list);
+      // Per-letter reviewer caveat: the subset of THIS letter's accounts that
+      // need bank verification before dispatch (not part of the letter body).
+      const flagged_accounts = account_list.filter((a) => freezeSet.has(String(a)));
+      return { ...e, account_list, flagged_accounts };
+    });
+
+    res.json({ emails: rows, wallet_instruments, masked_accounts });
   });
 
   // POST /api/ncrp/:id/emails/:emailId — update a draft email's status.
@@ -1175,8 +1222,6 @@ function createNcrpRouter(db) {
     try {
       const analysis = parseAnalysis(report) || {};
       const liens = stmt.liens.all(report.id);
-      const emails = stmt.emails.all(report.id)
-        .map((e) => ({ ...e, account_list: parseAccountList(e.account_list) }));
       const layers = stmt.layers.all(report.id);
       // Raw ledger: drives the writer-side ATM/POS exit split and the POS
       // merchant table (same bundle field the Excel export already passes).
@@ -1184,6 +1229,15 @@ function createNcrpRouter(db) {
         'SELECT * FROM ncrp_transactions WHERE report_id = ? ORDER BY transaction_date ASC, id ASC'
       ).all(report.id);
       const ci = stmt.caseInfo.get(report.id) || {};
+      // Build the actionable §102 letters fresh (un-truncated bank names, no
+      // wallet/masked rows) rather than reusing possibly-stale persisted bodies;
+      // renderEmails derives the wallet/masked sections from `analysis` itself.
+      const { emails } = buildEmailArtifacts(
+        report.id,
+        (Array.isArray(analysis.lien_calculation) && analysis.lien_calculation.length)
+          ? analysis.lien_calculation : liens,
+        { ack_no: ci.ack_no ?? null, complaint_date: ci.complaint_date ?? null }
+      );
 
       const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
       const fileName = `FinTrace-${safeAck}-${Date.now()}.pdf`;

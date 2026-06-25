@@ -171,7 +171,18 @@ export const getDataQuality = (id) =>
 export const saveLien = (id, payload) =>
   api.post(`/ncrp/${id}/lien`, payload).then((r) => r.data);
 
-/** Draft lien-request letters (generated on first access). */
+/**
+ * Draft lien-request artifacts for a report.
+ * @param {number} id
+ * @returns {Promise<{
+ *   emails: Array<{ id: number, bank_name: string, subject: string, body: string,
+ *     account_list: string[], flagged_accounts: string[], status: 'draft'|'sent' }>,
+ *   wallet_instruments: Array<{ account_no: string, bank_name: string,
+ *     source_ref: string|null, amount: number, note: string }>,
+ *   masked_accounts: Array<{ account_no: string, bank_name: string,
+ *     ifsc_code: string|null, amount: number, note: string }>,
+ * }>} Per-bank §102 letters plus the two non-actionable sections.
+ */
 export const getEmails = (id) => api.get(`/ncrp/${id}/emails`).then((r) => r.data);
 
 /**

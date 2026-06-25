@@ -24,6 +24,8 @@
  * @module backend/src/utils/emailGenerator
  */
 
+const { partitionInstruments } = require('../lib/instrumentClassifier');
+
 // ─── Officer signature defaults ──────────────────────────────────────
 //
 // This .js build has no `settings`/officer-profile table, so the signature
@@ -107,12 +109,17 @@ const padL = (s, n) => {
  *
  *   • drop control chars, angle brackets, ampersand, quote, backtick;
  *   • collapse internal whitespace;
- *   • cap length to 64 chars (Indian bank a/c numbers are ≤ 20 digits + IFSC).
+ *   • cap length to `maxLen` chars (default 64: Indian bank a/c numbers are
+ *     ≤ 20 digits + IFSC). Bank NAMES pass a far larger cap via
+ *     {@link sanitizeBankName} — the 64-char cap was truncating long composite
+ *     names ("Punjab National Bank (including …United Bank of India)") mid-word
+ *     in the addressee and body, which the 64 cap was never meant to do.
  *
  * @param {unknown} v
+ * @param {number} [maxLen=64]
  * @returns {string}
  */
-function sanitizeIdentifier(v) {
+function sanitizeIdentifier(v, maxLen = 64) {
   if (v === null || v === undefined) return '';
   const raw = String(v);
   // eslint-disable-next-line no-control-regex
@@ -121,7 +128,21 @@ function sanitizeIdentifier(v) {
     .replace(/[<>&"'`]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.length > 64 ? cleaned.slice(0, 64) : cleaned;
+  return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
+}
+
+/**
+ * Sanitise a BANK NAME for a letter heading/body. Same control-char/markup
+ * stripping as {@link sanitizeIdentifier}, but with a generous cap (real RBI
+ * composite names run to ~85 chars), so the institution name is NEVER truncated
+ * mid-word on a Section 102 letter. The cap only guards against pathological
+ * input, not legitimate names.
+ *
+ * @param {unknown} v
+ * @returns {string}
+ */
+function sanitizeBankName(v) {
+  return sanitizeIdentifier(v, 200);
 }
 
 // ─── Body builders ───────────────────────────────────────────────────
@@ -172,33 +193,46 @@ function buildAccountTable(accounts, total) {
 /**
  * Build the full plain-text letter body for one bank.
  *
+ * The letter body carries NO "Date:" line — the issue date is injected at
+ * render/copy/export time by {@link composeLetterText} so a copied or exported
+ * letter always bears the current date (the stored body stays date-independent,
+ * so a re-read never looks stale).
+ *
  * @param {{
  *   bankName: string,
  *   accounts: Array<{ account_no: string, ifsc_code: string|null, amount: number }>,
  *   ackNo: string|null,
  *   complaintDateStr: string,
+ *   hasComplaintDate: boolean,
  *   totalDisputed: number,
  *   officer: Record<string,string>,
- *   letterDateStr: string,
  * }} ctx
  * @returns {string}
  */
 function buildBody(ctx) {
-  const { bankName, accounts, ackNo, complaintDateStr, totalDisputed, officer, letterDateStr } = ctx;
+  const { bankName, accounts, ackNo, complaintDateStr, hasComplaintDate, totalDisputed, officer } = ctx;
   const ref = ackNo || 'N/A';
   const n = accounts.length;
   const accountWord = n === 1 ? 'account' : 'accounts';
+
+  // The NCRP export does not always carry a complaint date. When it is absent
+  // the letter must not read with a bare em dash ("complaint dated —" / "from —
+  // to date") — drop the clause and ask for the full statement instead.
+  const referenceLine = hasComplaintDate
+    ? `Reference: NCRP Acknowledgement No. ${ref}, complaint dated ${complaintDateStr}.`
+    : `Reference: NCRP Acknowledgement No. ${ref}.`;
+  const statementClause = hasComplaintDate
+    ? `mobile number, email, and the statement of account from\n       ${complaintDateStr} to date.`
+    : `mobile number, email, and the complete statement of account for the\n       affected period.`;
 
   return [
     'To,',
     'The Nodal Officer / Principal Officer,',
     bankName,
     '',
-    `Date: ${letterDateStr}`,
-    '',
     `Subject: ${buildSubject(ackNo)}`,
     '',
-    `Reference: NCRP Acknowledgement No. ${ref}, complaint dated ${complaintDateStr}.`,
+    referenceLine,
     '',
     'Respected Sir / Madam,',
     '',
@@ -218,8 +252,7 @@ function buildBody(ctx) {
     `       ${accountWord} with immediate effect, to prevent further dissipation`,
     `       of the fraud proceeds.`,
     `    2. SHARE the complete KYC documents, account-opening form, registered`,
-    `       mobile number, email, and the statement of account from`,
-    `       ${complaintDateStr} to date.`,
+    `       ${statementClause}`,
     `    3. CONFIRM the action taken to this office within 24 (twenty-four) hours`,
     `       of receipt of this communication, quoting the above reference number.`,
     '',
@@ -243,65 +276,84 @@ function buildBody(ctx) {
   ].join('\n');
 }
 
+/**
+ * Prepend the issue date (UTC, deterministic) to a stored letter body. The body
+ * itself carries no date, so a copied / Word / PDF letter always bears the date
+ * it was produced — never a stale baked-in one.
+ *
+ * @param {string} body
+ * @param {string|Date|null} [isoNow] - Instant to date-stamp with; defaults to now.
+ * @returns {string}
+ */
+function composeLetterText(body, isoNow = null) {
+  const dateStr = formatDate(isoNow || new Date().toISOString());
+  return `Date: ${dateStr}\n\n${body}`;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────
 
 /**
- * Generate one draft lien-request email per bank from the lien worksheet.
+ * Build the full draft-letter artifact set for a report: the per-bank §102
+ * letters PLUS the two non-actionable sections that must NEVER be served as a
+ * bank freeze notice.
  *
- * Accounts are grouped by `bank_name`; accounts with no bank name fall under
- * "Unknown Bank" so they are never silently dropped. The per-account amount is
- * read from whichever of these fields is present (so both analyzer
- * `lien_calculation` rows and persisted `lien_records` rows work):
+ * The lien worksheet is partitioned (see lib/instrumentClassifier) into:
+ *   • `emails` — one §102 letter per distinct bank, over the ACTIONABLE bank
+ *     accounts only. Accounts with no bank name fall under "Unknown Bank".
+ *     Grouped by the full (un-truncated) bank name, case/space-folded so pure
+ *     case variants of one bank collapse into a single letter.
+ *   • `wallet_instruments` — wallet / PA / PG / UPI-VPA instruments pulled OUT
+ *     of the letters (a wallet can't place a §102 lien). Visible, with amount
+ *     and a note; the pseudo-IFSC is exposed as a non-IFSC `source_ref` only.
+ *   • `masked_accounts` — real-bank accounts whose number is masked/unresolvable
+ *     in the source (a bank can't act on "XXXX"/"NA"). Visible, with amount/note.
+ *
+ * Every lien row lands in exactly one bucket, so the three buckets' amounts
+ * always reconcile to the full lien total — nothing is dropped.
+ *
+ * The per-account amount is read from whichever field is present (so both
+ * analyzer `lien_calculation` rows and persisted `lien_records` rows work):
  * `lien_amount`, `lien_eligible_amount`, `disputed_amount`, `recoverableAmount`.
  *
  * @param {number} reportId - The owning ncrp_reports id (stamped on each email).
- * @param {ReadonlyArray<Record<string, unknown>>} lienAccounts - Lien worksheet
- *   rows. Each should carry `account_no`, `bank_name`, an IFSC (`ifsc_code` or
- *   `ifsc`), and an amount field as above.
+ * @param {ReadonlyArray<Record<string, unknown>>} lienAccounts - Lien worksheet rows.
  * @param {{
  *   ack_no?: string|null,
  *   complaint_date?: string|null,
  *   total_disputed_amount?: number|null,
  *   officer?: Partial<typeof DEFAULT_OFFICER>,
  * }} [caseInfo={}] - Case context merged into every letter.
- * @returns {Array<{
- *   report_id: number,
- *   bank_name: string,
- *   subject: string,
- *   body: string,
- *   account_list: string[],
- *   status: 'draft',
- * }>} One email object per bank, sorted by bank name.
- *
- * @example
- *   const emails = generateDraftEmails(7, result.lien_calculation, {
- *     ack_no: 'NCRP202612345678',
- *     complaint_date: '2026-05-20T10:30:00.000Z',
- *   });
- *   //   emails[0].subject → "URGENT: Lien Request ... Case NCRP202612345678"
+ * @returns {{
+ *   emails: Array<{ report_id: number, bank_name: string, subject: string,
+ *     body: string, account_list: string[], status: 'draft' }>,
+ *   wallet_instruments: Array<{ account_no: string, bank_name: string,
+ *     source_ref: string|null, amount: number, note: string }>,
+ *   masked_accounts: Array<{ account_no: string, bank_name: string,
+ *     ifsc_code: string|null, amount: number, note: string }>,
+ * }}
  */
-function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
+function buildEmailArtifacts(reportId, lienAccounts, caseInfo = {}) {
   const officer = { ...DEFAULT_OFFICER, ...(caseInfo.officer || {}) };
   const ackNo = caseInfo.ack_no ? String(caseInfo.ack_no).trim() : null;
+  const hasComplaintDate = caseInfo.complaint_date != null
+    && String(caseInfo.complaint_date).trim() !== '';
   const complaintDateStr = formatDate(caseInfo.complaint_date);
-  const letterDateStr = formatDate(new Date().toISOString());
 
-  // Group accounts by bank, preserving first-seen order within each bank.
-  // The grouping KEY is the bank name lower-cased (whitespace is already
-  // collapsed by sanitizeIdentifier), so pure case/spacing variants of one bank
-  // — e.g. "Bank of Baroda (Including …)" and "(including …)" — fold into ONE
-  // letter instead of two. Normalisation is deliberately conservative (case +
-  // whitespace only): genuinely different names keep their own letter. The
-  // first-seen original spelling is kept for display in the letter heading.
+  // Partition the worksheet. Only ACTIONABLE bank accounts become letters; the
+  // wallet/PA/VPA and masked rows go to their own sections (never a §102 letter).
+  const { bank, wallet, masked } = partitionInstruments(lienAccounts);
+
+  // Group actionable accounts by bank. The KEY is the FULL bank name lower-cased
+  // (whitespace already collapsed), so pure case variants of one bank — e.g.
+  // "Bank of Baroda (Including …)" vs "(including …)" — fold into ONE letter.
+  // The name is NOT length-capped (sanitizeBankName), so long composite names
+  // print in full in the heading and body.
   /** @type {Map<string, Array<{ account_no: string, ifsc_code: string|null, amount: number }>>} */
   const byBank = new Map();
   /** @type {Map<string, string>} normalised key → first-seen display name. */
   const bankDisplay = new Map();
-  for (const acc of Array.isArray(lienAccounts) ? lienAccounts : []) {
-    if (!acc) continue;
-    // bank_name comes from the same uploaded Excel cells as account_no — same
-    // sanitisation applies (control chars / quotes / brackets stripped).
-    const bankName = sanitizeIdentifier(acc.bank_name) || 'Unknown Bank';
+  for (const acc of bank) {
+    const bankName = sanitizeBankName(acc.bank_name) || 'Unknown Bank';
     const bankKey = bankName.toLowerCase();
     const amount = num(
       acc.lien_amount ?? acc.lien_eligible_amount ?? acc.disputed_amount ?? acc.recoverableAmount
@@ -310,7 +362,7 @@ function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
     byBank.get(bankKey).push({
       // Account numbers + IFSC come from untrusted Excel cells. Strip anything
       // that could break monospace alignment, escape into HTML, or smuggle
-      // control sequences into a mail-client renderer.
+      // control sequences into a mail-client renderer (64-char cap is fine here).
       account_no: sanitizeIdentifier(acc.account_no),
       ifsc_code: sanitizeIdentifier(acc.ifsc_code ?? acc.ifsc) || null,
       amount,
@@ -327,19 +379,58 @@ function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
       bank_name: bankName,
       subject: buildSubject(ackNo),
       body: buildBody({
-        bankName, accounts, ackNo, complaintDateStr, totalDisputed, officer, letterDateStr,
+        bankName, accounts, ackNo, complaintDateStr, hasComplaintDate, totalDisputed, officer,
       }),
       account_list: accounts.map((a) => a.account_no),
       status: 'draft',
     });
   }
-  return emails;
+
+  // Sanitise the section display fields the same way (bank name un-capped,
+  // account/ref capped) so nothing untrusted escapes into a renderer.
+  const wallet_instruments = wallet.map((w) => ({
+    account_no: sanitizeIdentifier(w.account_no),
+    bank_name: sanitizeBankName(w.bank_name) || 'Unknown',
+    source_ref: sanitizeIdentifier(w.source_ref) || null,
+    amount: w.amount,
+    note: w.note,
+  }));
+  const masked_accounts = masked.map((m) => ({
+    account_no: sanitizeIdentifier(m.account_no),
+    bank_name: sanitizeBankName(m.bank_name) || 'Unknown',
+    ifsc_code: sanitizeIdentifier(m.ifsc_code) || null,
+    amount: m.amount,
+    note: m.note,
+  }));
+
+  return { emails, wallet_instruments, masked_accounts };
+}
+
+/**
+ * Back-compat thin wrapper: just the per-bank §102 letters (actionable banks).
+ * Callers that also need the wallet / masked sections use
+ * {@link buildEmailArtifacts}.
+ *
+ * @param {number} reportId
+ * @param {ReadonlyArray<Record<string, unknown>>} lienAccounts
+ * @param {object} [caseInfo={}]
+ * @returns {Array<object>} One email object per actionable bank, sorted by name.
+ *
+ * @example
+ *   const emails = generateDraftEmails(7, result.lien_calculation, {
+ *     ack_no: 'NCRP202612345678',
+ *   });
+ */
+function generateDraftEmails(reportId, lienAccounts, caseInfo = {}) {
+  return buildEmailArtifacts(reportId, lienAccounts, caseInfo).emails;
 }
 
 // ─── Exports ─────────────────────────────────────────────────────────
 
 module.exports = {
   generateDraftEmails,
+  buildEmailArtifacts,
+  composeLetterText,
   DEFAULT_OFFICER,
   // Exposed for unit tests; not part of the stable contract.
   _internals: Object.freeze({
@@ -349,5 +440,6 @@ module.exports = {
     formatMoney,
     formatDate,
     sanitizeIdentifier,
+    sanitizeBankName,
   }),
 };

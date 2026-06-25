@@ -169,18 +169,26 @@ describe('POST /api/ncrp/upload + full analysis flow', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  test('GET /api/ncrp/:id/emails returns one email per bank', async () => {
+  test('GET /api/ncrp/:id/emails returns letters + non-actionable sections', async () => {
     const res = await agent.get(`/api/ncrp/${reportId}/emails`);
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    if (res.body.length > 0) {
-      expect(res.body[0]).toEqual(expect.objectContaining({
+    // New payload shape: { emails, wallet_instruments, masked_accounts }.
+    expect(res.body).toEqual(expect.objectContaining({
+      emails: expect.any(Array),
+      wallet_instruments: expect.any(Array),
+      masked_accounts: expect.any(Array),
+    }));
+    if (res.body.emails.length > 0) {
+      expect(res.body.emails[0]).toEqual(expect.objectContaining({
         bank_name: expect.any(String),
         subject: expect.any(String),
         body: expect.any(String),
         status: 'draft',
       }));
-      expect(Array.isArray(res.body[0].account_list)).toBe(true);
+      expect(Array.isArray(res.body.emails[0].account_list)).toBe(true);
+      expect(Array.isArray(res.body.emails[0].flagged_accounts)).toBe(true);
+      // Letters carry no baked-in date (injected at render/copy/export time).
+      expect(res.body.emails[0].body).not.toMatch(/^Date:/m);
     }
   });
 
@@ -224,11 +232,11 @@ describe('POST /api/ncrp/upload + full analysis flow', () => {
 
   test('POST /api/ncrp/:id/emails/:emailId updates the email status', async () => {
     const list = await agent.get(`/api/ncrp/${reportId}/emails`);
-    if (list.body.length === 0) {
-      // No emails generated for this fixture → nothing to update.
+    if (list.body.emails.length === 0) {
+      // No actionable letters generated for this fixture → nothing to update.
       return;
     }
-    const target = list.body[0];
+    const target = list.body.emails[0];
     const res = await agent
       .post(`/api/ncrp/${reportId}/emails/${target.id}`)
       .send({ status: 'sent' });

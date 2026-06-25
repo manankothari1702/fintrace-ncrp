@@ -112,7 +112,15 @@ const GOLD = {
   // FIX 4 then nets it to 14: the SBI …9366 account, once its zero-padded
   // duplicate is merged in, is a pass-through with no balance to freeze, so it
   // is correctly no longer a Section-102 freeze target (15 → 14).
-  email_count: 14,
+  // Draft Emails #1/#2 then net it to 11: wallet / PA / VPA instruments (a
+  // Mobikwik token, two CRED card references, a Paytm "NA") are NOT bank
+  // accounts — a wallet/PA cannot place a §102 lien — so they are moved OUT of
+  // the per-bank freeze letters into the separate "Wallet / PA / VPA" section.
+  // Those three entities therefore no longer get a (meaningless) bank letter:
+  // 14 → 11 actionable letters. The instruments stay visible (with amounts) in
+  // their own section, and bank + wallet + masked totals still reconcile to the
+  // full lien total (Rs. 4,24,394.61).
+  email_count: 11,
   fastest_cashout_hours_max: 1.0,
   // 20 → 19: the merged …9366 pass-through drops out of the lien worksheet.
   recoverable_accounts: 19,

@@ -41,6 +41,7 @@ const {
 } = require('./exportViews');
 const { renderCharts } = require('./charts');
 const { appVersion } = require('../lib/provenance');
+const { buildEmailArtifacts, composeLetterText } = require('./emailGenerator');
 
 // ─── Palette + layout constants ──────────────────────────────────────
 
@@ -1227,68 +1228,146 @@ function renderDataQuality(doc, dataQuality, oldTransactions = [], parseWarnings
 
 /**
  * @param {PDFKit.PDFDocument} doc
- * @param {Array<object>} emails
- * @param {Array<object>} [dataQuality] - flagged accounts, for per-letter notes
+ * @param {Array<object>} emails - actionable per-bank §102 letters
+ * @param {object} [analysis] - parsed analysis_json; supplies the lien worksheet
+ *   (for the wallet/masked sections) and the freeze-target set (for the per-
+ *   letter reviewer note). Falls back gracefully when absent.
  */
-function renderEmails(doc, emails, dataQuality) {
+function renderEmails(doc, emails, analysis) {
   const list = Array.isArray(emails) ? emails : [];
-  // account_no -> flag, so each letter can footnote its flagged accounts.
-  const flagByAccount = new Map(
-    (Array.isArray(dataQuality) ? dataQuality : []).map((d) => [String(d.account_no), d.bank_flag]));
+  const aj = analysis && typeof analysis === 'object' ? analysis : {};
+  // The "verify bank" set — lien accounts whose bank could not be confirmed from
+  // a valid IFSC (same set the on-screen page caveat and the Lien ⚠ flag use).
+  const freezeSet = new Set(
+    (aj.data_quality_summary && aj.data_quality_summary.freeze_target_accounts) || []
+  );
+  // Non-actionable instruments pulled out of the letters, derived from the same
+  // lien worksheet so the dossier still shows them (evidence is never dropped).
+  const { wallet_instruments = [], masked_accounts = [] } =
+    buildEmailArtifacts(0, Array.isArray(aj.lien_calculation) ? aj.lien_calculation : [], {});
+
   doc.addPage();
   sectionHeading(doc, 'Draft Lien-Request Emails (Section 102 Cr.P.C.)');
 
-  if (list.length === 0) {
+  if (list.length === 0 && wallet_instruments.length === 0 && masked_accounts.length === 0) {
     para(doc, 'No draft emails were generated (no lien-eligible accounts).',
       { color: MUTED });
     return;
   }
 
-  para(doc,
-    `${formatCount(list.length)} per-bank letter(s) below — copy the subject and ` +
-    'body into your email client. Each cites Section 102 Cr.P.C. read with the IT ' +
-    'Act, 2000.', { gap: 0.8 });
-
   const left = doc.page.margins.left;
-  list.forEach((email, idx) => {
-    if (idx > 0) doc.addPage();
-    else if (doc.y + 120 > doc.page.height - doc.page.margins.bottom) doc.addPage();
 
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(NAVY)
-      .text(`Letter ${idx + 1} of ${list.length} — ${email.bank_name || 'Unknown Bank'}`,
-        left, doc.y, { width: contentWidth(doc) });
-    doc.moveDown(0.4);
-    doc.x = left;
+  if (list.length > 0) {
+    para(doc,
+      `${formatCount(list.length)} per-bank letter(s) below — copy the subject and ` +
+      'body into your email client. Each cites Section 102 Cr.P.C. read with the IT ' +
+      'Act, 2000. Wallet / PA / VPA instruments and masked accounts are listed ' +
+      'separately after the letters (they cannot be served a bank freeze notice).',
+      { gap: 0.8 });
 
-    doc.font('Helvetica-Bold').fontSize(9.5).fillColor(INK)
-      .text('Subject: ', left, doc.y, { continued: true })
-      .font('Helvetica').text(email.subject || '', { width: contentWidth(doc) });
-    doc.moveDown(0.6);
-    doc.x = left;
+    list.forEach((email, idx) => {
+      if (idx > 0) doc.addPage();
+      else if (doc.y + 120 > doc.page.height - doc.page.margins.bottom) doc.addPage();
 
-    // Body in a monospace font so the account table lines up; PDFKit flows it
-    // across pages automatically.
-    doc.font('Courier').fontSize(8.5).fillColor(INK)
-      .text(email.body || '', left, doc.y, { width: contentWidth(doc), align: 'left' });
-    doc.x = left;
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(NAVY)
+        .text(`Letter ${idx + 1} of ${list.length} — ${email.bank_name || 'Unknown Bank'}`,
+          left, doc.y, { width: contentWidth(doc) });
+      doc.moveDown(0.4);
+      doc.x = left;
 
-    // Reviewer note (NOT part of the dispatched letter): flag any account in
-    // this letter whose bank was derived from the IFSC over a differing source
-    // text, so the officer verifies before sending.
-    const flagged = (Array.isArray(email.account_list) ? email.account_list : [])
-      .filter((acc) => flagByAccount.has(String(acc)));
-    if (flagged.length) {
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(INK)
+        .text('Subject: ', left, doc.y, { continued: true })
+        .font('Helvetica').text(email.subject || '', { width: contentWidth(doc) });
       doc.moveDown(0.6);
       doc.x = left;
-      doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(MUTED)
-        .text(
-          'Reviewer note (not part of the dispatched letter): bank derived from IFSC; ' +
-          `source file text differed or carried no IFSC for account(s): ${flagged.map(maskAccount).join(', ')}. ` +
-          'See Annexure H (Data Quality).',
-          left, doc.y, { width: contentWidth(doc) });
+
+      // Body in a monospace font so the account table lines up; the issue date
+      // is injected here (the stored body is date-free) so the dossier letter
+      // bears the date it was produced. PDFKit flows it across pages.
+      doc.font('Courier').fontSize(8.5).fillColor(INK)
+        .text(composeLetterText(email.body || ''), left, doc.y,
+          { width: contentWidth(doc), align: 'left' });
       doc.x = left;
-    }
-  });
+
+      // Reviewer note (NOT part of the dispatched letter): any account in this
+      // letter whose bank could not be confirmed from a valid IFSC — verify
+      // before sending.
+      const flagged = (Array.isArray(email.account_list) ? email.account_list : [])
+        .filter((acc) => freezeSet.has(String(acc)));
+      if (flagged.length) {
+        doc.moveDown(0.6);
+        doc.x = left;
+        doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(MUTED)
+          .text(
+            'Reviewer note (not part of the dispatched letter): bank attribution could ' +
+            `not be confirmed from a valid IFSC for account(s): ${flagged.map(maskAccount).join(', ')}. ` +
+            'Verify the freeze target before dispatch. See Annexure H (Data Quality).',
+            left, doc.y, { width: contentWidth(doc) });
+        doc.x = left;
+      }
+    });
+  }
+
+  // ── Non-actionable section 1: wallet / PA / PG / UPI-VPA instruments ──────
+  if (wallet_instruments.length > 0) {
+    doc.addPage();
+    sectionHeading(doc, 'Verify Nodal Entity — Wallet / PA / VPA Instruments');
+    para(doc,
+      `${formatCount(wallet_instruments.length)} instrument(s) below are payment ` +
+      'wallets / aggregators / gateways or UPI VPAs, NOT bank accounts — a wallet/PA ' +
+      'cannot place a Section 102 lien. Identify the nodal/escrow bank holding these ' +
+      'funds before issuing a request; the "Source Ref" is the raw value from the ' +
+      'source IFSC cell and is NOT a bank IFSC. Listed here (with amount) so no ' +
+      'instrument is dropped from the trail.', { gap: 0.8 });
+    const wTotal = wallet_instruments.reduce((s, w) => s + num(w.amount), 0);
+    drawTable(doc, {
+      fontSize: 8.5,
+      columns: [
+        { label: '#', width: 24, align: 'center' },
+        { label: 'Instrument', width: 150 },
+        { label: 'Entity (as named in source)', width: 150 },
+        { label: 'Source Ref (not an IFSC)', width: 90 },
+        { label: 'Amount', width: contentWidth(doc) - 414, align: 'right' },
+      ],
+      rows: wallet_instruments.map((w, i) => [
+        i + 1, w.account_no || '—', w.bank_name || 'Unknown', w.source_ref || '—',
+        formatMoney(w.amount),
+      ]),
+    });
+    para(doc, `Total across ${formatCount(wallet_instruments.length)} wallet/PA/VPA ` +
+      `instrument(s): ${formatMoney(wTotal)} (excluded from the bank letters above; ` +
+      'verify the nodal entity).', { bold: true, gap: 0.4 });
+  }
+
+  // ── Non-actionable section 2: masked / unresolvable account numbers ───────
+  if (masked_accounts.length > 0) {
+    doc.addPage();
+    sectionHeading(doc, 'Unresolvable / Masked Accounts — Non-Actionable');
+    para(doc,
+      `${formatCount(masked_accounts.length)} account(s) below carry a masked or ` +
+      'unresolvable account number in the source (e.g. "XXXX", "NA") — a bank cannot ' +
+      'action a freeze on an unidentifiable account. Obtain the full account number ' +
+      'before issuing the request. Listed here (with amount) so nothing is dropped.',
+      { gap: 0.8 });
+    const mTotal = masked_accounts.reduce((s, m) => s + num(m.amount), 0);
+    drawTable(doc, {
+      fontSize: 8.5,
+      columns: [
+        { label: '#', width: 24, align: 'center' },
+        { label: 'Account (as in source)', width: 150 },
+        { label: 'Bank', width: 160 },
+        { label: 'IFSC', width: 85 },
+        { label: 'Amount', width: contentWidth(doc) - 419, align: 'right' },
+      ],
+      rows: masked_accounts.map((m, i) => [
+        i + 1, m.account_no || '—', m.bank_name || 'Unknown', m.ifsc_code || '—',
+        formatMoney(m.amount),
+      ]),
+    });
+    para(doc, `Total across ${formatCount(masked_accounts.length)} masked account(s): ` +
+      `${formatMoney(mTotal)} (excluded from the bank letters above; obtain the full ` +
+      'account number).', { bold: true, gap: 0.4 });
+  }
 }
 
 // ─── Footer pass ─────────────────────────────────────────────────────
@@ -1516,9 +1595,10 @@ function generateReportPdf(data, outputPath) {
       renderDataQuality(doc, analysis.data_quality || [], analysis.old_transactions || [],
         analysis.parse_warnings || []);
 
-      // Draft emails (adds its own pages). Pass the flagged accounts so each
-      // letter can carry a reviewer note where its bank was IFSC-corrected.
-      renderEmails(doc, emails, analysis.data_quality || []);
+      // Draft emails (adds its own pages). Pass the full analysis so renderEmails
+      // can derive the wallet/masked non-actionable sections and the per-letter
+      // "verify bank" reviewer note (freeze-target set).
+      renderEmails(doc, emails, analysis);
 
       // Footer + page numbers + per-page source hash across every buffered page.
       stampFooters(doc, provenance);
