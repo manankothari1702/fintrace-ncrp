@@ -191,12 +191,16 @@ function buildAccountTable(accounts, total) {
 }
 
 /**
- * Build the full plain-text letter body for one bank.
+ * Build the structured letter MODEL for one bank — the SINGLE SOURCE OF TRUTH
+ * for both the plain-text body (Copy-to-clipboard / Word-text / PDF) and the
+ * on-screen + Word HTML rendering. The dispatched letter and the displayed
+ * letter therefore can never diverge in wording or figures (a real risk for a
+ * legal document if the prose lived in two places).
  *
- * The letter body carries NO "Date:" line — the issue date is injected at
- * render/copy/export time by {@link composeLetterText} so a copied or exported
- * letter always bears the current date (the stored body stays date-independent,
- * so a re-read never looks stale).
+ * The model carries NO date — the issue date is injected at render/copy/export
+ * time (see {@link composeLetterText} / the frontend), so a stored letter never
+ * looks stale. Prose fields are single flowing strings; the renderer / HTML
+ * decide line-wrapping.
  *
  * @param {{
  *   bankName: string,
@@ -207,9 +211,14 @@ function buildAccountTable(accounts, total) {
  *   totalDisputed: number,
  *   officer: Record<string,string>,
  * }} ctx
- * @returns {string}
+ * @returns {{
+ *   bank_name: string, subject: string, reference: string, salutation: string,
+ *   intro: string, accounts: Array<{ sno: number, account_no: string, ifsc_code: string|null, amount: number }>,
+ *   total: number, requests_intro: string, requests: string[], closing: string,
+ *   signoff: string, officer: Record<string,string>, footer: string,
+ * }}
  */
-function buildBody(ctx) {
+function buildLetterModel(ctx) {
   const { bankName, accounts, ackNo, complaintDateStr, hasComplaintDate, totalDisputed, officer } = ctx;
   const ref = ackNo || 'N/A';
   const n = accounts.length;
@@ -218,62 +227,109 @@ function buildBody(ctx) {
   // The NCRP export does not always carry a complaint date. When it is absent
   // the letter must not read with a bare em dash ("complaint dated —" / "from —
   // to date") — drop the clause and ask for the full statement instead.
-  const referenceLine = hasComplaintDate
-    ? `Reference: NCRP Acknowledgement No. ${ref}, complaint dated ${complaintDateStr}.`
-    : `Reference: NCRP Acknowledgement No. ${ref}.`;
   const statementClause = hasComplaintDate
-    ? `mobile number, email, and the statement of account from\n       ${complaintDateStr} to date.`
-    : `mobile number, email, and the complete statement of account for the\n       affected period.`;
+    ? `the statement of account from ${complaintDateStr} to date.`
+    : 'the complete statement of account for the affected period.';
 
+  return {
+    bank_name: bankName,
+    subject: buildSubject(ackNo),
+    reference: hasComplaintDate
+      ? `NCRP Acknowledgement No. ${ref}, complaint dated ${complaintDateStr}.`
+      : `NCRP Acknowledgement No. ${ref}.`,
+    salutation: 'Respected Sir / Madam,',
+    intro:
+      'This office is investigating a cyber-financial fraud reported on the National ' +
+      `Cyber Crime Reporting Portal (NCRP) vide Acknowledgement No. ${ref}. Examination ` +
+      `of the bank transaction trail has established that the following ${n} ${accountWord} ` +
+      `maintained with ${bankName} received funds that are the proceeds of the said ` +
+      `offence, aggregating to ${formatMoney(totalDisputed)}:`,
+    accounts: accounts.map((a, i) => ({
+      sno: i + 1, account_no: a.account_no, ifsc_code: a.ifsc_code, amount: a.amount,
+    })),
+    total: totalDisputed,
+    requests_intro:
+      'In exercise of the powers under Section 102 of the Code of Criminal Procedure, ' +
+      '1973 (Cr.P.C.) read with the Information Technology Act, 2000, you are hereby ' +
+      'requested to take the following action on priority:',
+    requests: [
+      `PLACE A LIEN on / freeze the disputed amount lying in the above ${accountWord} ` +
+        'with immediate effect, to prevent further dissipation of the fraud proceeds.',
+      'SHARE the complete KYC documents, account-opening form, registered mobile number, ' +
+        `email, and ${statementClause}`,
+      'CONFIRM the action taken to this office within 24 (twenty-four) hours of receipt ' +
+        'of this communication, quoting the above reference number.',
+    ],
+    closing:
+      'This requisition is issued under Section 102 Cr.P.C. (power to seize property ' +
+      'suspected to be the proceeds of crime) read with the provisions of the Information ' +
+      'Technology Act, 2000. Non-compliance may attract action under the applicable law. ' +
+      'Your prompt cooperation is solicited in the interest of investigation and ' +
+      'expeditious recovery of the defrauded amount.',
+    signoff: 'Yours faithfully,',
+    officer: {
+      name: officer.name, designation: officer.designation, unit: officer.unit,
+      police_station: officer.police_station, phone: officer.phone, email: officer.email,
+    },
+    footer:
+      'This is a system-generated draft from FinTrace NCRP | MINT. Verify the details ' +
+      'and obtain the competent authority\'s signature before dispatch.',
+  };
+}
+
+/**
+ * Render the letter MODEL to the plain-text body (Copy-to-clipboard / Word-text
+ * fallback / PDF). Paragraphs are single lines (mail clients soft-wrap them into
+ * proper paragraphs); the account table stays a fixed-width ASCII block so it
+ * aligns in a monospace view. NO "Date:" line (injected at render time).
+ *
+ * @param {ReturnType<typeof buildLetterModel>} m
+ * @returns {string}
+ */
+function renderLetterText(m) {
   return [
     'To,',
     'The Nodal Officer / Principal Officer,',
-    bankName,
+    m.bank_name,
     '',
-    `Subject: ${buildSubject(ackNo)}`,
+    `Subject: ${m.subject}`,
     '',
-    referenceLine,
+    `Reference: ${m.reference}`,
     '',
-    'Respected Sir / Madam,',
+    m.salutation,
     '',
-    `    This office is investigating a cyber-financial fraud reported on the`,
-    `National Cyber Crime Reporting Portal (NCRP) vide Acknowledgement No. ${ref}.`,
-    `Examination of the bank transaction trail has established that the following`,
-    `${n} ${accountWord} maintained with ${bankName} received funds that are the`,
-    `proceeds of the said offence, aggregating to ${formatMoney(totalDisputed)}:`,
+    `    ${m.intro}`,
     '',
-    buildAccountTable(accounts, totalDisputed),
+    buildAccountTable(m.accounts, m.total),
     '',
-    `    In exercise of the powers under Section 102 of the Code of Criminal`,
-    `Procedure, 1973 (Cr.P.C.) read with the Information Technology Act, 2000,`,
-    `you are hereby requested to take the following action on priority:`,
+    `    ${m.requests_intro}`,
     '',
-    `    1. PLACE A LIEN on / freeze the disputed amount lying in the above`,
-    `       ${accountWord} with immediate effect, to prevent further dissipation`,
-    `       of the fraud proceeds.`,
-    `    2. SHARE the complete KYC documents, account-opening form, registered`,
-    `       ${statementClause}`,
-    `    3. CONFIRM the action taken to this office within 24 (twenty-four) hours`,
-    `       of receipt of this communication, quoting the above reference number.`,
+    ...m.requests.map((r, i) => `    ${i + 1}. ${r}`),
     '',
-    `    This requisition is issued under Section 102 Cr.P.C. (power to seize`,
-    `property suspected to be the proceeds of crime) read with the provisions of`,
-    `the Information Technology Act, 2000. Non-compliance may attract action under`,
-    `the applicable law. Your prompt cooperation is solicited in the interest of`,
-    `investigation and expeditious recovery of the defrauded amount.`,
+    `    ${m.closing}`,
     '',
-    'Yours faithfully,',
+    m.signoff,
     '',
-    officer.name,
-    officer.designation,
-    officer.unit,
-    officer.police_station,
-    `Phone: ${officer.phone}    Email: ${officer.email}`,
+    m.officer.name,
+    m.officer.designation,
+    m.officer.unit,
+    m.officer.police_station,
+    `Phone: ${m.officer.phone}    Email: ${m.officer.email}`,
     '',
     '----------------------------------------------------------------------',
-    'This is a system-generated draft from FinTrace NCRP | MINT. Verify the',
-    'details and obtain the competent authority\'s signature before dispatch.',
+    m.footer,
   ].join('\n');
+}
+
+/**
+ * Plain-text letter body for one bank. Thin wrapper kept on the test surface:
+ * model → text. The model is the source of truth; this is one of its renderers.
+ *
+ * @param {Parameters<typeof buildLetterModel>[0]} ctx
+ * @returns {string}
+ */
+function buildBody(ctx) {
+  return renderLetterText(buildLetterModel(ctx));
 }
 
 /**
@@ -374,15 +430,20 @@ function buildEmailArtifacts(reportId, lienAccounts, caseInfo = {}) {
     const accounts = byBank.get(bankKey);
     const bankName = bankDisplay.get(bankKey);
     const totalDisputed = accounts.reduce((s, a) => s + a.amount, 0);
+    // One model per bank → renders BOTH the plain-text body (persisted, for
+    // copy/Word-text/PDF) and the structured `letter` the frontend/Word render
+    // as a formal HTML document. Same source → on-screen and dispatched agree.
+    const letter = buildLetterModel({
+      bankName, accounts, ackNo, complaintDateStr, hasComplaintDate, totalDisputed, officer,
+    });
     emails.push({
       report_id: reportId,
       bank_name: bankName,
-      subject: buildSubject(ackNo),
-      body: buildBody({
-        bankName, accounts, ackNo, complaintDateStr, hasComplaintDate, totalDisputed, officer,
-      }),
+      subject: letter.subject,
+      body: renderLetterText(letter),
       account_list: accounts.map((a) => a.account_no),
       status: 'draft',
+      letter,
     });
   }
 
@@ -436,6 +497,8 @@ module.exports = {
   _internals: Object.freeze({
     buildSubject,
     buildBody,
+    buildLetterModel,
+    renderLetterText,
     buildAccountTable,
     formatMoney,
     formatDate,

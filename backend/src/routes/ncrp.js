@@ -1102,12 +1102,17 @@ function createNcrpRouter(db) {
       regen();
     }
 
+    // The structured `letter` model (for the formal on-screen + Word rendering)
+    // is derived, not persisted — attach it from the freshly-built letter with
+    // the same bank name. The persisted `body` (plain text) is what Copy-to-
+    // clipboard uses; both come from one model, so they never disagree.
+    const letterByBank = new Map(fresh.map((e) => [e.bank_name, e.letter]));
     const rows = stmt.emails.all(report.id).map((e) => {
       const account_list = parseAccountList(e.account_list);
       // Per-letter reviewer caveat: the subset of THIS letter's accounts that
       // need bank verification before dispatch (not part of the letter body).
       const flagged_accounts = account_list.filter((a) => freezeSet.has(String(a)));
-      return { ...e, account_list, flagged_accounts };
+      return { ...e, account_list, flagged_accounts, letter: letterByBank.get(e.bank_name) || null };
     });
 
     res.json({ emails: rows, wallet_instruments, masked_accounts });

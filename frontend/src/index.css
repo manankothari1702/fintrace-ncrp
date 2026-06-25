@@ -1272,19 +1272,185 @@ table.data-table tbody td.expanded-cell {
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 
-/* Wallet/PA/VPA + masked-account sections: instruments pulled OUT of the §102
-   letters, kept visible with amounts so nothing is dropped. Plain card + a
-   data-table; the title uses brand navy on light, regular text on dark (same
-   reason the data-table headers switch — navy is unreadable on the dark card). */
-.nonactionable-section {
-  margin-top: 4px;
-}
-
-.nonactionable-title {
+/* ─── Formal §102 letter (on-screen document rendering) ───────────────────
+   The letter body renders as a proper document in the app font — addressee,
+   subject/reference, flowing paragraphs, a real account table, numbered
+   requests, signature — NOT a monospace ASCII dump. Reuses --text/--border/
+   --surface-2 tokens, so it is theme-correct in both modes. */
+.letter-head {
+  width: 100%;
   display: flex;
   align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  /* A <button> does not inherit page text colour — the UA default (black)
+     would make the bank name invisible on the dark card. Set it explicitly so
+     .letter-bank (and any uncoloured child) reads correctly in both themes. */
+  color: var(--text);
+}
+
+.letter-icon { font-size: 18px; flex: none; }
+
+/* The bank name + meta + verify chip; flex-1 with min-width:0 so a long
+   composite bank name wraps cleanly instead of shoving the badge off-row. */
+.letter-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.letter-bank {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.letter-meta {
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.letter-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.letter-field-label { color: var(--text-muted); }
+.letter-field-hint { color: var(--text-muted); }
+
+.letter-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.mono { font-family: var(--font-mono); }
+
+.letter-fallback {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  margin: 0;
+}
+
+/* The document itself — a faint paper panel inside the card so it reads as a
+   letter, with comfortable measure and line-height. */
+.letter-doc {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 26px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.letter-doc .doc-date {
+  text-align: right;
+  color: var(--text-muted);
+  margin: 0 0 14px;
+}
+
+.letter-doc .doc-addressee { margin: 0 0 14px; }
+.letter-doc .doc-bank { font-weight: 700; overflow-wrap: anywhere; }
+
+.letter-doc .doc-field { margin: 0 0 6px; }
+.letter-doc .doc-field-label { font-weight: 700; }
+
+.letter-doc .doc-salutation { margin: 14px 0 10px; }
+.letter-doc .doc-para { margin: 0 0 14px; text-align: justify; }
+
+/* Real account table inside the letter — aligned columns, subtle borders, the
+   amount right-aligned in money-green. Replaces the space-padded ASCII block. */
+.letter-acct-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0 18px;
+  font-size: 13px;
+}
+
+.letter-acct-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.letter-acct-table td {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.letter-acct-table .c-sno { width: 44px; text-align: center; white-space: nowrap; }
+.letter-acct-table .c-amt { text-align: right; white-space: nowrap; }
+.letter-acct-table td.mono { overflow-wrap: anywhere; }
+.letter-acct-table .doc-total td { font-weight: 700; border-top: 2px solid var(--border); }
+
+.letter-doc .doc-requests {
+  margin: 0 0 14px;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  margin: 0 0 6px;
+}
+
+.letter-doc .doc-signature { margin: 18px 0 0; }
+.letter-doc .doc-sig-name { font-weight: 700; }
+
+.letter-doc .doc-footer {
+  margin: 16px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* ─── Wallet/PA/VPA + masked-account sections ─────────────────────────────
+   Instruments pulled OUT of the §102 letters, kept visible with amounts so
+   nothing is dropped. Caution-styled (amber left rail + tinted header) so the
+   section reads clearly as "needs extra verification — NOT a ready-to-send
+   letter", visually distinct from the bank-letter cards. Title uses brand navy
+   on light, regular text on dark (navy is unreadable on the dark card). */
+.nonactionable-section {
+  margin-top: 4px;
+  padding: 16px 18px 18px;
+  border-left: 4px solid var(--accent-orange);
+}
+
+.nonactionable-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+}
+
+.nonactionable-icon { font-size: 16px; flex: none; }
+
+.nonactionable-title {
+  margin: 0;
   font-size: 15px;
   font-weight: 700;
   color: var(--brand);

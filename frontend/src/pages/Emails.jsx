@@ -1,20 +1,20 @@
 /**
  * Draft Lien Request Emails page.
  *
- * One formal §102 letter per ACTIONABLE bank, shown as an accordion of preview
- * cards: subject, a To placeholder, the body in monospace, and Copy / Mark-as-
- * Sent actions. Wallet / PA / VPA instruments and masked-account rows are pulled
- * OUT of the bank letters into two separate, clearly-labelled non-actionable
- * sections (a wallet can't place a §102 lien; a bank can't act on a masked
- * number) — visible, with amounts, so nothing is dropped. The whole set
- * (letters + both sections) can be exported as a Word document. The tool never
- * sends mail — the officer copies each letter into their own client.
+ * One formal §102 letter per ACTIONABLE bank, shown as an accordion of cards.
+ * The letter renders as a proper document (app font, paragraph spacing, a real
+ * account table) — NOT a monospace ASCII block — from the backend `letter`
+ * model. Copy-to-clipboard still copies the plain-text body (the version that
+ * pastes cleanly into any mail client), so what you read matches what you send.
  *
- * Loads getEmails(id) → { emails, wallet_instruments, masked_accounts }.
- * "Mark as Sent" calls updateEmailStatus optimistically (rolled back on
- * failure). Copy uses the clipboard API. The letter date is injected at render/
- * copy/export time (the stored body is date-free), so a copied letter is always
- * current.
+ * Wallet / PA / VPA instruments and masked-account rows are pulled OUT of the
+ * letters into two caution-styled non-actionable sections (a wallet can't place
+ * a §102 lien; a bank can't act on a masked number) — visible, with amounts, so
+ * nothing is dropped. The whole set exports to Word. The tool never sends mail.
+ *
+ * Loads getEmails(id) → { emails (each with .letter), wallet_instruments,
+ * masked_accounts }. The letter date is injected at render/copy/export time
+ * (stored body is date-free), so a copied letter is always current.
  */
 
 import { useEffect, useState } from 'react';
@@ -31,7 +31,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // Letter issue date — UTC, matching the backend formatDate (NCRP timestamps are
-// IST wall-clock relabelled UTC; the issue date is "today" read in UTC so it is
+// IST wall-clock relabelled UTC; reading the issue date in UTC keeps it
 // deterministic and never off-by-one near IST midnight).
 function letterDateUTC(d = new Date()) {
   return `${String(d.getUTCDate()).padStart(2, '0')} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
@@ -42,8 +42,21 @@ function letterText(email) {
   return `Date: ${letterDateUTC()}\n\n${email.body}`;
 }
 
-// Indian-grouped rupee amount to the paisa (these non-actionable amounts are
-// small; show exact figures so the section totals reconcile to the lien total).
+// "Rs." money — mirrors the backend emailGenerator.formatMoney so the on-screen
+// letter table matches the figures in the plain-text body the bank receives.
+function rs(value) {
+  const v = Number.isFinite(Number(value)) ? Number(value) : 0;
+  const neg = v < 0;
+  const [intPart, decPart] = Math.abs(v).toFixed(2).split('.');
+  let last3 = intPart.slice(-3);
+  const rest = intPart.slice(0, -3);
+  if (rest !== '') last3 = `,${last3}`;
+  const grouped = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + last3;
+  return `${neg ? '-' : ''}Rs. ${grouped}.${decPart}`;
+}
+
+// Indian-grouped rupee amount to the paisa, for the app data sections (₹ — the
+// same grammar the Lien / other tables use; the formal letter keeps "Rs.").
 const money = (v) => formatINR(v, { paise: true });
 
 // Derive a plausible nodal-officer placeholder address from the bank name.
@@ -147,42 +160,28 @@ export default function Emails() {
   };
 
   const downloadAllAsWord = () => {
-    // Lightweight .doc: Word opens HTML with a msword MIME type natively.
-    const letterSections = emails.map((e) => {
-      const flagged = Array.isArray(e.flagged_accounts) ? e.flagged_accounts : [];
-      const caveat = flagged.length
-        ? `<p style="font-family:Arial;color:#9a3412;font-size:11px"><strong>Reviewer note (verify before dispatch — not part of the letter):</strong> the bank for account(s) ${esc(flagged.join(', '))} could not be confirmed from a valid IFSC. Verify the freeze target before sending.</p>`
-        : '';
-      return `
-      <h2 style="font-family:Arial">${esc(e.bank_name)}</h2>
-      <p style="font-family:Arial"><strong>Subject:</strong> ${esc(e.subject)}</p>
-      <p style="font-family:Arial"><strong>To:</strong> ${esc(bankEmailPlaceholder(e.bank_name))} <em>(placeholder — confirm the bank's nodal-officer address)</em></p>
-      ${caveat}
-      <pre style="font-family:'Courier New';white-space:pre-wrap">${esc(letterText(e))}</pre>
-      <hr/>`;
-    }).join('');
-
-    const walletSection = wallet.length ? `
-      <h1 style="font-family:Arial">Verify Nodal Entity — Wallet / PA / VPA Instruments</h1>
-      <p style="font-family:Arial">These ${wallet.length} instrument(s) are payment wallets / aggregators / gateways or UPI VPAs, <strong>not bank accounts</strong> — a wallet/PA cannot place a Section 102 lien. Identify the nodal/escrow bank holding these funds before issuing a request; the "Source Ref" is the raw value from the source IFSC cell and is <strong>not</strong> a bank IFSC. Listed here so no instrument is dropped from the trail.</p>
-      <table border="1" cellspacing="0" cellpadding="4" style="font-family:Arial;border-collapse:collapse">
-        <tr><th>#</th><th>Instrument</th><th>Entity (as named in source)</th><th>Source Ref (not an IFSC)</th><th>Amount</th></tr>
-        ${wallet.map((w, i) => `<tr><td>${i + 1}</td><td>${esc(w.account_no)}</td><td>${esc(w.bank_name)}</td><td>${esc(w.source_ref || '—')}</td><td>${esc(money(w.amount))}</td></tr>`).join('')}
-        <tr><td colspan="4" style="text-align:right"><strong>Total</strong></td><td><strong>${esc(money(wallet.reduce((s, w) => s + Number(w.amount || 0), 0)))}</strong></td></tr>
-      </table><hr/>` : '';
-
-    const maskedSection = masked.length ? `
-      <h1 style="font-family:Arial">Unresolvable / Masked Accounts — Non-Actionable</h1>
-      <p style="font-family:Arial">These ${masked.length} account(s) carry a masked or unresolvable account number in the source (e.g. "XXXX", "NA") — a bank cannot action a freeze on an unidentifiable account. Obtain the full account number before issuing the request. Listed here so nothing is dropped.</p>
-      <table border="1" cellspacing="0" cellpadding="4" style="font-family:Arial;border-collapse:collapse">
-        <tr><th>#</th><th>Account (as in source)</th><th>Bank</th><th>IFSC</th><th>Amount</th></tr>
-        ${masked.map((m, i) => `<tr><td>${i + 1}</td><td>${esc(m.account_no)}</td><td>${esc(m.bank_name)}</td><td>${esc(m.ifsc_code || '—')}</td><td>${esc(money(m.amount))}</td></tr>`).join('')}
-        <tr><td colspan="4" style="text-align:right"><strong>Total</strong></td><td><strong>${esc(money(masked.reduce((s, m) => s + Number(m.amount || 0), 0)))}</strong></td></tr>
-      </table><hr/>` : '';
+    const letterSections = emails.map((e) => letterToWordHtml(e)).join('');
+    const walletSection = wallet.length ? sectionToWordHtml(
+      'Verify Nodal Entity — Wallet / PA / VPA Instruments',
+      `These ${wallet.length} instrument(s) are payment wallets / aggregators / gateways or UPI VPAs, <strong>not bank accounts</strong> — a wallet/PA cannot place a Section 102 lien. Identify the nodal/escrow bank holding these funds before issuing a request; the "Source Ref" is the raw value from the source IFSC cell and is <strong>not</strong> a bank IFSC. Listed here so no instrument is dropped from the trail.`,
+      ['#', 'Instrument', 'Entity (as named in source)', 'Source Ref (not an IFSC)', 'Amount'],
+      wallet.map((w, i) => [i + 1, w.account_no, w.bank_name, w.source_ref || '—', money(w.amount)]),
+      money(wallet.reduce((s, w) => s + Number(w.amount || 0), 0)),
+    ) : '';
+    const maskedSection = masked.length ? sectionToWordHtml(
+      'Unresolvable / Masked Accounts — Non-Actionable',
+      `These ${masked.length} account(s) carry a masked or unresolvable account number in the source (e.g. "XXXX", "NA") — a bank cannot action a freeze on an unidentifiable account. Obtain the full account number before issuing the request. Listed here so nothing is dropped.`,
+      ['#', 'Account (as in source)', 'Bank', 'IFSC', 'Amount'],
+      masked.map((m, i) => [i + 1, m.account_no, m.bank_name, m.ifsc_code || '—', money(m.amount)]),
+      money(masked.reduce((s, m) => s + Number(m.amount || 0), 0)),
+    ) : '';
 
     const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word'>
       <head><meta charset="utf-8"><title>FinTrace Lien Letters</title></head>
-      <body><h1 style="font-family:Arial">FinTrace — Lien Request Letters</h1>${letterSections}${walletSection}${maskedSection}</body></html>`;
+      <body style="font-family:'Times New Roman',serif">
+        <h1 style="font-family:Arial">FinTrace — Lien Request Letters</h1>
+        ${letterSections}${walletSection}${maskedSection}
+      </body></html>`;
     const url = URL.createObjectURL(new Blob([html], { type: 'application/msword' }));
     const a = document.createElement('a');
     a.href = url; a.download = 'lien-request-letters.doc'; a.click();
@@ -237,7 +236,7 @@ export default function Emails() {
 
       <div className="table-toolbar" style={{ marginBottom: 16 }}>
         <span className="spacer" />
-        <button type="button" className="btn" onClick={downloadAllAsWord} disabled={nothing}>
+        <button type="button" className="btn btn-primary" onClick={downloadAllAsWord} disabled={nothing}>
           ⬇ Download All as Word Document
         </button>
       </div>
@@ -254,22 +253,21 @@ export default function Emails() {
               <div className="card letter-card" key={email.id}>
                 <button
                   type="button"
+                  className="letter-head"
                   onClick={() => toggleOpen(email.id)}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: 'transparent', border: 'none', textAlign: 'left', cursor: 'pointer' }}
                   aria-expanded={isOpen}
                   aria-controls={bodyId}
                   title={isOpen ? 'Collapse this letter' : 'Expand this letter'}
                 >
-                  <span style={{ fontSize: 18 }}>✉️</span>
-                  <strong>{email.bank_name}</strong>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{email.account_list.length} account(s)</span>
-                  {flagged.length > 0 && (
-                    <span className="freeze-flag" title="One or more accounts in this letter could not be confirmed from a valid IFSC — verify the freeze target before dispatch.">⚠ verify bank</span>
-                  )}
-                  <span className="spacer" style={{ flex: 1 }} />
+                  <span className="letter-icon" aria-hidden="true">✉️</span>
+                  <span className="letter-head-main">
+                    <strong className="letter-bank">{email.bank_name}</strong>
+                    <span className="letter-meta">{email.account_list.length} account{email.account_list.length === 1 ? '' : 's'}</span>
+                    {flagged.length > 0 && (
+                      <span className="freeze-flag" title="One or more accounts in this letter could not be confirmed from a valid IFSC — verify the freeze target before dispatch.">⚠ verify bank</span>
+                    )}
+                  </span>
                   <Badge color={email.status === 'sent' ? 'var(--accent)' : 'var(--text-muted)'}>{email.status}</Badge>
-                  {/* Single chevron rotated by CSS: pointing down when expanded,
-                      left when collapsed. The whole header row is the hit target. */}
                   <span
                     className="letter-chevron"
                     style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}
@@ -281,25 +279,23 @@ export default function Emails() {
                     stylesheet can reveal every letter at once for the case file. */}
                 <div id={bodyId} className={`letter-body${isOpen ? '' : ' is-collapsed'}`}>
                   <div className="letter-body-inner">
-                    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', margin: '14px 0', fontSize: 13 }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Subject</span><span style={{ fontWeight: 600 }}>{email.subject}</span>
-                      <span style={{ color: 'var(--text-muted)' }}>To</span><span>{bankEmailPlaceholder(email.bank_name)} <em style={{ color: 'var(--text-muted)' }}>(placeholder)</em></span>
+                    <div className="letter-fields">
+                      <span className="letter-field-label">To</span>
+                      <span>{bankEmailPlaceholder(email.bank_name)} <em className="letter-field-hint">(placeholder)</em></span>
                     </div>
 
                     {flagged.length > 0 && (
                       <div className="letter-caveat" role="note">
                         <strong>Reviewer note — verify before dispatch (not part of the letter):</strong>{' '}
-                        the bank for account(s) <span style={{ fontFamily: 'var(--font-mono)' }}>{flagged.join(', ')}</span> could not be confirmed from a valid IFSC. Confirm the freeze target before sending — see Data Quality.
+                        the bank for account(s) <span className="mono">{flagged.join(', ')}</span> could not be confirmed from a valid IFSC. Confirm the freeze target before sending — see Data Quality.
                       </div>
                     )}
 
-                    <pre style={{
-                      fontFamily: "'Courier New', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.55,
-                      background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                      padding: 16, whiteSpace: 'pre-wrap', overflowX: 'auto', margin: 0,
-                    }}>{letterText(email)}</pre>
+                    {email.letter
+                      ? <FormalLetter letter={email.letter} dateStr={letterDateUTC()} />
+                      : <pre className="letter-fallback">{letterText(email)}</pre>}
 
-                    <div className="letter-actions" style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                    <div className="letter-actions">
                       <button type="button" className="btn btn-sm btn-primary" onClick={() => copyBody(email)}>
                         {copiedId === email.id ? '✓ Copied!' : '📋 Copy to Clipboard'}
                       </button>
@@ -315,6 +311,7 @@ export default function Emails() {
 
           {wallet.length > 0 && (
             <NonActionableSection
+              icon="👛"
               title="Verify Nodal Entity — Wallet / PA / VPA Instruments"
               count={wallet.length}
               intro={'These are payment wallets / aggregators / gateways or UPI VPAs — not bank accounts. A wallet/PA cannot place a Section 102 lien. Identify the nodal/escrow bank holding these funds before issuing a request; the "Source Ref" is the raw value from the source IFSC cell and is NOT a bank IFSC.'}
@@ -327,6 +324,7 @@ export default function Emails() {
 
           {masked.length > 0 && (
             <NonActionableSection
+              icon="🚫"
               title="Unresolvable / Masked Accounts — Non-Actionable"
               count={masked.length}
               intro={'These accounts carry a masked or unresolvable account number in the source (e.g. "XXXX", "NA") — a bank cannot action a freeze on an unidentifiable account. Obtain the full account number before issuing the request.'}
@@ -342,18 +340,95 @@ export default function Emails() {
   );
 }
 
+// ─── Formal letter (on-screen) ───────────────────────────────────────────────
+//
+// Renders the backend `letter` model as a proper document in the app font: a
+// dated addressee block, subject/reference, flowing paragraphs, a real account
+// table (Account / IFSC / Amount + TOTAL), the numbered requests, the statutory
+// closing, and the officer signature block. NOT a monospace ASCII dump.
+function FormalLetter({ letter, dateStr }) {
+  const o = letter.officer || {};
+  return (
+    <article className="letter-doc">
+      <p className="doc-date">Date: {dateStr}</p>
+
+      <div className="doc-addressee">
+        <div>To,</div>
+        <div>The Nodal Officer / Principal Officer,</div>
+        <div className="doc-bank">{letter.bank_name}</div>
+      </div>
+
+      <p className="doc-field"><span className="doc-field-label">Subject:</span> {letter.subject}</p>
+      <p className="doc-field"><span className="doc-field-label">Reference:</span> {letter.reference}</p>
+
+      <p className="doc-salutation">{letter.salutation}</p>
+      <p className="doc-para">{letter.intro}</p>
+
+      <div className="table-wrap">
+        <table className="letter-acct-table">
+          <thead>
+            <tr>
+              <th className="c-sno">S.No</th>
+              <th>Account Number</th>
+              <th>IFSC Code</th>
+              <th className="c-amt">Amount Involved</th>
+            </tr>
+          </thead>
+          <tbody>
+            {letter.accounts.map((a) => (
+              <tr key={a.sno}>
+                <td className="c-sno">{a.sno}</td>
+                <td className="mono">{a.account_no || '—'}</td>
+                <td className="mono">{a.ifsc_code || '—'}</td>
+                <td className="c-amt money-accent">{rs(a.amount)}</td>
+              </tr>
+            ))}
+            <tr className="doc-total">
+              <td colSpan={3} className="c-amt">TOTAL</td>
+              <td className="c-amt money-accent">{rs(letter.total)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p className="doc-para">{letter.requests_intro}</p>
+      <ol className="doc-requests">
+        {letter.requests.map((r, i) => <li key={i}>{r}</li>)}
+      </ol>
+
+      <p className="doc-para">{letter.closing}</p>
+
+      <div className="doc-signature">
+        <div>{letter.signoff}</div>
+        <div className="doc-sig-name">{o.name}</div>
+        <div>{o.designation}</div>
+        <div>{o.unit}</div>
+        <div>{o.police_station}</div>
+        <div>Phone: {o.phone} &nbsp;&nbsp; Email: {o.email}</div>
+      </div>
+
+      <p className="doc-footer">{letter.footer}</p>
+    </article>
+  );
+}
+
 // ─── Non-actionable section (wallet / masked) ────────────────────────────────
 //
-// A labelled card carrying instruments pulled OUT of the §102 letters: visible,
-// with amounts and an instructional note, so the evidence is never dropped. The
-// last column is the amount (right-aligned, money-green); `monoCols` renders the
-// listed columns in the mono font (account / reference identifiers).
-function NonActionableSection({ title, count, intro, columns, rows, total, monoCols = [] }) {
+// Caution-styled card (amber left rail + tinted header) so it reads clearly as
+// "needs extra verification — NOT a ready-to-send letter", distinct from the
+// bank-letter cards. Carries instruments pulled OUT of the §102 letters, with
+// amounts, so the evidence is never dropped. The last column is the amount
+// (right-aligned, money-green); `monoCols` renders identifier columns in mono.
+function NonActionableSection({ icon, title, count, intro, columns, rows, total, monoCols = [] }) {
   const mono = new Set(monoCols);
   const lastCol = columns.length - 1;
   return (
-    <section className="card card-pad nonactionable-section" aria-label={title}>
-      <h2 className="nonactionable-title">{title} <span className="nonactionable-count">{count}</span></h2>
+    <section className="card nonactionable-section" aria-label={title}>
+      <div className="nonactionable-head">
+        <span className="nonactionable-icon" aria-hidden="true">{icon}</span>
+        <h2 className="nonactionable-title">{title}</h2>
+        <span className="nonactionable-count">{count}</span>
+      </div>
       <p className="nonactionable-note">{intro}</p>
       <div className="table-wrap">
         <table className="data-table">
@@ -389,4 +464,62 @@ function NonActionableSection({ title, count, intro, columns, rows, total, monoC
       </div>
     </section>
   );
+}
+
+// ─── Word export helpers (model → formal HTML) ───────────────────────────────
+
+// One formal letter as Word-friendly HTML (real account table, not a <pre>).
+// Falls back to the plain-text body if the structured model is absent.
+function letterToWordHtml(e) {
+  const flagged = Array.isArray(e.flagged_accounts) ? e.flagged_accounts : [];
+  const caveat = flagged.length
+    ? `<p style="color:#9a3412;font-size:11px"><strong>Reviewer note (verify before dispatch — not part of the letter):</strong> the bank for account(s) ${esc(flagged.join(', '))} could not be confirmed from a valid IFSC. Verify the freeze target before sending.</p>`
+    : '';
+  const L = e.letter;
+  if (!L) {
+    return `<h2 style="font-family:Arial">${esc(e.bank_name)}</h2>${caveat}<pre style="font-family:'Courier New';white-space:pre-wrap">${esc(letterText(e))}</pre><hr/>`;
+  }
+  const o = L.officer || {};
+  const rowsHtml = L.accounts.map((a) => `<tr>
+      <td align="center">${a.sno}</td>
+      <td style="font-family:Consolas,monospace">${esc(a.account_no || '—')}</td>
+      <td style="font-family:Consolas,monospace">${esc(a.ifsc_code || '—')}</td>
+      <td align="right">${esc(rs(a.amount))}</td></tr>`).join('');
+  return `
+    <h2 style="font-family:Arial">${esc(L.bank_name)}</h2>
+    <p style="font-family:Arial;color:#555"><strong>To:</strong> ${esc(bankEmailPlaceholder(L.bank_name))} <em>(placeholder — confirm the bank's nodal-officer address)</em></p>
+    ${caveat}
+    <div style="font-family:'Times New Roman',serif;font-size:12pt;line-height:1.5">
+      <p align="right">Date: ${esc(letterDateUTC())}</p>
+      <p>To,<br/>The Nodal Officer / Principal Officer,<br/><strong>${esc(L.bank_name)}</strong></p>
+      <p><strong>Subject:</strong> ${esc(L.subject)}</p>
+      <p><strong>Reference:</strong> ${esc(L.reference)}</p>
+      <p>${esc(L.salutation)}</p>
+      <p>${esc(L.intro)}</p>
+      <table border="1" cellspacing="0" cellpadding="5" style="border-collapse:collapse;font-size:11pt">
+        <tr style="background:#f0f0f0"><th>S.No</th><th>Account Number</th><th>IFSC Code</th><th>Amount Involved</th></tr>
+        ${rowsHtml}
+        <tr><td colspan="3" align="right"><strong>TOTAL</strong></td><td align="right"><strong>${esc(rs(L.total))}</strong></td></tr>
+      </table>
+      <p>${esc(L.requests_intro)}</p>
+      <ol>${L.requests.map((r) => `<li>${esc(r)}</li>`).join('')}</ol>
+      <p>${esc(L.closing)}</p>
+      <p>${esc(L.signoff)}<br/><strong>${esc(o.name)}</strong><br/>${esc(o.designation)}<br/>${esc(o.unit)}<br/>${esc(o.police_station)}<br/>Phone: ${esc(o.phone)} &nbsp;&nbsp; Email: ${esc(o.email)}</p>
+      <p style="font-size:9pt;color:#777;border-top:1px solid #ccc;padding-top:6px">${esc(L.footer)}</p>
+    </div>
+    <hr/>`;
+}
+
+// One non-actionable section as a Word table.
+function sectionToWordHtml(title, intro, columns, rows, total) {
+  const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
+  const body = rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
+  const totalRow = `<tr><td colspan="${columns.length - 1}" align="right"><strong>Total</strong></td><td><strong>${esc(total)}</strong></td></tr>`;
+  return `
+    <h1 style="font-family:Arial">${esc(title)}</h1>
+    <p style="font-family:Arial">${intro}</p>
+    <table border="1" cellspacing="0" cellpadding="4" style="font-family:Arial;border-collapse:collapse">
+      <tr style="background:#f0f0f0">${head}</tr>
+      ${body}${totalRow}
+    </table><hr/>`;
 }
