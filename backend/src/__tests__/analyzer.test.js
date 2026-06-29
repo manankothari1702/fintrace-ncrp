@@ -268,6 +268,24 @@ describe('timelineAnalysis', () => {
       '2024-01-15', '2024-01-16', '2024-01-17',
     ]);
   });
+
+  test('per-day cashouts count cash-exit (ATM/POS) legs, bucketed by the same day', () => {
+    const txns = [
+      // 2024-02-01: one IMPS hop + one ATM cash-out
+      { beneficiary_account: 'A', victim_account: 'V', transaction_date: '2024-02-01T05:00:00.000Z', transaction_amount: 100, layer_no: 1, payment_mode: 'IMPS' },
+      { beneficiary_account: 'X', victim_account: 'X', transaction_date: '2024-02-01T06:00:00.000Z', transaction_amount: 50, layer_no: 2, payment_mode: 'ATM', atm_id: 'ATM9' },
+      // 2024-02-02: one POS cash-out
+      { beneficiary_account: 'Y', victim_account: 'Y', transaction_date: '2024-02-02T05:00:00.000Z', transaction_amount: 75, layer_no: 2, payment_mode: 'POS' },
+    ];
+    const timeline = timelineAnalysis(enrichTransactions(txns));
+    const byDate = Object.fromEntries(timeline.map((d) => [d.date, d]));
+    // Only the ATM leg is a cash-out on day 1 (the IMPS hop is not).
+    expect(byDate['2024-02-01'].cashouts).toBe(1);
+    expect(byDate['2024-02-01'].transaction_count).toBe(2);
+    expect(byDate['2024-02-02'].cashouts).toBe(1);
+    // Dated per-day cashouts reconcile to the total cash-exit leg count.
+    expect(timeline.reduce((s, d) => s + d.cashouts, 0)).toBe(2);
+  });
 });
 
 // ─── keyFindings ─────────────────────────────────────────────────────

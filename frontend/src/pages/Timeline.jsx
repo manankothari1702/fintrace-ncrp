@@ -32,17 +32,26 @@ import { formatCrore, formatINR, formatDate, formatNumber } from '../utils/forma
 import { getReport, getTimeline, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
-// "15 Jan" short label for the axis.
+// "15 Jan" short label for the axis. NOTE (F4, latent): the year is intentionally
+// dropped to keep the axis compact, and the trail can span >1 year. If two active
+// days ever share the same day+month across different years (e.g. 2 May 2025 and
+// 2 May 2026), they would render with the identical "2 May" label and the
+// label-matched ReferenceLine markers (fraud start / latest) could attach to the
+// wrong occurrence. No collision occurs in the current reports; revisit with a
+// time-scaled axis (or year-qualified labels + date-keyed markers) if it recurs.
 function dayMonth(dateStr) {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return dateStr;
   return formatDate(d).split(' ').slice(0, 2).join(' ');
 }
 
+// Full days elapsed between two instants. Uses floor, not round: the fraud
+// response gap is evidentiary, so it reports complete elapsed days rather than
+// rounding a partial day up (which would overstate the gap by up to ~1 day).
 function daysBetween(a, b) {
   const ms = new Date(b).getTime() - new Date(a).getTime();
   if (!Number.isFinite(ms)) return null;
-  return Math.max(0, Math.round(ms / 86400000));
+  return Math.max(0, Math.floor(ms / 86400000));
 }
 
 export default function Timeline() {
@@ -73,6 +82,10 @@ export default function Timeline() {
   }, [reportId]);
 
   const analysis = report?.analysis_json;
+  // Transaction reconciliation (raw legs → deduped → dated/undated). The timeline
+  // plots dated rows only; surface the undated split when it carries money so the
+  // page reconciles with the headline counts and the Cashout Events total.
+  const txRecon = analysis?.reconciliation?.transactions;
 
   // Cumulative amount for the area series.
   const chartData = useMemo(() => {
@@ -161,7 +174,7 @@ export default function Timeline() {
           icon="⏱️"
           color={responseGap != null && responseGap > 3 ? 'var(--danger)' : 'var(--accent-orange)'}
         />
-        <StatCard title="Total Moved" value={formatCrore(totals.amount)} subtitle={`${formatNumber(totals.transactions)} transactions`} icon="💸" color="var(--brand)" />
+        <StatCard title="Total Moved" value={formatCrore(totals.amount)} subtitle={`${formatNumber(totals.transactions)} dated transactions`} icon="💸" color="var(--brand)" />
         <StatCard title="Cashout Events" value={formatNumber(totals.cashouts)} subtitle="ATM/POS exits" icon="🏧" color="var(--accent-orange)" />
         <StatCard title="Active Days" value={timeline.length} subtitle="days with activity" icon="📅" color="var(--accent)" />
       </div>
@@ -224,12 +237,32 @@ export default function Timeline() {
                   <td style={{ textAlign: 'right' }}>{formatNumber(d.transaction_count)}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(d.total_amount)}</td>
                   <td>{Object.keys(d.layer_breakdown || {}).map((l) => `L${l}`).join(', ') || '—'}</td>
-                  <td style={{ textAlign: 'right' }}>{d.cashouts == null ? '—' : formatNumber(d.cashouts)}</td>
+                  {/* Per-day cash-exit (ATM/POS) count. Real numbers now (F1); a
+                      legacy snapshot without the field falls back to "—". Zero
+                      days are shown muted so the cash-out days stand out. */}
+                  <td style={{ textAlign: 'right' }}>
+                    {d.cashouts == null
+                      ? '—'
+                      : d.cashouts > 0
+                        ? <span style={{ fontWeight: 600 }}>{formatNumber(d.cashouts)}</span>
+                        : <span style={{ color: 'var(--text-muted)' }}>0</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {/* F2 — disclose undated rows when they carry money. The timeline can only
+            plot dated rows, so the dated total (and per-day Cashouts) sit below the
+            case headline; this footnote reconciles the difference. Mirrors the PDF
+            Annexure G "Undated" framing. Hidden when undated_amount is 0. */}
+        {txRecon && txRecon.undated_amount > 0 && (
+          <p style={{ marginTop: 10, marginBottom: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Timeline plots dated transactions only. Excludes {formatINR(txRecon.undated_amount)} across{' '}
+            {formatNumber(txRecon.undated)} undated transaction{txRecon.undated === 1 ? '' : 's'} with no
+            date in the source file — counted in case totals (including Cashout Events) but not placed on a day.
+          </p>
+        )}
       </div>
     </div>
   );

@@ -1469,8 +1469,11 @@ function repeatAccountDetection(txns, existingRepeatAccounts = []) {
  * @param {ReadonlyArray<Record<string, unknown>>} txns - Enriched transactions.
  * @returns {Array<{
  *   date: string, total_amount: number, transaction_count: number,
- *   layer_breakdown: Record<string, number>,
- * }>} Sorted chronologically.
+ *   cashouts: number, layer_breakdown: Record<string, number>,
+ * }>} Sorted chronologically. `cashouts` is the per-day count of cash-exit
+ *   (ATM/POS) legs - the SAME CASH_EXIT_MODES predicate cashoutAnalysis counts,
+ *   so the dated per-day counts foot to total_cashout_transactions minus any
+ *   undated cash-exits (which carry no day and are surfaced via reconciliation).
  */
 function timelineAnalysis(txns) {
   /** @type {Map<string, any>} */
@@ -1479,11 +1482,16 @@ function timelineAnalysis(txns) {
     const day = istDayKey(t.transaction_date);
     if (day === null) continue;
     if (!byDay.has(day)) {
-      byDay.set(day, { date: day, total_amount: 0, transaction_count: 0, layers: {} });
+      byDay.set(day, { date: day, total_amount: 0, transaction_count: 0, cashouts: 0, layers: {} });
     }
     const d = byDay.get(day);
     d.total_amount += num(t.transaction_amount);
     d.transaction_count += 1;
+    // Per-day cash-exit count (FR-11). Uses the identical CASH_EXIT_MODES
+    // predicate as cashoutAnalysis so the dated daily counts reconcile to the
+    // Cashout Events total; bucketing is the existing istDayKey day above; no
+    // new date logic is introduced.
+    if (CASH_EXIT_MODES.has(t.cashout_mode)) d.cashouts += 1;
     const layer = layerOf(t.layer_no);
     d.layers[layer] = round((d.layers[layer] || 0) + num(t.transaction_amount));
   }
@@ -1492,6 +1500,7 @@ function timelineAnalysis(txns) {
       date: d.date,
       total_amount: round(d.total_amount),
       transaction_count: d.transaction_count,
+      cashouts: d.cashouts,
       layer_breakdown: d.layers,
     }))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
