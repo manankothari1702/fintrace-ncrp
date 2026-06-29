@@ -31,6 +31,7 @@ import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skele
 import { formatCrore, formatINR, formatDate, formatNumber } from '../utils/format.js';
 import { getReport, getTimeline, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useChartTheme } from '../utils/useChartTheme.js';
 
 // "15 Jan" short label for the axis. NOTE (F4, latent): the year is intentionally
 // dropped to keep the axis compact, and the trail can span >1 year. If two active
@@ -56,6 +57,9 @@ function daysBetween(a, b) {
 
 export default function Timeline() {
   const reportId = useActiveReportId();
+  // recharts paints SVG fill/stroke, which don't resolve CSS var(); hand it
+  // concrete colours that re-resolve on every light/dark flip.
+  const chart = useChartTheme();
 
   const [timeline, setTimeline] = useState([]);
   const [report, setReport] = useState(null);
@@ -172,9 +176,15 @@ export default function Timeline() {
           value={responseGap == null ? '—' : `${responseGap} day${responseGap === 1 ? '' : 's'}`}
           subtitle="fraud start → upload"
           icon="⏱️"
-          color={responseGap != null && responseGap > 3 ? 'var(--danger)' : 'var(--accent-orange)'}
+          /* >3 days = slow response → danger (lifted so the red number stays AA on
+             the dark card); a prompt report stays neutral. */
+          color={responseGap != null && responseGap > 3 ? 'var(--risk-high)' : 'var(--text-muted)'}
         />
-        <StatCard title="Total Moved" value={formatCrore(totals.amount)} subtitle={`${formatNumber(totals.transactions)} dated transactions`} icon="💸" color="var(--brand)" />
+        {/* --brand-text, not raw --brand: navy is ~1.5:1 (illegible) as a value on
+            the dark card. "gross throughput" labels the figure the way Layers /
+            Money Flow do — it re-counts the same rupees across layers, so it is far
+            larger than the victim loss and must not be read as the fraud amount. */}
+        <StatCard title="Total Moved" value={formatCrore(totals.amount)} subtitle={`gross throughput · ${formatNumber(totals.transactions)} dated txns`} icon="💸" color="var(--brand-text)" />
         <StatCard title="Cashout Events" value={formatNumber(totals.cashouts)} subtitle="ATM/POS exits" icon="🏧" color="var(--accent-orange)" />
         <StatCard title="Active Days" value={timeline.length} subtitle="days with activity" icon="📅" color="var(--accent)" />
       </div>
@@ -183,34 +193,61 @@ export default function Timeline() {
       <div className="card card-pad" style={{ marginBottom: 20 }}>
         <h3 style={{ fontSize: 15, marginBottom: 12 }}>Cumulative Amount &amp; Daily Transactions</h3>
         <ResponsiveContainer width="100%" height={340}>
-          <ComposedChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-            <YAxis yAxisId="amount" tickFormatter={(v) => formatCrore(v)} tick={{ fontSize: 12 }} width={64} />
-            <YAxis yAxisId="count" orientation="right" tick={{ fontSize: 12 }} width={40} />
+          <ComposedChart data={chartData} margin={{ top: 16, right: 16, left: 8, bottom: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={chart.border} vertical={false} />
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 12, fill: chart.textMuted }}
+              axisLine={{ stroke: chart.border }}
+              tickLine={{ stroke: chart.border }}
+            />
+            <YAxis
+              yAxisId="amount"
+              tickFormatter={(v) => formatCrore(v)}
+              tick={{ fontSize: 12, fill: chart.textMuted }}
+              width={64}
+              axisLine={{ stroke: chart.border }}
+              tickLine={{ stroke: chart.border }}
+            />
+            <YAxis
+              yAxisId="count"
+              orientation="right"
+              tick={{ fontSize: 12, fill: chart.textMuted }}
+              width={40}
+              axisLine={{ stroke: chart.border }}
+              tickLine={{ stroke: chart.border }}
+            />
             <Tooltip
               formatter={(value, name) => (name === 'Cumulative Amount'
                 ? [formatINR(value), name]
                 : [formatNumber(value), name])}
+              cursor={{ fill: chart.text, fillOpacity: 0.06 }}
+              contentStyle={{ background: chart.cardBg, border: `1px solid ${chart.border}`, borderRadius: 8, color: chart.text }}
+              labelStyle={{ color: chart.text }}
+              itemStyle={{ color: chart.text }}
             />
-            <Legend />
+            <Legend wrapperStyle={{ fontSize: 12, color: chart.text }} formatter={(v) => <span style={{ color: chart.text }}>{v}</span>} />
             <Area
               yAxisId="amount"
               type="monotone"
               dataKey="cumulative_amount"
               name="Cumulative Amount"
-              stroke="var(--brand)"
-              fill="var(--brand-light)"
+              stroke={chart.brandText}
+              fill={chart.brandText}
+              fillOpacity={0.14}
               strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: chart.brandText, stroke: chart.cardBg }}
             />
-            <Bar yAxisId="count" dataKey="transaction_count" name="Daily Transactions" fill="var(--accent-orange)" radius={[3, 3, 0, 0]} barSize={26} />
+            <Bar yAxisId="count" dataKey="transaction_count" name="Daily Transactions" fill={chart.accentOrange} radius={[3, 3, 0, 0]} barSize={26} />
 
-            {/* Key event markers */}
+            {/* Key event markers — colours are concrete (recharts SVG) and lifted so
+                the dashed lines + labels stay legible on the dark card. */}
             {fraudStart && (
-              <ReferenceLine yAxisId="amount" x={dayMonth(fraudStart)} stroke="var(--danger)" strokeDasharray="4 3" label={{ value: 'Fraud start', position: 'top', fontSize: 11, fill: 'var(--danger)' }} />
+              <ReferenceLine yAxisId="amount" x={dayMonth(fraudStart)} stroke={chart.dangerText} strokeDasharray="4 3" strokeWidth={1.5} label={{ value: 'Fraud start', position: 'insideTopRight', fontSize: 11, fontWeight: 600, fill: chart.dangerText }} />
             )}
             {latestDate && (
-              <ReferenceLine yAxisId="amount" x={dayMonth(latestDate)} stroke="var(--text-muted)" strokeDasharray="4 3" label={{ value: 'Latest', position: 'top', fontSize: 11, fill: 'var(--text-muted)' }} />
+              <ReferenceLine yAxisId="amount" x={dayMonth(latestDate)} stroke={chart.textMuted} strokeDasharray="4 3" label={{ value: 'Latest', position: 'insideTopLeft', fontSize: 11, fill: chart.textMuted }} />
             )}
           </ComposedChart>
         </ResponsiveContainer>
@@ -238,13 +275,15 @@ export default function Timeline() {
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(d.total_amount)}</td>
                   <td>{Object.keys(d.layer_breakdown || {}).map((l) => `L${l}`).join(', ') || '—'}</td>
                   {/* Per-day cash-exit (ATM/POS) count. Real numbers now (F1); a
-                      legacy snapshot without the field falls back to "—". Zero
-                      days are shown muted so the cash-out days stand out. */}
+                      legacy snapshot without the field falls back to "—". Days WITH
+                      a cash-out are flagged in the danger grammar (lifted so the red
+                      stays AA in both themes — raw orange is sub-AA on white) so the
+                      high-extraction days pop; zero days stay muted. */}
                   <td style={{ textAlign: 'right' }}>
                     {d.cashouts == null
                       ? '—'
                       : d.cashouts > 0
-                        ? <span style={{ fontWeight: 600 }}>{formatNumber(d.cashouts)}</span>
+                        ? <span style={{ fontWeight: 700, color: 'var(--risk-high)' }}>{formatNumber(d.cashouts)}</span>
                         : <span style={{ color: 'var(--text-muted)' }}>0</span>}
                   </td>
                 </tr>

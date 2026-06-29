@@ -9,7 +9,8 @@
  * shared hook is used by the Money Flow Sankey without touching that working code.)
  *
  * @returns {{theme:'light'|'dark', text:string, textMuted:string, border:string,
- *   cardBg:string, brand:string, danger:string, accent:string, accentOrange:string}}
+ *   cardBg:string, brand:string, brandText:string, danger:string, dangerText:string,
+ *   accent:string, accentOrange:string}}
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -34,7 +35,13 @@ export function useChartTheme() {
       border: v('--border', '#e0e5ed'),
       cardBg: v('--card-bg', '#ffffff'),
       brand: v('--brand', '#1f3a6e'),
+      // Lifted variants for SVG strokes/labels that must stay legible on the dark
+      // card: raw --brand is ~1.5:1 and raw --danger ~3:1 in dark, so charts read
+      // these (true navy / red in light; lifted toward white in dark — see the
+      // --brand-text and --risk-high token notes in index.css).
+      brandText: v('--brand-text', '#1f3a6e'),
       danger: v('--danger', '#c62828'),
+      dangerText: v('--risk-high', '#c62828'),
       accent: v('--accent', '#2e7d32'),
       accentOrange: v('--accent-orange', '#e65100'),
     };
