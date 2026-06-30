@@ -10,7 +10,7 @@
 | Owner | Architecture / Engineering |
 | Audience | Engineering, QA, UX, Investigating Officers (IO), Cyber Crime Cell stakeholders |
 
-> **As-built pointer (added 2026-06-18).** This SRS remains the **v1.0 requirements baseline** dated 2026-05-26 and is intentionally not re-litigated here. Where the shipped product (currently **v0.3.0**) diverges from this forward design — language (JavaScript, not TypeScript), **Electron 33** (not 28), 7 SQLite tables, an uncapped 11-signal mule score, the CypherSOL gross-balance lien formula, a 19-sheet Excel workbook, and a visual PDF dossier — the authoritative description is **[SDD.md](SDD.md) v2.1 (as-built)**. Read the SDD for what exists; read this SRS for the original intent and acceptance criteria.
+> **As-built pointer (added 2026-06-18).** This SRS remains the **v1.0 requirements baseline** dated 2026-05-26 and is intentionally not re-litigated here. Where the shipped product (currently **v0.4.0**) diverges from this forward design — language (JavaScript, not TypeScript), **Electron 33** (not 28), 7 SQLite tables, an uncapped 11-signal mule score, the CypherSOL gross-balance lien formula, a 19-sheet Excel workbook, and a visual PDF dossier — the authoritative description is **[SDD.md](SDD.md) v2.1 (as-built)**. Read the SDD for what exists; read this SRS for the original intent and acceptance criteria.
 
 ---
 

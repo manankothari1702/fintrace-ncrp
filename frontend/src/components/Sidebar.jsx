@@ -21,7 +21,7 @@ import { NavLink } from 'react-router-dom';
 import { useReportContext } from '../context/ReportContext.jsx';
 import { useTheme } from '../utils/theme.js';
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 
 const NAV_ITEMS = [
   { to: '/upload', icon: '📤', label: 'Upload' },

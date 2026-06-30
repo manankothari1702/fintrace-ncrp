@@ -4,7 +4,7 @@
 
 Ingests NCRP BankAction CompleteTrail Excel exports and transforms them into investigation-grade intelligence: layered money trails, mule account identification, cashout patterns, lien-recovery worksheets (matched to CypherSOL CypherTrace v2.2.100), RBI/MHA-formatted bank correspondence, a multi-sheet Excel workbook, and a visual PDF dossier.
 
-**Current version: 0.3.0**
+**Current version: 0.4.0**
 
 ---
 
@@ -218,7 +218,7 @@ The backend listens on `127.0.0.1:3847`.
 ### Build the Windows installer
 
 ```bash
-npm run build:win   # build:frontend + electron-builder --win → dist/FinTrace NCRP Setup 0.3.0.exe
+npm run build:win   # build:frontend + electron-builder --win → dist/FinTrace NCRP Setup 0.4.0.exe
 ```
 
 See [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md) for the full toolchain, native-rebuild, and clean-VM verification steps.

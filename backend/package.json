@@ -1,6 +1,6 @@
 {
   "name": "fintrace-ncrp-backend",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "FinTrace NCRP — backend analysis engine for cyber-fraud transaction trails.",
   "main": "src/analyzers/analyzer.js",
