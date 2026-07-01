@@ -412,7 +412,9 @@ function enrichTransactions(txns) {
  *   • account_count / bank_count     — distinct beneficiary accounts / banks.
  *   • cashout_count — EXIT rows (ATM/POS) attributed to the layer.
  *   • fan_out_ratio — accounts_in_next_layer / accounts_in_this_layer.
+ *   • fan_out_high  — true when fan_out_ratio ≥ FANOUT_HIGH_RATIO (Feature 2 flag).
  *   • top_banks     — up to three "Bank (n)" labels by hop count.
+ *   • banks_ranked  — full [{ bank, count }] list, sorted by involvement.
  *   • avg_forward_time_hours — mean hours from receipt at layer N to the
  *     earliest hop at layer N+1 sharing the account's ack_no (null at the tail).
  *
@@ -516,10 +518,14 @@ function layerAnalysis(txns) {
       ? round(nextAccounts / g.accounts.size, 2)
       : null;
 
-    const topBanks = [...g.bankCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([bank, n]) => `${bank} (${n})`);
+    // Full ranked bank list (Feature 2): every bank at this layer with its hop
+    // count, sorted by involvement. `top_banks` (top-3 "Bank (n)" strings) is kept
+    // unchanged for the Excel/PDF consumers; `banks_ranked` is the structured full
+    // list the Layers page renders as 3 chips + a "+N" popover.
+    const banksRanked = [...g.bankCounts.entries()]
+      .sort((a, b) => (b[1] - a[1]) || String(a[0]).localeCompare(String(b[0])))
+      .map(([bank, n]) => ({ bank, count: n }));
+    const topBanks = banksRanked.slice(0, 3).map(({ bank, count }) => `${bank} (${count})`);
 
     return {
       layer_no: g.layer_no,
@@ -532,7 +538,12 @@ function layerAnalysis(txns) {
       unique_banks: g.banks.size,
       bank_count: g.banks.size,
       fan_out_ratio: fanOut,
+      // Feature 2 — HIGH fan-out flag: money spread into ≥ FANOUT_HIGH_RATIO× more
+      // accounts than the previous hop. Computed here so the flag has one source
+      // of truth (see thresholds.js); the Layers page only renders it.
+      fan_out_high: fanOut !== null && fanOut >= THRESHOLDS.FANOUT_HIGH_RATIO,
       top_banks: topBanks,
+      banks_ranked: banksRanked,
     };
   });
 }

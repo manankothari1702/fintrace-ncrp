@@ -689,6 +689,116 @@ table.data-table tbody td.expanded-cell {
   border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 }
 
+/* ─── Feature 2 — layer fan-out HIGH flag + top-banks "+N" popover ────────
+   The fan-out flag reuses the danger-red squared grammar (colour + ⚑ + word,
+   so it reads on a grayscale printout). The bank chips keep a bank-heavy layer
+   from widening the card: three chips + a "+N" chip that opens a small popover
+   listing the full ranked bank set. */
+.fanout-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+[data-theme='dark'] .fanout-flag {
+  color: color-mix(in srgb, var(--danger) 55%, #fff);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+.bank-chip-group {
+  position: relative;
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.bank-more-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--brand-text);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent);
+}
+
+.bank-more-chip:hover,
+.bank-more-chip:focus-visible {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+  outline: none;
+}
+
+.bank-more-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
+.bank-more-popover-head {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 2px 6px 6px;
+}
+
+.bank-more-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bank-more-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.bank-more-list li:hover {
+  background: var(--surface-3);
+}
+
+.bank-more-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bank-more-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
 /* ─── Lien Tracker — money-green text, row expander, breakdown panel ──────
    Small money-green text (the header total, the per-row Lien Eligible value,
    the expanded final term). Raw --accent (#2e7d32) is only ~3.25:1 on the dark

@@ -10,8 +10,11 @@
  * for the per-layer account tables.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
 
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
@@ -19,6 +22,7 @@ import { SkeletonLine, SkeletonCards } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getLayers, getMules, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useChartTheme } from '../utils/useChartTheme.js';
 
 // Clarity copy surfaced by the correctness audit. The per-layer "total amount"
 // is GROSS THROUGHPUT — the sum of every transfer moving through the layer
@@ -33,6 +37,11 @@ const FWD_TIP =
   'Average time from an account first receiving funds in this layer to the earliest '
   + 'onward hop into the next layer that shares the case acknowledgement number. Large '
   + 'values are real measured gaps (e.g. funds held before moving on), not errors.';
+const FANOUT_TIP =
+  'Fan-out — for every account at this layer, how many accounts the money spread into '
+  + 'at the next hop. A high value means the funds suddenly scattered, a classic '
+  + 'layering/muling signal and a good place to prioritise freezes. Flagged HIGH when '
+  + 'the money spread into 2× or more accounts than the previous hop.';
 
 export default function Layers() {
   const reportId = useActiveReportId();
@@ -78,6 +87,18 @@ export default function Layers() {
     () => layers.reduce((s, l) => s + (l.total_amount || 0), 0),
     [layers],
   );
+
+  // Feature 2 — the highest-fan-out flagged layer, surfaced in the page header so
+  // the scatter point is unmissable regardless of scroll position.
+  const peakFanOut = useMemo(() => {
+    let peak = null;
+    for (const l of layers) {
+      if (l.fan_out_high && (peak === null || (l.fan_out_ratio || 0) > (peak.fan_out_ratio || 0))) {
+        peak = l;
+      }
+    }
+    return peak;
+  }, [layers]);
 
   const toggle = (layerNo) => {
     setExpanded((prev) => {
@@ -136,8 +157,20 @@ export default function Layers() {
           &nbsp;·&nbsp;
           <strong style={{ color: 'var(--text)' }}>{formatCrore(totalTrailAmount)}</strong>&nbsp;gross throughput
           <InfoDot title={GROSS_TIP} />
+          {peakFanOut && (
+            <>
+              &nbsp;·&nbsp;
+              <span className="fanout-flag" title={FANOUT_TIP}>
+                ⚑ peak fan-out {peakFanOut.fan_out_ratio}× at L{peakFanOut.layer_no}
+              </span>
+            </>
+          )}
         </p>
       </header>
+
+      {/* Feature 2 — optional summary chart (accounts & banks by layer), collapsed
+          by default so it never pushes the layer breakdown below the fold. */}
+      <LayerSummaryChart layers={layers} />
 
       {/* Horizontal flow diagram */}
       <div className="card card-pad" style={{ marginBottom: 20, overflowX: 'auto' }}>
@@ -172,6 +205,7 @@ export default function Layers() {
                 )}
                 {l.txn_count != null && <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.txn_count)} txns</span>}
                 <span style={{ color: 'var(--text-muted)' }}>{formatNumber(l.account_count)} accounts</span>
+                {l.fan_out_high && <FanOutFlag ratio={l.fan_out_ratio} showRatio />}
                 <span style={{ fontWeight: 800, fontSize: 16 }} title={GROSS_TIP}>{formatINR(l.total_amount)}</span>
                 <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>disputed {formatINR(l.disputed_amount)}</span>
                 <span className="spacer" style={{ flex: 1 }} />
@@ -193,7 +227,13 @@ export default function Layers() {
                     <Metric label="Cashouts" value={formatNumber(l.cashout_count)} />
                     <Metric
                       label="Fan-out ratio"
-                      value={l.fan_out_ratio == null ? '—' : `${l.fan_out_ratio}×`}
+                      info={FANOUT_TIP}
+                      value={l.fan_out_ratio == null ? '—' : (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                          {l.fan_out_ratio}×
+                          {l.fan_out_high && <FanOutFlag />}
+                        </span>
+                      )}
                     />
                     <Metric
                       label="Avg forward time"
@@ -202,12 +242,11 @@ export default function Layers() {
                     />
                   </div>
 
-                  {Array.isArray(l.top_banks) && l.top_banks.length > 0 && (
+                  {((l.banks_ranked && l.banks_ranked.length > 0)
+                    || (Array.isArray(l.top_banks) && l.top_banks.length > 0)) && (
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Top banks:</span>
-                      {l.top_banks.map((b) => (
-                        <span key={b} className="badge badge-brand">{b}</span>
-                      ))}
+                      <BankChips banks={l.banks_ranked} legacy={l.top_banks} />
                     </div>
                   )}
 
@@ -281,6 +320,161 @@ function Metric({ label, value, info }) {
 function InfoDot({ title }) {
   return (
     <span className="info-dot" title={title} tabIndex={0} role="img" aria-label={title}>i</span>
+  );
+}
+
+/**
+ * Feature 2 — HIGH fan-out flag. Colour + icon + word, so it survives a
+ * grayscale printout / screenshot (the doc's badge discipline). `showRatio`
+ * appends the ratio when the flag stands alone (e.g. in the collapsed header,
+ * where the ratio isn't otherwise shown).
+ */
+function FanOutFlag({ ratio, showRatio = false }) {
+  return (
+    <span className="fanout-flag" title={FANOUT_TIP}>
+      ⚑ HIGH{showRatio && ratio != null ? ` ${ratio}×` : ''}
+    </span>
+  );
+}
+
+/**
+ * Feature 2 — top banks as up to three "Bank ·n" chips plus a "+N" chip that
+ * opens a popover with the full ranked list, so a bank-heavy layer never widens
+ * the card unboundedly. Prefers the structured `banks_ranked`; falls back to
+ * parsing the legacy "Bank (n)" strings on pre-Feature-2 analysis snapshots.
+ */
+function BankChips({ banks, legacy }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const list = useMemo(() => {
+    if (Array.isArray(banks) && banks.length) return banks;
+    if (Array.isArray(legacy)) {
+      return legacy.map((s) => {
+        const m = /^(.*)\s+\((\d+)\)\s*$/.exec(String(s));
+        return m ? { bank: m[1], count: Number(m[2]) } : { bank: String(s), count: null };
+      });
+    }
+    return [];
+  }, [banks, legacy]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (!list.length) return null;
+  const shown = list.slice(0, 3);
+  const rest = list.length - shown.length;
+
+  return (
+    <span className="bank-chip-group" ref={ref}>
+      {shown.map((b) => (
+        <span key={b.bank} className="badge badge-brand">
+          {b.bank}{b.count != null ? ` ·${b.count}` : ''}
+        </span>
+      ))}
+      {rest > 0 && (
+        <button
+          type="button"
+          className="bank-more-chip"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-label={`Show all ${list.length} banks`}
+        >
+          +{rest}
+        </button>
+      )}
+      {open && (
+        <div className="bank-more-popover" role="dialog" aria-label="All banks at this layer">
+          <div className="bank-more-popover-head">All banks ({list.length})</div>
+          <ul className="bank-more-list">
+            {list.map((b) => (
+              <li key={b.bank}>
+                <span className="bank-more-name">{b.bank}</span>
+                {b.count != null && <span className="bank-more-count">{b.count}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Feature 2 — optional summary chart: accounts & banks per layer. Collapsed by
+ * default (a Chart/Table toggle) so on a small laptop it never pushes the layer
+ * breakdown below the fold; the breakdown table stays the primary view.
+ */
+function LayerSummaryChart({ layers }) {
+  const [open, setOpen] = useState(false);
+  const chart = useChartTheme();
+  const data = useMemo(
+    () => layers.map((l) => ({
+      name: `L${l.layer_no}`,
+      accounts: l.account_count || 0,
+      banks: l.bank_count ?? l.unique_banks ?? 0,
+    })),
+    [layers],
+  );
+  if (!layers.length) return null;
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <button
+        type="button"
+        className="layer-toggle"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className="badge badge-brand">Chart</span>
+        <span style={{ fontWeight: 700 }}>Accounts &amp; banks by layer</span>
+        <span className="spacer" style={{ flex: 1 }} />
+        <span className="layer-chevron" data-open={open} aria-hidden="true">▸</span>
+      </button>
+      {open && (
+        <div style={{ padding: '4px 20px 18px', borderTop: '1px solid var(--border)' }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={data} margin={{ top: 16, right: 8, left: 8, bottom: 4 }}>
+              <CartesianGrid vertical={false} stroke={chart.border} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="name"
+                tick={{ fontSize: 12, fill: chart.textMuted }}
+                axisLine={{ stroke: chart.border }}
+                tickLine={{ stroke: chart.border }}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fontSize: 12, fill: chart.textMuted }}
+                width={44}
+                axisLine={{ stroke: chart.border }}
+                tickLine={{ stroke: chart.border }}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: chart.cardBg, border: `1px solid ${chart.border}`,
+                  borderRadius: 8, color: chart.text,
+                }}
+                labelStyle={{ color: chart.text }}
+                itemStyle={{ color: chart.text }}
+                cursor={{ fill: chart.border, opacity: 0.35 }}
+              />
+              <Legend wrapperStyle={{ fontSize: 12, color: chart.textMuted }} />
+              <Bar dataKey="accounts" name="Accounts" fill={chart.brand} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="banks" name="Banks" fill={chart.accent} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
   );
 }
 
