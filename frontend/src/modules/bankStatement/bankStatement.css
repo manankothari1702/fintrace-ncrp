@@ -1,0 +1,294 @@
+/* ════════════════════════════════════════════════════════════════════
+   Bank Statement module styles.
+
+   Scoped to this module's own class names (bs-*) and built entirely on the
+   shared design tokens from index.css — money green, risk orange, the card /
+   surface / border / text tokens, the 8px radius. The module reuses the
+   global primitives (.card, .btn, .badge, .dropzone, .sidebar, .nav-link, …)
+   directly; the rules here only cover UI that has no existing primitive.
+   Dark mode falls out of the tokens, with the same "lift the coloured text
+   toward white on the dark card" treatment the rest of the app uses.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* The module's sidebar and shell reuse the global .sidebar / .app-shell
+   layout wholesale (the shell offsets both below the top bar). No overrides
+   needed — .bs-sidebar / .bs-shell are kept only as stable hooks. */
+
+/* ─── Detection status chips ──────────────────────────────────────────
+   The green "detected" chip reuses .badge + .badge-success. These two cover
+   the states that have no existing badge variant. */
+
+/* Amber "not recognised" — the orange = "needs attention" grammar, matching
+   the gross-conduit caution flag. Orange lifts toward white in dark mode for
+   AA contrast on the dark surface. */
+.bs-chip-warning {
+  background: var(--warning-bg);
+  color: var(--accent-orange);
+  border-color: color-mix(in srgb, var(--accent-orange) 42%, transparent);
+}
+
+[data-theme='dark'] .bs-chip-warning {
+  color: color-mix(in srgb, var(--accent-orange) 70%, #fff);
+  border-color: color-mix(in srgb, var(--accent-orange) 55%, transparent);
+}
+
+/* Neutral "planned" chip for the placeholder pages. */
+.bs-chip-neutral {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+/* ─── Uploaded file list ──────────────────────────────────────────────── */
+
+.bs-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Each file is a .card; open ones get a brand-tinted left rail so the row and
+   its expanded mapping panel read as one unit. */
+.bs-file-card {
+  overflow: hidden; /* clip the mapping panel to the card's rounded corners */
+}
+
+.bs-file-card.is-open {
+  box-shadow: var(--shadow), inset 3px 0 0 var(--brand);
+}
+
+.bs-file-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+}
+
+.bs-file-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.bs-file-main {
+  flex: 1 1 auto;
+  min-width: 0; /* let a long filename ellipsis instead of shoving the chip off */
+}
+
+.bs-file-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-file-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.bs-file-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.bs-detect-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Chevron on the "Map columns" button; rotates to point down when the panel
+   is open, echoing the layer/lien row expanders. */
+.bs-map-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.bs-map-chevron[data-open] {
+  transform: rotate(90deg);
+}
+
+.bs-file-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.bs-file-remove:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* ─── Inline column-mapping panel ─────────────────────────────────────
+   Lives inside the file card, below the row. The nested surface (surface-2)
+   plus a top border sets it apart from the row while keeping it in-flow — it
+   is explicitly not a modal. */
+.bs-mapping {
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+  padding: 16px 18px 18px;
+}
+
+.bs-mapping-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.bs-mapping-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.bs-mapping-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.bs-mapping-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* Source header → canonical field. Two-up grid with the arrow between; wraps
+   to stacked on narrow widths. */
+.bs-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.bs-map-source {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-map-arrow {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.bs-map-select {
+  width: 100%;
+}
+
+/* Reuse the .input/.select focus grammar (already global). */
+
+.bs-map-template {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 16px;
+}
+
+.bs-map-template input {
+  accent-color: var(--brand);
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.bs-map-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* ─── Coming-soon placeholder pages ──────────────────────────────────── */
+
+.bs-coming-soon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 56px 24px;
+}
+
+.bs-coming-soon-icon {
+  font-size: 44px;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+.bs-coming-soon h2 {
+  font-size: 18px;
+}
+
+.bs-coming-soon p {
+  color: var(--text-muted);
+  max-width: 52ch;
+  margin-bottom: 6px;
+}
+
+/* ─── Toast ───────────────────────────────────────────────────────────
+   Transient success confirmation (e.g. after Apply mapping). Reuses the
+   success surface grammar; lifts the green label in dark mode like the
+   success badge does. */
+.bs-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--success-bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  animation: bs-toast-in 0.18s ease;
+}
+
+[data-theme='dark'] .bs-toast {
+  color: color-mix(in srgb, var(--accent) 55%, #fff);
+}
+
+@keyframes bs-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bs-map-chevron,
+  .bs-toast {
+    transition: none;
+    animation: none;
+  }
+}

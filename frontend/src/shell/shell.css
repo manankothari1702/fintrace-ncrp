@@ -1,0 +1,155 @@
+/* ════════════════════════════════════════════════════════════════════
+   App shell — the top-level chrome that hosts one workspace module at a
+   time (see AppRoot.jsx).
+
+   Everything here reuses the existing design tokens from index.css
+   (--sidebar-bg, --brand, --radius, …) so the shell is visually part of
+   the same app, not a second design language. The one piece of glue is a
+   pair of scoped rules that offset a hosted module's fixed sidebar below
+   the shared top bar — additive, and it touches no module's own files.
+   ════════════════════════════════════════════════════════════════════ */
+
+.fx-root {
+  --fx-topbar-h: 48px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden; /* the body scrolls internally; the bar stays put */
+}
+
+/* ─── Top bar: master brand + mode toggle ─────────────────────────── */
+
+.fx-topbar {
+  flex: 0 0 var(--fx-topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 16px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  /* Above the hosted module's fixed sidebar (z-index:100) as a safeguard,
+     though the sidebar is also offset below the bar so they never overlap. */
+  position: relative;
+  z-index: 200;
+}
+
+.fx-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  /* Reserve the sidebar column so the toggle aligns with the content area,
+     echoing the app's left-rail rhythm. */
+  min-width: calc(var(--sidebar-width) - 16px);
+}
+
+.fx-brand-mark {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.fx-brand-name {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+/* ─── Segmented mode control ──────────────────────────────────────────
+   Sits on the dark navy bar, so it uses translucent-white for the resting
+   segments and a solid white pill + navy text for the active one — the same
+   "selected = brand-solid, text reads on it" grammar used by the filter
+   chips, adapted for a dark surface. */
+.seg-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.seg-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.seg-option:hover:not(.is-active) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.seg-option.is-active {
+  background: #fff;
+  color: var(--brand);
+}
+
+/* Keyboard focus ring that reads on the dark bar. */
+.seg-option:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.seg-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ─── Module host ─────────────────────────────────────────────────────
+   The single scroll container for whichever module is mounted. */
+.fx-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* Host glue — offset a module's fixed left sidebar below the top bar, and fit
+   its full-height shell into the reduced viewport. Both hosted modules follow
+   the same .app-shell / .sidebar convention, so these two rules apply uniformly
+   and edit no module file. `top` keeps position:fixed (viewport-relative) so
+   the sidebar stays put while the body scrolls. */
+.fx-body .sidebar {
+  top: var(--fx-topbar-h);
+}
+
+.fx-body .app-shell {
+  min-height: calc(100vh - var(--fx-topbar-h));
+}
+
+/* ─── Print ───────────────────────────────────────────────────────────
+   NCRP case files (Lien worksheet, §102 letters) are printed on white. The
+   shell chrome must drop out and the document must flow naturally so the NCRP
+   print stylesheet keeps working exactly as before. */
+@media print {
+  .fx-root {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+  .fx-topbar {
+    display: none;
+  }
+  .fx-body {
+    overflow: visible;
+  }
+  .fx-body .sidebar {
+    top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seg-option {
+    transition: none;
+  }
+}
