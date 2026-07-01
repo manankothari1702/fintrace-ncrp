@@ -39,6 +39,7 @@ const { computeCashedOut, POLICIES: CASHOUT_POLICIES } = require('../lib/cashout
 const { detectCycles } = require('../analysis/cycleDetector');
 const { analyzeConnectivity } = require('../analysis/connectivity');
 const { dayOfWeekBreakdown } = require('../analysis/dayOfWeek');
+const THRESHOLDS = require('../lib/thresholds');
 
 /**
  * Cash-out counting policy (FinTrace v0.2.0). Fraud proceeds cashed out cannot
@@ -1904,6 +1905,124 @@ function timelineSummary(txns) {
   };
 }
 
+// ─── Module — investigation metrics (Feature 1) ────────────────────────
+
+/** Median of a numeric array (null when empty). */
+function medianOf(arr) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/**
+ * Cash-out speed population (Feature 1, verify-point 3): the per-account time
+ * from an account first RECEIVING traced funds to that SAME account's first
+ * cash-out (ATM/POS/AEPS), taken across ALL accounts in the trail that both
+ * received and cashed out — NOT only victim-adjacent / first-hop accounts.
+ *
+ * This population choice matches how the engine already scopes its other
+ * per-account timing metric (mule `forward_speed_hours`) and how the Lien
+ * Tracker scopes recoverable balances: over every account in the trail, never a
+ * first-hop subset. It is deliberately NOT the case-level "fraud → first
+ * cash-out" gap the UX doc mocked up, which answers a different question.
+ *
+ * Reuses `firstReceiptMs` / `firstExitMs` already computed on the shared rollup,
+ * so there is no second graph pass. Accounts whose first exit precedes their
+ * first receipt (an IST-wall-clock relabel edge, e.g. same-day out-before-in) are
+ * excluded from the speed population rather than contributing a negative time.
+ *
+ * @param {Map<string, any>} rollup - buildAccountRollup output.
+ * @returns {{ median_hours: number|null, mean_hours: number|null, account_count: number }}
+ */
+function cashoutSpeed(rollup) {
+  const hrs = [];
+  for (const a of rollup.values()) {
+    if (a.firstReceiptMs === null || a.firstReceiptMs === undefined) continue;
+    if (a.firstExitMs === null || a.firstExitMs === undefined) continue;
+    const h = (a.firstExitMs - a.firstReceiptMs) / 3_600_000;
+    if (h < 0) continue;
+    hrs.push(h);
+  }
+  const med = medianOf(hrs);
+  const mean = hrs.length ? hrs.reduce((s, x) => s + x, 0) / hrs.length : null;
+  return {
+    median_hours: med === null ? null : round(med, 2),
+    mean_hours: mean === null ? null : round(mean, 2),
+    account_count: hrs.length,
+  };
+}
+
+/** Response-gap severity from tunable day bands (paired with icon+text on UI). */
+function responseGapSeverity(days) {
+  if (days === null || days === undefined) return 'none';
+  if (days > THRESHOLDS.RESPONSE_GAP_RED_DAYS) return 'danger';
+  if (days > THRESHOLDS.RESPONSE_GAP_AMBER_DAYS) return 'warn';
+  return 'ok';
+}
+
+/** Recovery-rate severity from tunable percent bands. */
+function recoveryRateSeverity(pct) {
+  if (pct === null || pct === undefined) return 'none';
+  if (pct <= THRESHOLDS.RECOVERY_RATE_RED_PCT) return 'danger';
+  if (pct < THRESHOLDS.RECOVERY_RATE_AMBER_PCT) return 'warn';
+  return 'ok';
+}
+
+/**
+ * Feature 1 — the three "investigation health / urgency" KPIs, distinct from the
+ * case-size KPIs (fraud amount, victims, layers). Computed ONCE here and cached
+ * in analysis_json; the Dashboard band only renders these values + severities.
+ *
+ *  • response_gap  — days from the first fraud transfer to the first bank action
+ *                    (funds put on hold). Reuses timeline_summary so the engine
+ *                    has one definition of "response gap".
+ *  • recovery_rate — share of the victim loss SECURED or returned so far
+ *                    = (on_hold + refunded) / victim_loss (see thresholds.js for
+ *                    why this is not refunded/loss).
+ *  • cashout_speed — per-account median receipt→cash-out time (see cashoutSpeed).
+ *
+ * @param {{ summary?: object, recovery_status?: object, timeline_summary?: object, rollup?: Map }} ctx
+ * @returns {object}
+ */
+function investigationMetrics(ctx) {
+  const { summary = {}, timeline_summary: ts = {}, rollup } = ctx || {};
+  const gapDays = ts.fraud_to_bank_action_days === undefined ? null : ts.fraud_to_bank_action_days;
+
+  const base = num(summary.victim_loss_amount);
+  const onHold = num(summary.on_hold);
+  const refunded = num(summary.refunded);
+  const secured = round(onHold + refunded);
+  const pct = base > 0 ? round((secured / base) * 100, 1) : null;
+
+  const speed = rollup
+    ? cashoutSpeed(rollup)
+    : { median_hours: null, mean_hours: null, account_count: 0 };
+
+  return {
+    response_gap: {
+      days: gapDays,
+      from_date: ts.first_fraud_date || null,
+      to_date: ts.first_bank_action_date || null,
+      severity: responseGapSeverity(gapDays),
+    },
+    recovery_rate: {
+      pct,
+      secured_amount: secured,
+      base_amount: round(base),
+      on_hold: round(onHold),
+      refunded: round(refunded),
+      severity: recoveryRateSeverity(pct),
+    },
+    cashout_speed: {
+      median_hours: speed.median_hours,
+      mean_hours: speed.mean_hours,
+      account_count: speed.account_count,
+      severity: 'none', // informational only — no good/bad axis (per the UX doc)
+    },
+  };
+}
+
 // ─── Module — investigation roadmap ────────────────────────────────────
 
 /**
@@ -2499,10 +2618,25 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     fraud_start_date: null,
   });
 
+  // Feature 1 — investigation-health KPIs. Computed after `summary` (reads its
+  // victim_loss/on_hold/refunded) and reuses timeline_summary + the rollup.
+  const investigation_metrics = runModule(
+    'investigationMetrics',
+    () => investigationMetrics({ summary, recovery_status, timeline_summary, rollup }),
+    {
+      response_gap: { days: null, from_date: null, to_date: null, severity: 'none' },
+      recovery_rate: {
+        pct: null, secured_amount: 0, base_amount: 0, on_hold: 0, refunded: 0, severity: 'none',
+      },
+      cashout_speed: { median_hours: null, mean_hours: null, account_count: 0, severity: 'none' },
+    }
+  );
+
   return {
     report_id: reportId,
     generated_at: new Date().toISOString(),
     summary,
+    investigation_metrics,
     reconciliation,
     layer_analysis: layers,
     cashout_analysis: cashout,
@@ -2553,6 +2687,8 @@ module.exports = {
   geographyAnalysis,
   moneyFlowNetwork,
   recoveryStatus,
+  investigationMetrics,
+  cashoutSpeed,
   victimAccounts,
   investigationRoadmap,
   keyFindings,

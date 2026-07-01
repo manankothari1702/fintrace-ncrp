@@ -35,7 +35,7 @@ import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
-import { formatCrore, formatINR, formatNumber, formatDate } from '../utils/format.js';
+import { formatCrore, formatINR, formatNumber, formatDate, formatHours } from '../utils/format.js';
 import {
   getReport, getPaymentModes, saveReportPdf, saveReportExcel, suggestExportName,
   friendlyErrorMessage, ApiError,
@@ -425,6 +425,80 @@ function DateCard({ label, date, icon, color, untracked = false }) {
   );
 }
 
+/* Feature 1 — value colour + warning glyph per severity. Colour is NEVER the
+   only signal: warn/danger also carry a ⚠ icon and a basis sub-line. The green
+   "ok" and neutral "none" states are the calm default and carry no alarm glyph. */
+const IM_SEVERITY = {
+  ok: { color: 'var(--risk-low)', icon: null },
+  warn: { color: 'var(--risk-medium)', icon: '⚠' },
+  danger: { color: 'var(--risk-high)', icon: '⚠' },
+  none: { color: 'var(--text-muted)', icon: null },
+};
+
+/**
+ * Feature 1 — "Investigation Metrics" band: three investigation-health/urgency
+ * KPIs (response gap, recovery rate, cash-out speed) that answer a different
+ * question from the case-size KPIs above. Values + severities are computed once
+ * in the backend (analysis.investigation_metrics) and only rendered here.
+ */
+function InvestigationMetricsBand({ metrics }) {
+  if (!metrics) return null;
+  const rg = metrics.response_gap || {};
+  const rr = metrics.recovery_rate || {};
+  const cs = metrics.cashout_speed || {};
+  const rgSev = IM_SEVERITY[rg.severity] || IM_SEVERITY.none;
+  const rrSev = IM_SEVERITY[rr.severity] || IM_SEVERITY.none;
+
+  const warnIcon = (sev) =>
+    (sev.icon ? <span style={{ color: sev.color }} aria-hidden="true">{sev.icon}</span> : undefined);
+
+  const gapValue = rg.days == null ? '—' : `${rg.days} ${rg.days === 1 ? 'day' : 'days'}`;
+  const gapSub = rg.days == null
+    ? 'No bank action recorded yet'
+    : `Fraud ${formatDate(rg.from_date)} → 1st action ${formatDate(rg.to_date)}`;
+
+  const rrValue = rr.pct == null ? '—' : `${rr.pct}%`;
+  const rrSub = rr.pct == null
+    ? 'No victim loss to measure against'
+    : `${formatCrore(rr.secured_amount)} of ${formatCrore(rr.base_amount)} secured`;
+
+  const csValue = cs.median_hours == null ? '—' : formatHours(cs.median_hours);
+  const csSub = cs.median_hours == null
+    ? 'No cash-out accounts in trail'
+    : `Receipt → 1st cash-out · median of ${formatNumber(cs.account_count)} ${cs.account_count === 1 ? 'account' : 'accounts'}`;
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div className="metrics-band-label">Investigation Metrics</div>
+      <div className="grid grid-stats">
+        <StatCard
+          title="Response Gap"
+          value={gapValue}
+          subtitle={gapSub}
+          color={rgSev.color}
+          icon={warnIcon(rgSev)}
+          info="How long between the first fraud transfer and the first bank action (funds put on hold). Amber over 7 days, red over 14."
+        />
+        <StatCard
+          title="Recovery Rate"
+          value={rrValue}
+          subtitle={rrSub}
+          color={rrSev.color}
+          icon={warnIcon(rrSev)}
+          info="Share of the victim loss secured so far — money frozen on hold or refunded, divided by the total loss. Amber under 25%, red at 0%."
+        />
+        <StatCard
+          title="Cash-out Speed"
+          value={csValue}
+          subtitle={csSub}
+          color="var(--brand-text)"
+          info="Typical (median) time from money landing in an account to that account pulling it out as cash, measured across every cash-out account in the trail."
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const reportId = useActiveReportId();
 
@@ -702,6 +776,7 @@ export default function Dashboard() {
       <DataQualityCard analysis={analysis} reportId={reportId} />
 
       {/* Row 1 — headline metrics (Victim Loss is the actual loss; Trail Disputed re-counts the same money across hops). */}
+      <div className="metrics-band-label">Case Summary</div>
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         <StatCard
           title="Victim Loss (Total Fraud)"
@@ -732,6 +807,9 @@ export default function Dashboard() {
           color="var(--accent)"
         />
       </div>
+
+      {/* Feature 1 — Investigation Metrics band (below Case Summary, above the fold). */}
+      <InvestigationMetricsBand metrics={analysis?.investigation_metrics} />
 
       {/* Recovery / fund-trail bar */}
       <RecoveryBar recovery={recovery} />

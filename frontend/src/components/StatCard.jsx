@@ -14,12 +14,19 @@ import { memo } from 'react';
  * @param {React.ReactNode} [props.icon] - Emoji / glyph in the top-right.
  * @param {string} [props.color] - Left-border + value tint (CSS colour).
  * @param {{ direction: 'up'|'down', label: string }} [props.trend]
+ * @param {string} [props.info] - One-sentence plain-language definition shown in
+ *   an (i) tooltip beside the label (for derived / non-obvious metrics).
  */
-function StatCard({ title, value, subtitle, icon, color = 'var(--brand)', trend }) {
+function StatCard({ title, value, subtitle, icon, color = 'var(--brand)', trend, info }) {
   return (
     <div className="stat-card" style={{ borderLeftColor: color }}>
       <div className="stat-head">
-        <span className="stat-title">{title}</span>
+        <span className="stat-title">
+          {title}
+          {info && (
+            <span className="info-dot" title={info} tabIndex={0} role="img" aria-label={info}>i</span>
+          )}
+        </span>
         {icon && <span className="stat-icon" aria-hidden="true">{icon}</span>}
       </div>
 

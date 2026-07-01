@@ -1135,6 +1135,18 @@ table.data-table tbody td.expanded-cell {
   color: var(--danger);
 }
 
+/* Feature 1 — KPI band eyebrow label ("Case Summary", "Investigation Metrics").
+   A small uppercase section marker that separates the case-size KPIs from the
+   investigation-health KPIs without adding heavy chrome. */
+.metrics-band-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 10px 2px;
+}
+
 /* ─── Global error boundary fallback ─────────────────────────────── */
 
 .boundary-fallback {
