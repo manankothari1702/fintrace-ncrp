@@ -612,4 +612,137 @@ function generateReportExcel(bundle = {}) {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
-module.exports = { generateReportExcel };
+/**
+ * Build the Cash/Exit Channel workbook (Features 4 & 5). Reuses the same
+ * `addSheet` infra as {@link generateReportExcel} — no separate Excel writer.
+ *
+ * Two scopes:
+ *   • 'full'  — Overview + one sheet per present channel + Behavioural Flags +
+ *               Top Exit Points + Top Cities (the whole-page breakdown workbook).
+ *   • 'view'  — a single sheet of one channel's transactions, optionally filtered
+ *               to a flag's instances with a "Why flagged" column (the current view).
+ *
+ * All figures are read as-is from the cached cash_exit_analysis snapshot; nothing
+ * is recomputed here.
+ *
+ * @param {{ summary?: object, channels?: Record<string, object> }} cashExit
+ * @param {{ scope?: 'full'|'view', channel?: string, flag?: string,
+ *   caseRef?: string, generatedAt?: string }} [opts]
+ * @returns {Buffer} The encoded .xlsx file.
+ */
+function generateCashExitExcel(cashExit = {}, opts = {}) {
+  const summary = cashExit.summary || {};
+  const channels = cashExit.channels || {};
+  const order = ['ATM', 'POS', 'AEPS'];
+  const present = Array.isArray(summary.channels_present) ? summary.channels_present : [];
+  const wb = XLSX.utils.book_new();
+
+  const txnHeader = (ch) => (ch === 'POS'
+    ? ['Date', 'Account', 'Amount [Rs.]', 'Disputed [Rs.]', 'Terminal/MID', 'Merchant', 'City', 'State', 'Same-day']
+    : ['Date', 'Account', 'Amount [Rs.]', 'Disputed [Rs.]', 'ATM ID', 'Location', 'City', 'State', 'Same-day']);
+  const txnRow = (t) => [
+    fmtDate(t.date), t.account, num(t.amount), num(t.disputed),
+    t.atm_id || '', t.location || '', t.city || '', t.state || '', t.same_day ? 'YES' : '',
+  ];
+
+  if (opts.scope === 'view') {
+    const ch = opts.channel && channels[opts.channel] ? opts.channel : (present[0] || 'ATM');
+    const c = channels[ch] || { transactions: [], flags: [] };
+    let rows = c.transactions || [];
+    let why = null;
+    let title = `${ch} transactions`;
+    if (opts.flag) {
+      const flag = (c.flags || []).find((f) => f.key === opts.flag);
+      if (flag) {
+        why = new Map();
+        for (const inst of flag.instances || []) {
+          for (const id of inst.txn_ids || []) why.set(id, inst.why);
+        }
+        rows = rows.filter((t) => why.has(t.id));
+        title = `${ch} — ${flag.label}`;
+      }
+    }
+    const header = why ? [...txnHeader(ch), 'Why flagged'] : txnHeader(ch);
+    addSheet(wb, title.slice(0, 31), [
+      [`FinTrace NCRP — Cash/Exit (${title})`],
+      ['Case', opts.caseRef || ''],
+      ['Generated', fmtDate(opts.generatedAt || new Date(0).toISOString())],
+      [],
+      header,
+      ...rows.map((t) => (why ? [...txnRow(t), why.get(t.id) || ''] : txnRow(t))),
+    ]);
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  }
+
+  // ── scope 'full' — overview + per-channel + flags + top points/cities ──────
+  addSheet(wb, 'Cash-Exit Overview', [
+    ['FinTrace NCRP — Cash / Exit Channel breakdown'],
+    ['Case', opts.caseRef || ''],
+    ['Generated', fmtDate(opts.generatedAt || new Date(0).toISOString())],
+    [],
+    ['Metric', 'Value'],
+    ['Total cashed out (confirmed) [Rs.]', num(summary.total_cashed_out)],
+    ['Gross withdrawn (all legs) [Rs.]', num(summary.total_withdrawn_gross)],
+    ['Withdrawals (cash-exit transactions)', num(summary.total_withdrawals)],
+    ['Unique exit points', num(summary.unique_exit_points)],
+    ['Risk flags', num(summary.risk_flag_count)],
+    ['Channels present', present.join(', ')],
+    [],
+    ['Channel', 'Transactions', 'Amount [Rs.]', 'Disputed [Rs.]', 'Unique Points', 'Flags'],
+    ...order.map((ch) => {
+      const c = channels[ch] || {};
+      const flagCount = (c.flags || []).reduce((s, f) => s + num(f.count), 0);
+      return [ch, num(c.count), num(c.amount), num(c.disputed), num(c.unique_points), flagCount];
+    }),
+  ]);
+
+  for (const ch of order) {
+    const c = channels[ch];
+    if (!c || !c.count) continue;
+    addSheet(wb, `${ch} Transactions`, [
+      txnHeader(ch),
+      ...(c.transactions || []).map(txnRow),
+    ]);
+  }
+
+  const flagRows = [];
+  for (const ch of order) {
+    for (const f of (channels[ch]?.flags || [])) {
+      for (const inst of (f.instances || [])) {
+        flagRows.push([
+          ch, f.label, inst.account || inst.merchant || inst.terminal || '',
+          num(inst.count), num(inst.total_amount), inst.why || '',
+        ]);
+      }
+    }
+  }
+  addSheet(wb, 'Behavioural Flags', [
+    ['Channel', 'Flag', 'Account / Merchant', 'Count', 'Total [Rs.]', 'Why flagged'],
+    ...(flagRows.length ? flagRows : [['—', 'No behavioural flags fired', '', '', '', '']]),
+  ]);
+
+  const pointRows = [];
+  const cityRows = [];
+  for (const ch of order) {
+    const c = channels[ch];
+    if (!c || !c.count) continue;
+    for (const p of (c.top_points || [])) {
+      pointRows.push([ch, p.terminal || '', p.location || '', num(p.txn_count), num(p.account_count), num(p.amount)]);
+    }
+    for (const ct of (c.top_cities || [])) {
+      cityRows.push([ch, ct.city || '', num(ct.count), num(ct.amount)]);
+    }
+  }
+  addSheet(wb, 'Top Exit Points', [
+    ['Channel', 'ATM/Terminal', 'Location/Merchant', 'Txns', 'Accounts', 'Amount [Rs.]'],
+    ...(pointRows.length ? pointRows : [['—', '', '', '', '', '']]),
+  ]);
+  addSheet(wb, 'Top Cities', [
+    ['Channel', 'City', 'Txns', 'Amount [Rs.]'],
+    ...(cityRows.length ? cityRows : [['—', '', '', '']]),
+  ]);
+
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+module.exports = { generateReportExcel, generateCashExitExcel };

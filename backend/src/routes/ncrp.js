@@ -54,7 +54,7 @@ const {
 } = require('../db/queries');
 const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
-const { generateReportExcel } = require('../utils/excelGenerator');
+const { generateReportExcel, generateCashExitExcel } = require('../utils/excelGenerator');
 const { generateDraftEmails, buildEmailArtifacts } = require('../utils/emailGenerator');
 
 // ─── On-disk locations (backend/uploads, backend/exports) ────────────
@@ -990,6 +990,52 @@ function createNcrpRouter(db) {
         summary: { total_withdrawn_gross: 0, total_cashed_out: 0, total_withdrawals: 0, unique_exit_points: 0, risk_flag_count: 0, channels_present: [] },
         channels: {},
       });
+  });
+
+  // GET /api/ncrp/:id/cash-exit/excel — Features 4/5: cash/exit workbook.
+  //   • ?scope=full (default)  → Overview + per-channel + flags + top points/cities.
+  //   • ?scope=view&channel=ATM[&flag=rapid] → the current filtered view, one sheet.
+  // Same dual delivery as /excel: stream by default, ?mode=file for the Electron
+  // renderer. Reuses the shared Excel infra (generateCashExitExcel).
+  router.get('/ncrp/:id/cash-exit/excel', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const fileMode = req.query.mode === 'file';
+    try {
+      const analysis = parseAnalysis(report) || {};
+      const cashExit = analysis.cash_exit_analysis || { summary: {}, channels: {} };
+      const ci = stmt.caseInfo.get(report.id) || {};
+      const scope = req.query.scope === 'view' ? 'view' : 'full';
+      const buffer = generateCashExitExcel(cashExit, {
+        scope,
+        channel: typeof req.query.channel === 'string' ? req.query.channel : undefined,
+        flag: typeof req.query.flag === 'string' ? req.query.flag : undefined,
+        caseRef: ci.ack_no || report.original_filename || `report-${report.id}`,
+        generatedAt: analysis.generated_at,
+      });
+
+      const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
+      const fileName = `FinTrace-CashExit-${scope}-${safeAck}-${Date.now()}.xlsx`;
+      insertAuditLog(db, {
+        report_id: report.id, action: 'cash_exit_excel.generated', details: { file: fileName, scope },
+      });
+
+      if (fileMode) {
+        const outPath = path.join(EXPORTS_DIR, fileName);
+        fs.writeFileSync(outPath, buffer);
+        return res.json({ fileName });
+      }
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(buffer.length));
+      return res.end(buffer);
+    } catch (err) {
+      console.error('[ncrp] Cash/Exit Excel generation failed:', err);
+      if (!res.headersSent) {
+        return sendError(res, 500, 'EXCEL_GENERATION_FAILED', 'Could not generate the Cash/Exit workbook.');
+      }
+      return undefined;
+    }
   });
 
   // GET /api/ncrp/:id/badges — Feature 3/4: tiny actionable counts for the

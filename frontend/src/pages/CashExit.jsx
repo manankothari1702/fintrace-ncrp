@@ -21,7 +21,7 @@ import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber, formatDateTimeUTC } from '../utils/format.js';
-import { getCashExit, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { getCashExit, openCashExitExcel, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 import { useChartTheme } from '../utils/useChartTheme.js';
 
@@ -31,22 +31,6 @@ const FLAG_TIPS = {
   multi_atm: 'Multi-ATM — one account withdrawing at 3 or more different ATMs in a single day.',
   suspicious_merchant: 'Suspicious merchant — 3 or more POS transactions at one terminal within an hour.',
 };
-
-function downloadCsv(filename, headers, rows) {
-  const esc = (v) => {
-    const s = String(v == null ? '' : v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const lines = [headers.map(esc).join(',')];
-  for (const r of rows) lines.push(r.map(esc).join(','));
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 export default function CashExit() {
   const reportId = useActiveReportId();
@@ -119,26 +103,26 @@ export default function CashExit() {
   const isPos = channel === 'POS';
   const pointLabel = isPos ? 'Merchant' : 'ATM';
 
-  const exportView = () => {
-    const base = ['Date', 'Account', 'Amount', 'Disputed', isPos ? 'Terminal/MID' : 'ATM ID', isPos ? 'Merchant' : 'Location', 'City'];
-    const headers = whyById ? [...base, 'Why flagged'] : base;
-    const body = rows.map((t) => {
-      const r = [t.date, t.account, t.amount, t.disputed, t.atm_id || '', t.location || '', t.city || ''];
-      if (whyById) r.push(whyById.get(t.id) || '');
-      return r;
-    });
-    downloadCsv(`cash-exit-${channel}${activeFlag ? `-${activeFlag}` : ''}.csv`, headers, body);
-  };
+  const [exporting, setExporting] = useState(null); // 'view' | 'all' | null
 
-  const exportAll = () => {
-    const headers = ['Channel', 'Date', 'Account', 'Amount', 'Disputed', 'ATM/Terminal', 'Location/Merchant', 'City', 'State'];
-    const body = [];
-    for (const ch of present) {
-      for (const t of (channels[ch]?.transactions || [])) {
-        body.push([ch, t.date, t.account, t.amount, t.disputed, t.atm_id || '', t.location || '', t.city || '', t.state || '']);
-      }
+  // Both exports produce a real multi-sheet .xlsx from the backend (reusing the
+  // NCRP workbook infra). "view" = the current channel/flag filter (one sheet);
+  // "all" = the full channel breakdown (overview + per-channel + flags + tops).
+  const runExport = async (scope) => {
+    if (!reportId) return;
+    setExporting(scope);
+    try {
+      const params = scope === 'view'
+        ? { scope: 'view', channel, ...(activeFlag ? { flag: activeFlag } : {}) }
+        : { scope: 'full' };
+      await openCashExitExcel(reportId, params);
+    } catch (e) {
+      // Surface, but don't crash the page — the buttons re-enable below.
+      // eslint-disable-next-line no-console
+      console.error('Cash/Exit export failed:', e);
+    } finally {
+      setExporting(null);
     }
-    downloadCsv('cash-exit-all-channels.csv', headers, body);
   };
 
   if (loading) {
@@ -177,11 +161,11 @@ export default function CashExit() {
         </div>
         {!noCashOut && (
           <div className="cash-exit-export">
-            <button type="button" className="btn btn-secondary" onClick={exportView} title="Export the transactions currently shown (this channel / filter)">
-              ⬇ Export view
+            <button type="button" className="btn btn-secondary" onClick={() => runExport('view')} disabled={exporting !== null} title="Export the transactions currently shown (this channel / filter) as an Excel sheet">
+              {exporting === 'view' ? '… Exporting' : '⬇ Export view'}
             </button>
-            <button type="button" className="btn btn-secondary" onClick={exportAll} title="Export every channel's transactions as one breakdown workbook">
-              ⬇ Export all
+            <button type="button" className="btn btn-secondary" onClick={() => runExport('all')} disabled={exporting !== null} title="Export every channel's breakdown as one multi-sheet Excel workbook">
+              {exporting === 'all' ? '… Exporting' : '⬇ Export all'}
             </button>
           </div>
         )}

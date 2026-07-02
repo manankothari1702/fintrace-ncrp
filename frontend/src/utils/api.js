@@ -165,6 +165,32 @@ export const getAggregators = (id) => api.get(`/ncrp/${id}/aggregators`).then((r
  */
 export const getCashExit = (id) => api.get(`/ncrp/${id}/cash-exit`).then((r) => r.data);
 
+/** Streaming-attachment URL for the Cash/Exit workbook (browser/dev). */
+export function cashExitExcelUrl(id, params = {}) {
+  const q = new URLSearchParams(params).toString();
+  return `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/cash-exit/excel${q ? `?${q}` : ''}`;
+}
+
+/**
+ * Open the Cash/Exit Excel workbook. Same dual behaviour as {@link openReportExcel}:
+ * Electron writes via ?mode=file + opens over IPC; browser opens the attachment URL.
+ * @param {number} id
+ * @param {{ scope?: 'full'|'view', channel?: string, flag?: string }} [params]
+ */
+export async function openCashExitExcel(id, params = {}) {
+  if (isElectron()) {
+    const { fileName } = await api
+      .get(`/ncrp/${id}/cash-exit/excel`, { params: { ...params, mode: 'file' } })
+      .then((r) => r.data);
+    const res = await window.fintrace.openFile(fileName);
+    if (!res || !res.ok) {
+      throw new ApiError((res && res.error) || 'Could not open the workbook.', { code: 'OPEN_FAILED' });
+    }
+    return;
+  }
+  window.open(cashExitExcelUrl(id, params), '_blank', 'noopener');
+}
+
 /**
  * Lightweight actionable counts for the sidebar count badges.
  * @param {number} id
