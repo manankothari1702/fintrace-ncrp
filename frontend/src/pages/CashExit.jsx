@@ -24,6 +24,7 @@ import { formatINR, formatCrore, formatNumber, formatDateTimeUTC } from '../util
 import { getCashExit, openCashExitExcel, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
 import { useChartTheme } from '../utils/useChartTheme.js';
+import { useSortableRows } from '../utils/useSortableRows.js';
 
 const CHANNEL_ORDER = ['ATM', 'POS', 'AEPS'];
 const FLAG_TIPS = {
@@ -87,6 +88,9 @@ export default function CashExit() {
     const filtered = (active.transactions || []).filter((t) => why.has(t.id));
     return { rows: filtered, whyById: why };
   }, [active, activeFlag]);
+
+  // Click-to-sort over the channel's transaction table (default: source order).
+  const { sorted: sortedRows, toggle: toggleTxnSort, indicator: txnIndicator } = useSortableRows(rows);
 
   // Overview risk-flag breakdown, e.g. "rapid 5 · multi-ATM 1 · merchant 1".
   const flagBreakdown = useMemo(() => {
@@ -341,18 +345,18 @@ export default function CashExit() {
                     <table className="data-table">
                       <thead>
                         <tr>
-                          <th>Date</th>
-                          <th>Account</th>
-                          <th style={{ textAlign: 'right' }}>Amount</th>
-                          <th style={{ textAlign: 'right' }}>Disputed</th>
-                          <th>{isPos ? 'Terminal / MID' : 'ATM ID'}</th>
-                          <th>{isPos ? 'Merchant' : 'Location'}</th>
-                          <th>City</th>
+                          <th className="th-sort" onClick={() => toggleTxnSort('date')}>Date<span className="sort-ind">{txnIndicator('date')}</span></th>
+                          <th className="th-sort" onClick={() => toggleTxnSort('account')}>Account<span className="sort-ind">{txnIndicator('account')}</span></th>
+                          <th className="th-sort" style={{ textAlign: 'right' }} onClick={() => toggleTxnSort('amount')}>Amount<span className="sort-ind">{txnIndicator('amount')}</span></th>
+                          <th className="th-sort" style={{ textAlign: 'right' }} onClick={() => toggleTxnSort('disputed')}>Disputed<span className="sort-ind">{txnIndicator('disputed')}</span></th>
+                          <th className="th-sort" onClick={() => toggleTxnSort('atm_id')}>{isPos ? 'Terminal / MID' : 'ATM ID'}<span className="sort-ind">{txnIndicator('atm_id')}</span></th>
+                          <th className="th-sort" onClick={() => toggleTxnSort('location')}>{isPos ? 'Merchant' : 'Location'}<span className="sort-ind">{txnIndicator('location')}</span></th>
+                          <th className="th-sort" onClick={() => toggleTxnSort('city')}>City<span className="sort-ind">{txnIndicator('city')}</span></th>
                           {whyById && <th>Why flagged</th>}
                         </tr>
                       </thead>
                       <tbody>
-                        {rows.map((t) => (
+                        {sortedRows.map((t) => (
                           <tr key={t.id}>
                             <td style={{ whiteSpace: 'nowrap' }}>{t.date ? formatDateTimeUTC(t.date) : '—'}{t.same_day ? <span title="Withdrawn the same day it was received" style={{ marginLeft: 4 }}>⚡</span> : null}</td>
                             <td style={{ fontFamily: 'var(--font-mono)' }}>{t.account}</td>

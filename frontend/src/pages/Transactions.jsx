@@ -60,6 +60,24 @@ const EMPTY_FILTERS = {
   min_amount: '',
   max_amount: '',
   search: '',
+  sort: 'transaction_date', // Batch 2 Area 3 — column sort (backend-whitelisted)
+  dir: 'desc',
+};
+
+// Column header label → backend sort key (whitelist mirrors the server route).
+const SORT_KEYS = {
+  Date: 'transaction_date',
+  Account: 'beneficiary_account',
+  Name: 'beneficiary_name',
+  Bank: 'beneficiary_bank',
+  IFSC: 'ifsc_code',
+  Amount: 'transaction_amount',
+  Disputed: 'disputed_amount',
+  Mode: 'payment_mode',
+  Layer: 'layer_no',
+  UTR: 'utr_no',
+  City: 'city',
+  State: 'state',
 };
 
 // Build the filter state from URL query params so filters survive a refresh.
@@ -78,6 +96,8 @@ function filtersFromParams(sp) {
     min_amount: sp.get('min_amount') || '',
     max_amount: sp.get('max_amount') || '',
     search: sp.get('search') || '',
+    sort: sp.get('sort') || 'transaction_date',
+    dir: sp.get('dir') === 'asc' ? 'asc' : 'desc',
   };
 }
 
@@ -95,6 +115,8 @@ function serverParams(filters) {
     min_amount: filters.min_amount !== '' ? filters.min_amount : undefined,
     max_amount: filters.max_amount !== '' ? filters.max_amount : undefined,
     search: filters.search || undefined,
+    sort: filters.sort || undefined,
+    dir: filters.dir || undefined,
   };
 }
 
@@ -139,6 +161,9 @@ export default function Transactions() {
     if (filters.search) next.set('search', filters.search);
     if (filters.page !== 1) next.set('page', String(filters.page));
     if (filters.limit !== 100) next.set('limit', String(filters.limit));
+    // Only persist sort when it differs from the default chronological view.
+    if (filters.sort && filters.sort !== 'transaction_date') next.set('sort', filters.sort);
+    if (filters.dir && filters.dir !== 'desc') next.set('dir', filters.dir);
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
@@ -240,6 +265,15 @@ export default function Transactions() {
     return { ...f, [key]: next, page: 1 };
   });
   const clearFilters = () => { setFilters(EMPTY_FILTERS); setSearchText(''); setBankSearch(''); setBankOpen(false); };
+
+  // Click a column header to sort: same column flips direction, a new column
+  // starts descending. Resets to page 1 (the server re-sorts the whole set).
+  const toggleSort = (col) => setFilters((f) => ({
+    ...f,
+    sort: col,
+    dir: f.sort === col && f.dir === 'desc' ? 'asc' : 'desc',
+    page: 1,
+  }));
   const clearBanks = () => setFilters((f) => ({ ...f, banks: [], page: 1 }));
 
   const rows = resp?.data || [];
@@ -518,9 +552,22 @@ export default function Transactions() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    {['Date', 'Account', 'Name', 'Bank', 'IFSC', 'Amount', 'Disputed', 'Mode', 'Layer', 'UTR', 'City', 'State'].map((h) => (
-                      <th key={h} style={{ position: 'sticky', top: 0, zIndex: 1 }}>{h}</th>
-                    ))}
+                    {['Date', 'Account', 'Name', 'Bank', 'IFSC', 'Amount', 'Disputed', 'Mode', 'Layer', 'UTR', 'City', 'State'].map((h) => {
+                      const col = SORT_KEYS[h];
+                      const active = col && filters.sort === col;
+                      return (
+                        <th
+                          key={h}
+                          className={col ? 'th-sort' : undefined}
+                          style={{ position: 'sticky', top: 0, zIndex: 1 }}
+                          onClick={col ? () => toggleSort(col) : undefined}
+                          aria-sort={active ? (filters.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                        >
+                          {h}
+                          {col && <span className="sort-ind">{active ? (filters.dir === 'asc' ? ' ▲' : ' ▼') : ' ↕'}</span>}
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>

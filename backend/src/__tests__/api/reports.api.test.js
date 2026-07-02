@@ -124,6 +124,21 @@ describe('POST /api/ncrp/upload + full analysis flow', () => {
     }
   });
 
+  test('GET /api/ncrp/:id/transactions?sort=transaction_amount&dir=asc sorts ascending', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/transactions?sort=transaction_amount&dir=asc&limit=200`);
+    expect(res.status).toBe(200);
+    const amts = res.body.data.map((r) => Number(r.transaction_amount));
+    for (let i = 1; i < amts.length; i += 1) {
+      expect(amts[i]).toBeGreaterThanOrEqual(amts[i - 1]);
+    }
+  });
+
+  test('GET /api/ncrp/:id/transactions with an unknown sort key falls back to default order (no error)', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/transactions?sort=DROP TABLE&dir=asc`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+  });
+
   test('POST /api/ncrp/:id/lien creates a lien record for a new account', async () => {
     const res = await agent
       .post(`/api/ncrp/${reportId}/lien`)

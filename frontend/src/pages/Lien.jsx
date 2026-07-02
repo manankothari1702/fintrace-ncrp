@@ -21,6 +21,7 @@ import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatDate, formatPercent } from '../utils/format.js';
 import { getLiens, getReport, saveLien, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useSortableRows } from '../utils/useSortableRows.js';
 
 const STATUSES = ['pending', 'applied', 'success', 'rejected'];
 
@@ -137,6 +138,11 @@ export default function Lien() {
     }
     return { eligible, applied, success, recoveryRate: eligible > 0 ? success / eligible : 0 };
   }, [liens]);
+
+  // Click-to-sort over the worksheet (default: largest freezable balance first).
+  const { sorted, toggle: toggleSort, indicator } = useSortableRows(
+    liens, { key: 'lien_eligible_amount', dir: 'desc' },
+  );
 
   // ── Optimistic inline status update (context pattern #3) ─────────────────────
   const updateStatus = async (lien, newStatus) => {
@@ -288,21 +294,21 @@ export default function Lien() {
                   <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
                 </th>
                 <th style={{ width: 28 }} aria-label="Expand" />
-                <th>Account No.</th>
-                <th>Bank</th>
-                <th>IFSC</th>
-                <th>Layer</th>
-                <th style={{ textAlign: 'right' }}>Received</th>
-                <th style={{ textAlign: 'right' }} title="min(Gross residue, Disputed cap) — the amount placed in the freeze letter. Expand a row for the full derivation.">Lien Eligible</th>
-                <th>Status</th>
-                <th>Applied</th>
+                <th className="th-sort" onClick={() => toggleSort('account_no')}>Account No.<span className="sort-ind">{indicator('account_no')}</span></th>
+                <th className="th-sort" onClick={() => toggleSort('bank_name')}>Bank<span className="sort-ind">{indicator('bank_name')}</span></th>
+                <th className="th-sort" onClick={() => toggleSort('ifsc_code')}>IFSC<span className="sort-ind">{indicator('ifsc_code')}</span></th>
+                <th className="th-sort" onClick={() => toggleSort('layer_no')}>Layer<span className="sort-ind">{indicator('layer_no')}</span></th>
+                <th className="th-sort" style={{ textAlign: 'right' }} onClick={() => toggleSort('total_received')}>Received<span className="sort-ind">{indicator('total_received')}</span></th>
+                <th className="th-sort" style={{ textAlign: 'right' }} title="min(Gross residue, Disputed cap) — the amount placed in the freeze letter. Expand a row for the full derivation." onClick={() => toggleSort('lien_eligible_amount')}>Lien Eligible<span className="sort-ind">{indicator('lien_eligible_amount')}</span></th>
+                <th className="th-sort" onClick={() => toggleSort('lien_status')}>Status<span className="sort-ind">{indicator('lien_status')}</span></th>
+                <th className="th-sort" onClick={() => toggleSort('applied_date')}>Applied<span className="sort-ind">{indicator('applied_date')}</span></th>
               </tr>
             </thead>
             <tbody>
               {liens.length === 0 ? (
                 <tr><td colSpan={10}><div className="empty-state">No accounts are lien-eligible for this report. Every disputed inflow in this trail has left the beneficiary accounts (forwarded onward, withdrawn as cash, or already on hold), so there is no remaining balance to place a lien on.</div></td></tr>
               ) : (
-                liens.map((l) => {
+                sorted.map((l) => {
                   const isOpen = expanded.has(l.id);
                   return (
                     <Fragment key={l.id}>

@@ -875,14 +875,37 @@ function createNcrpRouter(db) {
     }
 
     const whereSql = where.join(' AND ');
+
+    // Optional sort (Batch 2 Area 3). SQL identifiers can't be parameterised, so
+    // ONLY a key present in this whitelist reaches the query, and the direction is
+    // coerced to a literal ASC/DESC — no user text is concatenated into the SQL.
+    // Absent/unknown sort preserves the default chronological view.
+    const SORT_COLUMNS = {
+      transaction_date: 'transaction_date',
+      transaction_amount: 'transaction_amount',
+      disputed_amount: 'disputed_amount',
+      layer_no: 'layer_no',
+      beneficiary_account: 'beneficiary_account',
+      beneficiary_name: 'beneficiary_name',
+      beneficiary_bank: 'beneficiary_bank',
+      ifsc_code: 'ifsc_code',
+      payment_mode: 'payment_mode',
+      utr_no: 'utr_no',
+      city: 'city',
+      state: 'state',
+    };
+    const sortCol = SORT_COLUMNS[sanitizeStringParam(q.sort, 32)] || null;
+    const sortDir = String(q.dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const orderSql = sortCol ? `${sortCol} ${sortDir}, id DESC` : 'transaction_date DESC, id DESC';
+
     // Prepared (parameterised) — no concatenation of user input into SQL.
     const total = db.prepare(
       `SELECT COUNT(*) AS n FROM ncrp_transactions WHERE ${whereSql}`).get(params).n;
-    // Prepared (parameterised).
+    // Prepared (parameterised); ORDER BY built only from the whitelist above.
     const data = db.prepare(`
       SELECT * FROM ncrp_transactions
        WHERE ${whereSql}
-       ORDER BY transaction_date DESC, id DESC
+       ORDER BY ${orderSql}
        LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 

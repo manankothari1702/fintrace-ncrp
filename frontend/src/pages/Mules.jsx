@@ -115,6 +115,11 @@ export default function Mules() {
   const [riskFilter, setRiskFilter] = useState('');
   const [layerFilter, setLayerFilter] = useState('');
   const [bankFilter, setBankFilter] = useState('');
+  // Batch 2 Area 3 — free-text search + received-amount range, for parity with
+  // the Transactions filter bar.
+  const [searchText, setSearchText] = useState('');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -148,11 +153,27 @@ export default function Mules() {
     return c;
   }, [mules]);
 
-  const filtered = useMemo(() => mules.filter((m) => (
-    (!riskFilter || m.risk_label === riskFilter)
-    && (layerFilter === '' || String(m.layer_no) === layerFilter)
-    && (!bankFilter || m.bank_name === bankFilter)
-  )), [mules, riskFilter, layerFilter, bankFilter]);
+  const filtered = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+    const min = minAmount === '' ? null : Number(minAmount);
+    const max = maxAmount === '' ? null : Number(maxAmount);
+    return mules.filter((m) => (
+      (!riskFilter || m.risk_label === riskFilter)
+      && (layerFilter === '' || String(m.layer_no) === layerFilter)
+      && (!bankFilter || m.bank_name === bankFilter)
+      && (!q || String(m.account_no).toLowerCase().includes(q)
+        || String(m.bank_name || '').toLowerCase().includes(q))
+      && (min === null || Number.isNaN(min) || Number(m.total_received || 0) >= min)
+      && (max === null || Number.isNaN(max) || Number(m.total_received || 0) <= max)
+    ));
+  }, [mules, riskFilter, layerFilter, bankFilter, searchText, minAmount, maxAmount]);
+
+  const hasMuleFilters = Boolean(riskFilter || layerFilter || bankFilter || searchText
+    || minAmount !== '' || maxAmount !== '');
+  const clearMuleFilters = () => {
+    setRiskFilter(''); setLayerFilter(''); setBankFilter('');
+    setSearchText(''); setMinAmount(''); setMaxAmount('');
+  };
 
   const columns = [
     { accessorKey: 'account_no', header: 'Account No.' },
@@ -320,20 +341,40 @@ export default function Mules() {
         exportFilename="mule-accounts.csv"
         toolbar={(
           <>
-            <select className="select" value={riskFilter} onChange={(e) => setRiskFilter(e.target.value)}>
+            <input
+              className="input"
+              type="search"
+              placeholder="Search account / bank…"
+              aria-label="Search accounts by number or bank"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              style={{ minWidth: 190 }}
+            />
+            <select className="select" value={riskFilter} onChange={(e) => setRiskFilter(e.target.value)} aria-label="Risk level">
               <option value="">All risk levels</option>
               <option value="HIGH">High</option>
               <option value="MEDIUM">Medium</option>
               <option value="LOW">Low</option>
             </select>
-            <select className="select" value={layerFilter} onChange={(e) => setLayerFilter(e.target.value)}>
+            <select className="select" value={layerFilter} onChange={(e) => setLayerFilter(e.target.value)} aria-label="Layer">
               <option value="">All layers</option>
               {layers.map((l) => <option key={l} value={String(l)}>Layer {l}</option>)}
             </select>
-            <select className="select" value={bankFilter} onChange={(e) => setBankFilter(e.target.value)}>
+            <select className="select" value={bankFilter} onChange={(e) => setBankFilter(e.target.value)} aria-label="Bank">
               <option value="">All banks</option>
               {banks.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
+            <input
+              className="input" type="number" placeholder="Min ₹ received" aria-label="Minimum received amount"
+              value={minAmount} onChange={(e) => setMinAmount(e.target.value)} style={{ width: 130 }}
+            />
+            <input
+              className="input" type="number" placeholder="Max ₹ received" aria-label="Maximum received amount"
+              value={maxAmount} onChange={(e) => setMaxAmount(e.target.value)} style={{ width: 130 }}
+            />
+            {hasMuleFilters && (
+              <button type="button" className="btn btn-sm" onClick={clearMuleFilters}>Clear all</button>
+            )}
           </>
         )}
       />
