@@ -158,6 +158,14 @@ export const getMules = (id) => api.get(`/ncrp/${id}/mules`).then((r) => r.data)
 export const getAggregators = (id) => api.get(`/ncrp/${id}/aggregators`).then((r) => r.data);
 
 /**
+ * Features 4/5 — cash/exit channel analytics (ATM/POS/AEPS KPIs, behavioural
+ * flags, top cities/points) from the analysis snapshot.
+ * @param {number} id
+ * @returns {Promise<{ summary: object, channels: Record<string, object> }>}
+ */
+export const getCashExit = (id) => api.get(`/ncrp/${id}/cash-exit`).then((r) => r.data);
+
+/**
  * Lightweight actionable counts for the sidebar count badges.
  * @param {number} id
  * @returns {Promise<{ aggregators: number, cash_exit_flags: number }>}

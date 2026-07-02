@@ -34,6 +34,7 @@ const NAV_ITEMS = [
   { to: '/layers', icon: '🔢', label: 'Layers' },
   { to: '/money-flow', icon: '🕸️', label: 'Money Flow' },
   { to: '/mules', icon: '🎯', label: 'Mule Accounts', badge: 'aggregators' },
+  { to: '/cash-exit', icon: '🏧', label: 'Cash / Exit', badge: 'cash_exit_flags', flag: true },
   { to: '/lien', icon: '💰', label: 'Lien Tracker' },
   { to: '/data-quality', icon: '🔎', label: 'Data Quality' },
   { to: '/transactions', icon: '📋', label: 'Transactions' },

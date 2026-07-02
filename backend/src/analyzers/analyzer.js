@@ -2101,6 +2101,285 @@ function aggregatorAnalysis(connectivity, rollup) {
   };
 }
 
+// ─── Module — cash / exit channel analysis (Features 4 & 5) ─────────────
+
+/** The cash-exit channel of a row: the sheet-derived rail (ATM / POS / AEPS). */
+function cashExitChannelOf(t) {
+  const pm = (str(t.payment_mode) || '').toUpperCase();
+  if (pm === 'POS' || t.cashout_mode === CASHOUT_MODE.POS) return 'POS';
+  if (pm === 'AEPS') return 'AEPS';
+  return 'ATM'; // ATM proper, or any other cash-exit leg with an ATM id
+}
+
+/** Canonical account for a cash-exit leg (beneficiary is the withdrawing mule). */
+function cashExitAccountKey(t) {
+  return canonicalAccountKey(str(t.beneficiary_account) || str(t.victim_account));
+}
+function cashExitAccountDisplay(t) {
+  return str(t.beneficiary_account) || str(t.victim_account) || '—';
+}
+
+/**
+ * Feature 4 flag — Rapid Withdrawals: one account making ≥ RAPID_WITHDRAWAL_MIN_COUNT
+ * cash-exits inside a rolling RAPID_WITHDRAWAL_WINDOW_MINUTES window. One instance
+ * per account (its densest cluster), with a plain-language "why".
+ */
+function detectRapidWithdrawals(list) {
+  const byAcct = new Map();
+  for (const t of list) {
+    const ms = toMs(t.transaction_date);
+    if (ms === null) continue;
+    const k = cashExitAccountKey(t);
+    if (!k) continue;
+    if (!byAcct.has(k)) byAcct.set(k, []);
+    byAcct.get(k).push({ ms, t });
+  }
+  const windowMs = THRESHOLDS.RAPID_WITHDRAWAL_WINDOW_MINUTES * 60000;
+  const minCount = THRESHOLDS.RAPID_WITHDRAWAL_MIN_COUNT;
+  const out = [];
+  for (const arr of byAcct.values()) {
+    arr.sort((a, b) => a.ms - b.ms);
+    let best = null;
+    let i = 0;
+    for (let j = 0; j < arr.length; j += 1) {
+      while (arr[j].ms - arr[i].ms > windowMs) i += 1;
+      const cnt = j - i + 1;
+      if (cnt >= minCount && (!best || cnt > best.count)) best = { i, j, count: cnt };
+    }
+    if (!best) continue;
+    const cluster = arr.slice(best.i, best.j + 1);
+    const spanMin = Math.round((cluster[cluster.length - 1].ms - cluster[0].ms) / 60000);
+    const total = round(cluster.reduce((s, x) => s + num(x.t.transaction_amount), 0));
+    out.push({
+      account: cashExitAccountDisplay(cluster[0].t),
+      txn_ids: cluster.map((x) => x.t.id).filter((v) => v != null),
+      count: best.count,
+      total_amount: total,
+      span_minutes: spanMin,
+      why: `${best.count} withdrawals in ${spanMin} min · total ${formatINR(total)}`,
+    });
+  }
+  return out.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Feature 4 flag — Multi-ATM Accounts: one account withdrawing at ≥
+ * MULTI_ATM_MIN_DISTINCT distinct ATMs within one IST calendar day.
+ */
+function detectMultiAtm(list) {
+  const byAcctDay = new Map();
+  for (const t of list) {
+    const day = istDayKey(t.transaction_date);
+    const atm = str(t.atm_id);
+    const k = cashExitAccountKey(t);
+    if (!day || !atm || !k) continue;
+    const key = `${k}|${day}`;
+    if (!byAcctDay.has(key)) byAcctDay.set(key, { sample: t, day, atms: new Set(), txns: [] });
+    const e = byAcctDay.get(key);
+    e.atms.add(atm);
+    e.txns.push(t);
+  }
+  const out = [];
+  for (const e of byAcctDay.values()) {
+    if (e.atms.size < THRESHOLDS.MULTI_ATM_MIN_DISTINCT) continue;
+    out.push({
+      account: cashExitAccountDisplay(e.sample),
+      day: e.day,
+      distinct_atms: e.atms.size,
+      atm_ids: [...e.atms],
+      txn_ids: e.txns.map((t) => t.id).filter((v) => v != null),
+      count: e.txns.length,
+      why: `Withdrew at ${e.atms.size} different ATMs on ${e.day}`,
+    });
+  }
+  return out.sort((a, b) => b.distinct_atms - a.distinct_atms);
+}
+
+/**
+ * Feature 5 flag — Suspicious POS merchants/terminals: a terminal (MID, from
+ * atm_id) or merchant (atm_location) with ≥ SUSPICIOUS_MERCHANT_MIN_TXNS POS
+ * transactions inside a rolling SUSPICIOUS_MERCHANT_WINDOW_MINUTES window.
+ */
+function detectSuspiciousMerchants(list) {
+  const byTerm = new Map();
+  for (const t of list) {
+    const terminal = str(t.atm_id);
+    const merchant = str(t.atm_location);
+    const key = terminal || merchant;
+    if (!key) continue;
+    if (!byTerm.has(key)) byTerm.set(key, { terminal, merchant, txns: [] });
+    byTerm.get(key).txns.push(t);
+  }
+  const windowMs = THRESHOLDS.SUSPICIOUS_MERCHANT_WINDOW_MINUTES * 60000;
+  const minTxns = THRESHOLDS.SUSPICIOUS_MERCHANT_MIN_TXNS;
+  const out = [];
+  for (const g of byTerm.values()) {
+    const dated = g.txns
+      .map((t) => ({ ms: toMs(t.transaction_date), t }))
+      .filter((x) => x.ms !== null)
+      .sort((a, b) => a.ms - b.ms);
+    let best = null;
+    let i = 0;
+    for (let j = 0; j < dated.length; j += 1) {
+      while (dated[j].ms - dated[i].ms > windowMs) i += 1;
+      const cnt = j - i + 1;
+      if (cnt >= minTxns && (!best || cnt > best.count)) best = { i, j, count: cnt };
+    }
+    if (!best) continue;
+    const cluster = dated.slice(best.i, best.j + 1);
+    const spanMin = Math.round((cluster[cluster.length - 1].ms - cluster[0].ms) / 60000);
+    const total = round(cluster.reduce((s, x) => s + num(x.t.transaction_amount), 0));
+    out.push({
+      merchant: g.merchant,
+      terminal: g.terminal,
+      txn_ids: cluster.map((x) => x.t.id).filter((v) => v != null),
+      count: best.count,
+      total_amount: total,
+      span_minutes: spanMin,
+      why: `${best.count} POS txns in ${spanMin} min · total ${formatINR(total)}`,
+    });
+  }
+  return out.sort((a, b) => b.count - a.count);
+}
+
+/** Top cities for a channel's legs, by amount (skips rows with no city). */
+function topCitiesByAmount(list, limit = 6) {
+  const m = new Map();
+  for (const t of list) {
+    const city = str(t.city);
+    if (!city) continue;
+    if (!m.has(city)) m.set(city, { city, amount: 0, count: 0 });
+    const e = m.get(city);
+    e.amount += num(t.transaction_amount);
+    e.count += 1;
+  }
+  return [...m.values()]
+    .map((e) => ({ ...e, amount: round(e.amount) }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, limit);
+}
+
+/**
+ * Top exit points for a channel: ATMs (by atm_id) for cash channels, or
+ * merchants/terminals (atm_id as terminal, atm_location as merchant) for POS.
+ */
+function topExitPoints(list, channel, limit = 8) {
+  const m = new Map();
+  for (const t of list) {
+    const terminal = str(t.atm_id);
+    const location = str(t.atm_location);
+    const key = channel === 'POS' ? (terminal || location) : (terminal || location);
+    if (!key) continue;
+    if (!m.has(key)) {
+      m.set(key, {
+        terminal, location, txn_count: 0, amount: 0, accounts: new Set(),
+      });
+    }
+    const e = m.get(key);
+    e.txn_count += 1;
+    e.amount += num(t.transaction_amount);
+    const acct = cashExitAccountKey(t);
+    if (acct) e.accounts.add(acct);
+  }
+  return [...m.values()]
+    .map((e) => ({
+      terminal: e.terminal,
+      location: e.location,
+      txn_count: e.txn_count,
+      amount: round(e.amount),
+      account_count: e.accounts.size,
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, limit);
+}
+
+/**
+ * Features 4 & 5 — cash/exit channel analytics over the cash-exit (EXIT) legs.
+ * Buckets by channel (ATM/POS/AEPS), computes per-channel KPIs, the behavioural
+ * flag instances (rapid withdrawals + multi-ATM for ATM; suspicious merchants for
+ * POS), top cities, and top exit points, plus the channel's transaction list so
+ * the page can render + flag-filter without a second pass. Computed once, cached.
+ *
+ * @param {ReadonlyArray<Record<string, unknown>>} rows - Enriched, deduped rows.
+ * @returns {{ summary: object, channels: Record<string, object> }}
+ */
+function cashExitAnalysis(rows) {
+  const CHANNELS = ['ATM', 'POS', 'AEPS'];
+  const exits = rows.filter((t) => t.row_kind === ROW_KIND.EXIT);
+  const byChannel = new Map(CHANNELS.map((c) => [c, []]));
+  for (const t of exits) {
+    const ch = cashExitChannelOf(t);
+    if (!byChannel.has(ch)) byChannel.set(ch, []);
+    byChannel.get(ch).push(t);
+  }
+
+  const channels = {};
+  let riskFlagCount = 0;
+  const exitPoints = new Set();
+
+  for (const ch of CHANNELS) {
+    const list = byChannel.get(ch) || [];
+    const transactions = list.map((t, i) => ({
+      id: t.id != null ? t.id : `${ch}-${i}`,
+      account: cashExitAccountDisplay(t),
+      date: t.transaction_date || null,
+      amount: round(num(t.transaction_amount)),
+      disputed: round(num(t.disputed_amount)),
+      atm_id: str(t.atm_id),
+      location: str(t.atm_location),
+      city: str(t.city),
+      state: str(t.state),
+      same_day: !!t.same_day_cashout,
+    }));
+    for (const t of list) {
+      const key = str(t.atm_id) || str(t.atm_location);
+      if (key) exitPoints.add(`${ch}|${key}`);
+    }
+
+    // The defined flag cards for the channel are ALWAYS present (count 0 when
+    // clear) so the page renders a consistent set; a 0-count card is shown but
+    // not clickable. Only non-zero counts add to the overview risk-flag tally.
+    const flags = [];
+    if (ch === 'ATM' && list.length) {
+      const rapid = detectRapidWithdrawals(list);
+      const multi = detectMultiAtm(list);
+      flags.push({ key: 'rapid', label: 'Rapid Withdrawals', count: rapid.length, instances: rapid });
+      flags.push({ key: 'multi_atm', label: 'Multi-ATM Accounts', count: multi.length, instances: multi });
+    } else if (ch === 'POS' && list.length) {
+      const susp = detectSuspiciousMerchants(list);
+      flags.push({ key: 'suspicious_merchant', label: 'Suspicious Merchants', count: susp.length, instances: susp });
+    }
+    for (const f of flags) riskFlagCount += f.count;
+
+    channels[ch] = {
+      key: ch,
+      count: list.length,
+      amount: round(list.reduce((s, t) => s + num(t.transaction_amount), 0)),
+      disputed: round(list.reduce((s, t) => s + num(t.disputed_amount), 0)),
+      unique_points: new Set(list.map((t) => str(t.atm_id) || str(t.atm_location)).filter(Boolean)).size,
+      transactions,
+      flags,
+      top_cities: topCitiesByAmount(list),
+      top_points: topExitPoints(list, ch),
+    };
+  }
+
+  const channelsPresent = CHANNELS.filter((c) => channels[c].count > 0);
+  return {
+    summary: {
+      // gross sum of every cash-exit leg (the channel amounts foot to this); the
+      // capped "confirmed" headline is set from summary.cashed_out in analyzeReport.
+      total_withdrawn_gross: round(exits.reduce((s, t) => s + num(t.transaction_amount), 0)),
+      total_cashed_out: null, // filled from the capped headline by the caller
+      total_withdrawals: exits.length,
+      unique_exit_points: exitPoints.size,
+      risk_flag_count: riskFlagCount,
+      channels_present: channelsPresent,
+    },
+    channels,
+  };
+}
+
 // ─── Module — investigation roadmap ────────────────────────────────────
 
 /**
@@ -2714,6 +2993,17 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     return true;
   }, null);
 
+  // Features 4 & 5 — cash/exit channel analytics + POS merchant intelligence.
+  const cash_exit_analysis = runModule(
+    'cashExitAnalysis',
+    () => cashExitAnalysis(rows),
+    { summary: { total_withdrawn_gross: 0, total_cashed_out: 0, total_withdrawals: 0, unique_exit_points: 0, risk_flag_count: 0, channels_present: [] }, channels: {} }
+  );
+  // Overview "Total Cashed Out" tracks the capped headline (summary.cashed_out),
+  // the single source of truth used by the Dashboard; per-channel amounts stay
+  // gross, so the page can show confirmed-vs-gross exactly like the rest of the app.
+  cash_exit_analysis.summary.total_cashed_out = summary.cashed_out;
+
   // Feature 1 — investigation-health KPIs. Computed after `summary` (reads its
   // victim_loss/on_hold/refunded) and reuses timeline_summary + the rollup.
   const investigation_metrics = runModule(
@@ -2761,6 +3051,8 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     // the rollup for held balances. Distinct from `aggregators` above (the legacy
     // in_degree ≥ 2 collector list surfaced for the Excel/PDF).
     aggregator_analysis,
+    // Features 4 & 5 — cash/exit channel analytics (ATM/POS/AEPS) + POS merchants.
+    cash_exit_analysis,
     day_of_week,
     recovery_status,
     investigation_roadmap,
@@ -2791,6 +3083,7 @@ module.exports = {
   cashoutSpeed,
   aggregatorAnalysis,
   aggregatorSeverity,
+  cashExitAnalysis,
   victimAccounts,
   investigationRoadmap,
   keyFindings,

@@ -977,6 +977,21 @@ function createNcrpRouter(db) {
       : { accounts: [], summary: { count: 0, max_fan_in: 0, median_fan_in: null, total_held: 0, total_received: 0 } });
   });
 
+  // GET /api/ncrp/:id/cash-exit — Features 4/5: cash/exit channel analytics
+  // (ATM/POS/AEPS KPIs, behavioural flags, top cities/points) from the snapshot.
+  router.get('/ncrp/:id/cash-exit', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    const ce = analysis && analysis.cash_exit_analysis;
+    res.json(ce && ce.summary
+      ? ce
+      : {
+        summary: { total_withdrawn_gross: 0, total_cashed_out: 0, total_withdrawals: 0, unique_exit_points: 0, risk_flag_count: 0, channels_present: [] },
+        channels: {},
+      });
+  });
+
   // GET /api/ncrp/:id/badges — Feature 3/4: tiny actionable counts for the
   // sidebar count badges (aggregators on Mule Accounts, risk flags on Cash/Exit),
   // read from the cached snapshot so the sidebar never recomputes or pulls the

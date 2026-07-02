@@ -34,6 +34,7 @@ const DashboardPage = lazy(() => import('./pages/Dashboard.jsx'));
 const LayersPage = lazy(() => import('./pages/Layers.jsx'));
 const MoneyFlowPage = lazy(() => import('./pages/MoneyFlow.jsx'));
 const MulesPage = lazy(() => import('./pages/Mules.jsx'));
+const CashExitPage = lazy(() => import('./pages/CashExit.jsx'));
 const LienPage = lazy(() => import('./pages/Lien.jsx'));
 const DataQualityPage = lazy(() => import('./pages/DataQuality.jsx'));
 const TransactionsPage = lazy(() => import('./pages/Transactions.jsx'));
@@ -106,6 +107,7 @@ export default function App() {
                   <Route path="/layers" element={<LayersPage />} />
                   <Route path="/money-flow" element={<MoneyFlowPage />} />
                   <Route path="/mules" element={<MulesPage />} />
+                  <Route path="/cash-exit" element={<CashExitPage />} />
                   <Route path="/lien" element={<LienPage />} />
                   <Route path="/data-quality" element={<DataQualityPage />} />
                   <Route path="/transactions" element={<TransactionsPage />} />
