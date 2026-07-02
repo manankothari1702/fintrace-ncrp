@@ -283,7 +283,9 @@ export default function CashExit() {
                           formatter={(v) => [formatINR(v), 'Amount']}
                         />
                         <Bar dataKey="amount" fill={chart.accentOrange} radius={[0, 3, 3, 0]}>
-                          <LabelList dataKey="amount" position="right" formatter={(v) => formatCrore(v)} style={{ fill: chart.textMuted, fontSize: 11 }} />
+                          {/* fill as a direct prop (not style) so recharts doesn't
+                              override the label colour with the bar fill in dark mode. */}
+                          <LabelList dataKey="amount" position="right" formatter={(v) => formatCrore(v)} fill={chart.textMuted} fontSize={11} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
