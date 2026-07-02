@@ -25,6 +25,13 @@ import { useActiveReportId } from '../context/ReportContext.jsx';
 const AGG_TIP = 'Aggregator — an account that received money from many distinct senders '
   + '(a collection point in the mule ring). Amber at 3–4 senders, red at 5 or more.';
 
+// Fan-in counts are whole senders, but the MEDIAN of an even-sized set can be a
+// half-integer (e.g. 3.5). Show that decimal instead of rounding it to 4, so the
+// strip matches the analysis snapshot exactly.
+function fmtFanIn(v) {
+  return Number.isInteger(v) ? formatNumber(v) : v.toFixed(1);
+}
+
 // ─── Score progress bar ──────────────────────────────────────────────────────
 
 function MuleScoreBar({ score }) {
@@ -388,7 +395,7 @@ function AggregatorsView({ agg, reportId }) {
       <div className="agg-summary-strip" role="group" aria-label="Aggregator summary">
         <SummaryStat label="Aggregators" value={formatNumber(s.count || 0)} info={AGG_TIP} />
         <SummaryStat label="Max fan-in" value={formatNumber(s.max_fan_in || 0)} suffix=" senders" />
-        <SummaryStat label="Median fan-in" value={s.median_fan_in == null ? '—' : formatNumber(s.median_fan_in)} suffix={s.median_fan_in == null ? '' : ' senders'} />
+        <SummaryStat label="Median fan-in" value={s.median_fan_in == null ? '—' : fmtFanIn(s.median_fan_in)} suffix={s.median_fan_in == null ? '' : ' senders'} />
         <SummaryStat label="Total held" value={formatINR(s.total_held || 0)} />
       </div>
 
