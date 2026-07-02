@@ -104,6 +104,7 @@ export default function CashExit() {
   const pointLabel = isPos ? 'Merchant' : 'ATM';
 
   const [exporting, setExporting] = useState(null); // 'view' | 'all' | null
+  const [exportError, setExportError] = useState(null);
 
   // Both exports produce a real multi-sheet .xlsx from the backend (reusing the
   // NCRP workbook infra). "view" = the current channel/flag filter (one sheet);
@@ -111,15 +112,15 @@ export default function CashExit() {
   const runExport = async (scope) => {
     if (!reportId) return;
     setExporting(scope);
+    setExportError(null);
     try {
       const params = scope === 'view'
         ? { scope: 'view', channel, ...(activeFlag ? { flag: activeFlag } : {}) }
         : { scope: 'full' };
       await openCashExitExcel(reportId, params);
     } catch (e) {
-      // Surface, but don't crash the page — the buttons re-enable below.
-      // eslint-disable-next-line no-console
-      console.error('Cash/Exit export failed:', e);
+      // Surface to the officer (not console-only) — the buttons re-enable below.
+      setExportError(e);
     } finally {
       setExporting(null);
     }
@@ -170,6 +171,17 @@ export default function CashExit() {
           </div>
         )}
       </header>
+
+      {exportError && (
+        <div style={{ marginBottom: 16 }}>
+          <ErrorAlert
+            error={exportError}
+            title="Export failed"
+            message={friendlyErrorMessage(exportError)}
+            onRetry={() => setExportError(null)}
+          />
+        </div>
+      )}
 
       {/* Overview band — channel-agnostic. */}
       <div className="metrics-band-label">Overview</div>

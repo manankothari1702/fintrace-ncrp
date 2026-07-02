@@ -501,7 +501,16 @@ export default function Transactions() {
           </div>
         ) : rows.length === 0 ? (
           <div className="empty-state">
-            No transactions match the current filters. Try widening the date range or clearing filters.
+            {activeFilterCount > 0 ? (
+              <>
+                No transactions match the current filters. Try widening the date range or removing a filter.
+                <div style={{ marginTop: 12 }}>
+                  <button type="button" className="btn btn-sm" onClick={clearFilters}>Clear all filters</button>
+                </div>
+              </>
+            ) : (
+              'This report has no transactions to display.'
+            )}
           </div>
         ) : (
           <>
