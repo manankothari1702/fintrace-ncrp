@@ -16,19 +16,24 @@
  * @param {boolean} props.collapsed
  * @param {() => void} props.onToggle
  */
+import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 
 import { useReportContext } from '../context/ReportContext.jsx';
 import { useTheme } from '../utils/theme.js';
+import { getReportBadges } from '../utils/api.js';
 
 const APP_VERSION = '0.4.0';
 
+// `badge` names the count field from GET /badges to show as a right-aligned
+// count pill (Features 3/4). `flag` marks items that carry a risk indicator when
+// their count > 0 (Cash/Exit), so the pill reads as a red alert, not a tally.
 const NAV_ITEMS = [
   { to: '/upload', icon: '📤', label: 'Upload' },
   { to: '/dashboard', icon: '📊', label: 'Dashboard' },
   { to: '/layers', icon: '🔢', label: 'Layers' },
   { to: '/money-flow', icon: '🕸️', label: 'Money Flow' },
-  { to: '/mules', icon: '🎯', label: 'Mule Accounts' },
+  { to: '/mules', icon: '🎯', label: 'Mule Accounts', badge: 'aggregators' },
   { to: '/lien', icon: '💰', label: 'Lien Tracker' },
   { to: '/data-quality', icon: '🔎', label: 'Data Quality' },
   { to: '/transactions', icon: '📋', label: 'Transactions' },
@@ -43,6 +48,19 @@ export default function Sidebar({ collapsed, onToggle }) {
   // page resolves the same report. Upload never needs it.
   const query = activeReportId ? `?reportId=${activeReportId}` : '';
 
+  // Lightweight actionable counts for the count badges (aggregators on Mule
+  // Accounts, risk flags on Cash/Exit). Fetched once per active report from the
+  // cached snapshot; failures leave the badges hidden rather than blocking nav.
+  const [badges, setBadges] = useState({ aggregators: 0, cash_exit_flags: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeReportId) { setBadges({ aggregators: 0, cash_exit_flags: 0 }); return undefined; }
+    getReportBadges(activeReportId)
+      .then((b) => { if (!cancelled && b) setBadges({ aggregators: b.aggregators || 0, cash_exit_flags: b.cash_exit_flags || 0 }); })
+      .catch(() => { if (!cancelled) setBadges({ aggregators: 0, cash_exit_flags: 0 }); });
+    return () => { cancelled = true; };
+  }, [activeReportId]);
+
   const isDark = theme === 'dark';
 
   return (
@@ -56,17 +74,33 @@ export default function Sidebar({ collapsed, onToggle }) {
       </div>
 
       <nav className="sidebar-nav">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={`${item.to}${item.to === '/upload' ? '' : query}`}
-            className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
-            title={collapsed ? item.label : undefined}
-          >
-            <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-            <span className="nav-label">{item.label}</span>
-          </NavLink>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const count = item.badge ? (badges[item.badge] || 0) : 0;
+          return (
+            <NavLink
+              key={item.to}
+              to={`${item.to}${item.to === '/upload' ? '' : query}`}
+              className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+              title={collapsed ? item.label : undefined}
+            >
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              <span className="nav-label">{item.label}</span>
+              {count > 0 && (
+                <span
+                  className={`nav-count${item.flag ? ' flag' : ''}`}
+                  title={item.flag
+                    ? `${count} risk ${count === 1 ? 'flag' : 'flags'}`
+                    : `${count} ${count === 1 ? 'aggregator' : 'aggregators'} detected`}
+                  aria-label={item.flag
+                    ? `${count} risk flags`
+                    : `${count} aggregators detected`}
+                >
+                  {item.flag ? `⚑${count}` : count}
+                </span>
+              )}
+            </NavLink>
+          );
+        })}
       </nav>
 
       <div className="sidebar-controls">

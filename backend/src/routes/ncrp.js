@@ -965,6 +965,33 @@ function createNcrpRouter(db) {
     res.json(analysis && analysis.mule_detection ? analysis.mule_detection : []);
   });
 
+  // GET /api/ncrp/:id/aggregators — Feature 3: aggregator (collection-point)
+  // accounts + summary strip, from the analysis snapshot.
+  router.get('/ncrp/:id/aggregators', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    const agg = analysis && analysis.aggregator_analysis;
+    res.json(agg && Array.isArray(agg.accounts)
+      ? agg
+      : { accounts: [], summary: { count: 0, max_fan_in: 0, median_fan_in: null, total_held: 0, total_received: 0 } });
+  });
+
+  // GET /api/ncrp/:id/badges — Feature 3/4: tiny actionable counts for the
+  // sidebar count badges (aggregators on Mule Accounts, risk flags on Cash/Exit),
+  // read from the cached snapshot so the sidebar never recomputes or pulls the
+  // full analysis payload.
+  router.get('/ncrp/:id/badges', (req, res) => {
+    const report = loadReport(req, res);
+    if (!report) return;
+    const analysis = parseAnalysis(report);
+    const aggregators = analysis && analysis.aggregator_analysis && analysis.aggregator_analysis.summary
+      ? (analysis.aggregator_analysis.summary.count || 0) : 0;
+    const cashExitFlags = analysis && analysis.cash_exit_analysis && analysis.cash_exit_analysis.summary
+      ? (analysis.cash_exit_analysis.summary.risk_flag_count || 0) : 0;
+    res.json({ aggregators, cash_exit_flags: cashExitFlags });
+  });
+
   // GET /api/ncrp/:id/data-quality — accounts whose bank attribution needs IO
   // review (IFSC↔text mismatch, missing/invalid IFSC, unknown prefix). Served
   // from the analysis snapshot.

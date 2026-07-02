@@ -150,6 +150,20 @@ export const getLayers = (id) => api.get(`/ncrp/${id}/layers`).then((r) => r.dat
 /** Mule-detection rows from the analysis snapshot. */
 export const getMules = (id) => api.get(`/ncrp/${id}/mules`).then((r) => r.data);
 
+/**
+ * Feature 3 — aggregator (collection-point) accounts + summary strip.
+ * @param {number} id
+ * @returns {Promise<{ accounts: Array<object>, summary: object }>}
+ */
+export const getAggregators = (id) => api.get(`/ncrp/${id}/aggregators`).then((r) => r.data);
+
+/**
+ * Lightweight actionable counts for the sidebar count badges.
+ * @param {number} id
+ * @returns {Promise<{ aggregators: number, cash_exit_flags: number }>}
+ */
+export const getReportBadges = (id) => api.get(`/ncrp/${id}/badges`).then((r) => r.data);
+
 /** Lien worksheet rows. */
 export const getLiens = (id) => api.get(`/ncrp/${id}/lien`).then((r) => r.data);
 

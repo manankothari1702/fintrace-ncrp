@@ -2034,6 +2034,73 @@ function investigationMetrics(ctx) {
   };
 }
 
+// ─── Module — aggregator / common-account detection (Feature 3) ─────────
+
+/**
+ * Aggregator severity from tunable distinct-sender (in-degree) bands. Returns
+ * null when the account is not an aggregator. The UX doc's "5+ senders" flags
+ * ZERO accounts on the primary gold case 145 (max in_degree 3), so the detection
+ * floor is 3 (matching the mule collector bonus) and 5+ is the high (red) tier.
+ * See thresholds.js.
+ *
+ * @param {number} inDegree
+ * @returns {'danger'|'warn'|null}
+ */
+function aggregatorSeverity(inDegree) {
+  const n = num(inDegree);
+  if (n >= THRESHOLDS.AGGREGATOR_RED_SENDERS) return 'danger';
+  if (n >= THRESHOLDS.AGGREGATOR_MIN_SENDERS) return 'warn';
+  return null;
+}
+
+/**
+ * Feature 3 — the aggregator ("collection point") accounts: those that received
+ * money from many distinct senders (in-degree ≥ AGGREGATOR_MIN_SENDERS). Joins the
+ * connectivity in-degree table to the account rollup so each aggregator carries
+ * its held/residual balance and layer for the "Aggregators" tab. Computed once
+ * here and cached in analysis_json.
+ *
+ * @param {{ accounts?: Array<object> }} connectivity - analyzeConnectivity output.
+ * @param {Map<string, any>} rollup - buildAccountRollup output.
+ * @returns {{ accounts: Array<object>, summary: object }}
+ */
+function aggregatorAnalysis(connectivity, rollup) {
+  const accounts = [];
+  for (const acc of (connectivity.accounts || [])) {
+    const severity = aggregatorSeverity(acc.in_degree);
+    if (!severity) continue;
+    const r = rollup ? rollup.get(canonicalAccountKey(acc.account_no)) : null;
+    accounts.push({
+      account_no: acc.account_no,
+      bank: acc.bank || (r ? r.bank_name : null),
+      distinct_senders: acc.in_degree,
+      total_received: r ? num(r.total_received) : num(acc.total_in),
+      total_out: num(acc.total_out),
+      // "Held" = the gross residual still sitting in the account (Received − Sent
+      // − On Hold − Cashed-out), the same figure the Lien Tracker freezes.
+      held: r ? num(r.gross_balance) : null,
+      lien_eligible: r ? num(r.lien_eligible_amount) : null,
+      layer_no: r && Number.isFinite(r.minLayer) ? r.minLayer : null,
+      severity,
+    });
+  }
+  accounts.sort((a, b) =>
+    (b.distinct_senders - a.distinct_senders)
+    || (num(b.total_received) - num(a.total_received))
+    || String(a.account_no).localeCompare(String(b.account_no)));
+  const fanIns = accounts.map((a) => a.distinct_senders);
+  return {
+    accounts,
+    summary: {
+      count: accounts.length,
+      max_fan_in: fanIns.length ? Math.max(...fanIns) : 0,
+      median_fan_in: medianOf(fanIns),
+      total_held: round(accounts.reduce((s, a) => s + num(a.held), 0)),
+      total_received: round(accounts.reduce((s, a) => s + num(a.total_received), 0)),
+    },
+  };
+}
+
 // ─── Module — investigation roadmap ────────────────────────────────────
 
 /**
@@ -2629,6 +2696,24 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     fraud_start_date: null,
   });
 
+  // Feature 3 — aggregator (collection-point) accounts by distinct-sender fan-in,
+  // plus a per-mule aggregator flag so the Mule Accounts / Transactions Flags
+  // columns render the badge without a second lookup. Computed once, cached.
+  const aggregator_analysis = runModule(
+    'aggregatorAnalysis',
+    () => aggregatorAnalysis(connectivity, rollup),
+    { accounts: [], summary: { count: 0, max_fan_in: 0, median_fan_in: null, total_held: 0, total_received: 0 } }
+  );
+  runModule('aggregatorMuleTag', () => {
+    const inDegBy = connectivity.in_degree_by_account || new Map();
+    for (const m of mules) {
+      const inDeg = num(inDegBy.get(canonicalAccountKey(m.account_no)));
+      m.distinct_senders = inDeg;
+      m.aggregator_severity = aggregatorSeverity(inDeg); // 'warn' | 'danger' | null
+    }
+    return true;
+  }, null);
+
   // Feature 1 — investigation-health KPIs. Computed after `summary` (reads its
   // victim_loss/on_hold/refunded) and reuses timeline_summary + the rollup.
   const investigation_metrics = runModule(
@@ -2672,6 +2757,10 @@ async function analyzeReport(reportId, transactions, existingRepeatAccounts = []
     // PDF "Top Aggregator Accounts" table.
     connectivity: { accounts: connectivity.accounts, collectors: connectivity.collectors },
     aggregators: connectivity.collectors,
+    // Feature 3 — tiered aggregators (in_degree ≥ 3) + summary strip, joined to
+    // the rollup for held balances. Distinct from `aggregators` above (the legacy
+    // in_degree ≥ 2 collector list surfaced for the Excel/PDF).
+    aggregator_analysis,
     day_of_week,
     recovery_status,
     investigation_roadmap,
@@ -2700,6 +2789,8 @@ module.exports = {
   recoveryStatus,
   investigationMetrics,
   cashoutSpeed,
+  aggregatorAnalysis,
+  aggregatorSeverity,
   victimAccounts,
   investigationRoadmap,
   keyFindings,

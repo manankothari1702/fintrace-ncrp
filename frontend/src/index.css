@@ -799,6 +799,145 @@ table.data-table tbody td.expanded-cell {
   flex: 0 0 auto;
 }
 
+/* ─── Feature 3 — aggregator flag, segmented tabs, summary strip ──────────
+   The aggregator flag reuses the amber "attention" grammar (colour + ⚑ + word +
+   sender count); the .danger variant lifts to the red high-severity grammar. */
+.aggregator-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--accent-orange);
+  background: var(--warning-bg);
+  border: 1px solid color-mix(in srgb, var(--accent-orange) 45%, transparent);
+}
+
+.aggregator-flag.danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+[data-theme='dark'] .aggregator-flag {
+  color: color-mix(in srgb, var(--accent-orange) 70%, #fff);
+  border-color: color-mix(in srgb, var(--accent-orange) 55%, transparent);
+}
+
+[data-theme='dark'] .aggregator-flag.danger {
+  color: color-mix(in srgb, var(--danger) 55%, #fff);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+/* Compact inline aggregator marker for the dense Transactions table — a small
+   ⚑ + sender count in the account cell (colour + icon + number). */
+.agg-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font);
+  color: var(--accent-orange);
+  background: var(--warning-bg);
+  border: 1px solid color-mix(in srgb, var(--accent-orange) 40%, transparent);
+  vertical-align: middle;
+}
+
+.agg-mark.danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+[data-theme='dark'] .agg-mark {
+  color: color-mix(in srgb, var(--accent-orange) 70%, #fff);
+}
+
+[data-theme='dark'] .agg-mark.danger {
+  color: color-mix(in srgb, var(--danger) 55%, #fff);
+}
+
+/* Segmented control (All Accounts | Aggregators) — a pill pair, active segment
+   in the brand grammar so it reads as selected in both themes. */
+.seg-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.seg-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.seg-tab:hover {
+  color: var(--text);
+}
+
+.seg-tab.active {
+  background: var(--brand);
+  color: var(--text-on-solid);
+}
+
+[data-theme='dark'] .seg-tab.active {
+  background: var(--sidebar-active);
+}
+
+/* Aggregator summary strip — count · max fan-in · median · total held. */
+.agg-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-orange);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.agg-summary-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+}
+
+.agg-summary-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.agg-summary-suffix {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
 /* ─── Lien Tracker — money-green text, row expander, breakdown panel ──────
    Small money-green text (the header total, the per-row Lien Eligible value,
    the expanded final term). Raw --accent (#2e7d32) is only ~3.25:1 on the dark
@@ -1110,6 +1249,39 @@ table.data-table tbody td.expanded-cell {
 .sidebar.is-collapsed .nav-link {
   justify-content: center;
   gap: 0;
+}
+
+/* Feature 3/4 — right-aligned count badge on a nav item (aggregators on Mule
+   Accounts; risk flags on Cash/Exit). Reserved for genuinely actionable counts
+   so badges don't inflate. The .flag variant is a red risk indicator. Hidden
+   with the labels when the sidebar collapses. */
+.nav-count {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  white-space: nowrap;
+  transition: opacity 0.15s ease, max-width 0.2s ease;
+}
+
+.nav-count.flag {
+  background: var(--danger);
+  color: var(--text-on-solid);
+}
+
+.sidebar.is-collapsed .nav-count {
+  opacity: 0;
+  max-width: 0;
+  min-width: 0;
+  padding: 0;
+  margin-left: 0;
+  overflow: hidden;
 }
 
 /* ─── Sidebar controls: theme toggle + collapse ──────────────────── */

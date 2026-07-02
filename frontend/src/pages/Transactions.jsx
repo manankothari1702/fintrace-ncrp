@@ -18,7 +18,14 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonLine } from '../components/Skeleton.jsx';
 import { formatINR, formatDateTimeUTC, formatNumber } from '../utils/format.js';
-import { getTransactions, getTransactionFacets, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { getTransactions, getTransactionFacets, getAggregators, friendlyErrorMessage, ApiError } from '../utils/api.js';
+
+// Canonical account key (mirrors the backend's canonicalAccountKey): all-digit
+// accounts have leading zeros stripped so "0000X" and "X" match one aggregator.
+function canonAcct(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^\d+$/.test(s) ? s.replace(/^0+(?=\d)/, '') : s;
+}
 import { useActiveReportId } from '../context/ReportContext.jsx';
 
 const PAGE_SIZES = [100, 250, 500];
@@ -103,6 +110,9 @@ export default function Transactions() {
   const [showFilters, setShowFilters] = useState(true);
   // Filter options derived from the report's ACTUAL data (banks + layers).
   const [facets, setFacets] = useState({ banks: [], layers: [] });
+  // Feature 3 — aggregator lookup (canonical account → {severity, senders}) so
+  // rows whose beneficiary is a collection point carry an inline ⚑ marker.
+  const [aggMap, setAggMap] = useState(() => new Map());
   const [bankSearch, setBankSearch] = useState('');
   // Bank multi-select dropdown open state.
   const [bankOpen, setBankOpen] = useState(false);
@@ -164,6 +174,23 @@ export default function Transactions() {
     getTransactionFacets(reportId)
       .then((f) => { if (!cancelled) setFacets({ banks: f.banks || [], layers: f.layers || [] }); })
       .catch(() => { if (!cancelled) setFacets({ banks: [], layers: [] }); });
+    return () => { cancelled = true; };
+  }, [reportId]);
+
+  // Feature 3 — load the aggregator set ONCE per report to badge rows inline.
+  useEffect(() => {
+    let cancelled = false;
+    if (!reportId) { setAggMap(new Map()); return undefined; }
+    getAggregators(reportId)
+      .then((a) => {
+        if (cancelled) return;
+        const m = new Map();
+        for (const acc of (a && a.accounts) || []) {
+          m.set(canonAcct(acc.account_no), { severity: acc.severity, senders: acc.distinct_senders });
+        }
+        setAggMap(m);
+      })
+      .catch(() => { if (!cancelled) setAggMap(new Map()); });
     return () => { cancelled = true; };
   }, [reportId]);
 
@@ -513,7 +540,22 @@ export default function Transactions() {
                           {t.same_day_cashout ? <span title="Same-day cashout — withdrawn the day it was received" style={{ marginRight: 4 }}>⚡</span> : null}
                           {formatDateTimeUTC(t.transaction_date)}
                         </td>
-                        <td style={MONO}>{t.beneficiary_account || '—'}</td>
+                        <td style={MONO}>
+                          {t.beneficiary_account || '—'}
+                          {(() => {
+                            const a = aggMap.get(canonAcct(t.beneficiary_account));
+                            if (!a) return null;
+                            return (
+                              <span
+                                className={`agg-mark${a.severity === 'danger' ? ' danger' : ''}`}
+                                title={`Aggregator — collected from ${a.senders} distinct senders`}
+                                aria-label={`Aggregator, ${a.senders} senders`}
+                              >
+                                ⚑{a.senders}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td>{t.beneficiary_name ? <span style={TRUNC_CELL} title={t.beneficiary_name}>{t.beneficiary_name}</span> : '—'}</td>
                         <td>{t.beneficiary_bank ? <span style={TRUNC_CELL} title={t.beneficiary_bank}>{t.beneficiary_bank}</span> : '—'}</td>
                         <td style={MONO}>{t.ifsc_code || '—'}</td>

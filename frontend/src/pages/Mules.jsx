@@ -19,8 +19,11 @@ import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
-import { getMules, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
+import { getMules, getAggregators, getTransactions, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+
+const AGG_TIP = 'Aggregator — an account that received money from many distinct senders '
+  + '(a collection point in the mule ring). Amber at 3–4 senders, red at 5 or more.';
 
 // ─── Score progress bar ──────────────────────────────────────────────────────
 
@@ -61,7 +64,21 @@ function isGrossConduit(m) {
   return traced < LOW_TRACED_MAX && grossFlow >= GROSS_CONDUIT_MIN;
 }
 
-// Risk badge + (when applicable) the gross-conduit warning chip, stacked.
+// Feature 3 — inline aggregator badge (colour + ⚑ icon + sender count), so an
+// officer judges severity from the number rather than an opaque label.
+function AggregatorBadge({ severity, senders }) {
+  if (!severity) return null;
+  return (
+    <span
+      className={`aggregator-flag${severity === 'danger' ? ' danger' : ''}`}
+      title={`Collected from ${formatNumber(senders)} distinct senders — a collection point in the mule ring. ${AGG_TIP}`}
+    >
+      ⚑ Aggregator ·{formatNumber(senders)}
+    </span>
+  );
+}
+
+// Risk badge + (when applicable) the gross-conduit and aggregator flags, stacked.
 function RiskCell({ m }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
@@ -74,6 +91,7 @@ function RiskCell({ m }) {
           ⚠ GROSS CONDUIT · LOW TRACED
         </span>
       )}
+      <AggregatorBadge severity={m.aggregator_severity} senders={m.distinct_senders} />
     </div>
   );
 }
@@ -82,6 +100,8 @@ export default function Mules() {
   const reportId = useActiveReportId();
 
   const [mules, setMules] = useState([]);
+  const [agg, setAgg] = useState({ accounts: [], summary: { count: 0, max_fan_in: 0, median_fan_in: null, total_held: 0 } });
+  const [tab, setTab] = useState('all'); // 'all' | 'aggregators'
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -100,8 +120,12 @@ export default function Mules() {
       return undefined;
     }
 
-    getMules(reportId)
-      .then((rows) => { if (!cancelled) setMules(rows); })
+    Promise.all([getMules(reportId), getAggregators(reportId)])
+      .then(([rows, aggData]) => {
+        if (cancelled) return;
+        setMules(rows);
+        if (aggData && Array.isArray(aggData.accounts)) setAgg(aggData);
+      })
       .catch((e) => { if (!cancelled) setError(e); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
@@ -232,6 +256,33 @@ export default function Mules() {
         </p>
       </header>
 
+      {/* Feature 3 — segmented control: all scored accounts vs the aggregator
+          (collection-point) subset. Not a new route; a tab within this page. */}
+      <div className="seg-tabs" role="tablist" aria-label="Mule accounts view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'all'}
+          className={`seg-tab${tab === 'all' ? ' active' : ''}`}
+          onClick={() => setTab('all')}
+        >
+          All Accounts
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'aggregators'}
+          className={`seg-tab${tab === 'aggregators' ? ' active' : ''}`}
+          onClick={() => setTab('aggregators')}
+        >
+          Aggregators{agg.summary.count > 0 ? ` (${formatNumber(agg.summary.count)})` : ''}
+        </button>
+      </div>
+
+      {tab === 'aggregators' ? (
+        <AggregatorsView agg={agg} reportId={reportId} />
+      ) : (
+      <>
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
         <StatCard title="High Risk" value={riskCounts.HIGH} subtitle="score ≥ 70" icon="🔴" color="var(--risk-high)" />
         <StatCard title="Medium Risk" value={riskCounts.MEDIUM} subtitle="score 40–69" icon="🟠" color="var(--risk-medium)" />
@@ -279,6 +330,88 @@ export default function Mules() {
           </>
         )}
       />
+      </>
+      )}
+    </div>
+  );
+}
+
+// ─── Aggregators tab (Feature 3) ─────────────────────────────────────────────
+
+/**
+ * The aggregator subset: a summary strip (count · max fan-in · median · total
+ * held) over a table sorted by distinct-sender count. Each row expands to the
+ * same lazy transaction history used elsewhere, so the inbound counterparties —
+ * the evidence of aggregation — are one click away with no new mental model.
+ */
+function AggregatorsView({ agg, reportId }) {
+  const rows = agg.accounts || [];
+  const s = agg.summary || {};
+
+  const columns = [
+    { accessorKey: 'account_no', header: 'Account No.' },
+    {
+      accessorKey: 'bank',
+      header: 'Bank',
+      cell: ({ getValue }) => {
+        const v = getValue();
+        return v
+          ? (
+            <span
+              title={v}
+              style={{ display: 'inline-block', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}
+            >
+              {v}
+            </span>
+          ) : '—';
+      },
+    },
+    {
+      accessorKey: 'distinct_senders',
+      header: 'Distinct senders',
+      cell: ({ row }) => (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 700, color: row.original.severity === 'danger' ? 'var(--risk-high)' : 'var(--risk-medium)' }}>
+            {formatNumber(row.original.distinct_senders)}
+          </span>
+          <AggregatorBadge severity={row.original.severity} senders={row.original.distinct_senders} />
+        </span>
+      ),
+    },
+    { accessorKey: 'total_received', header: 'Total received', cell: ({ getValue }) => formatINR(getValue()) },
+    { accessorKey: 'held', header: 'Held', cell: ({ getValue }) => (getValue() == null ? '—' : formatINR(getValue())) },
+    { accessorKey: 'layer_no', header: 'Layer', cell: ({ getValue }) => (getValue() == null ? '—' : `L${getValue()}`) },
+  ];
+
+  return (
+    <>
+      <div className="agg-summary-strip" role="group" aria-label="Aggregator summary">
+        <SummaryStat label="Aggregators" value={formatNumber(s.count || 0)} info={AGG_TIP} />
+        <SummaryStat label="Max fan-in" value={formatNumber(s.max_fan_in || 0)} suffix=" senders" />
+        <SummaryStat label="Median fan-in" value={s.median_fan_in == null ? '—' : formatNumber(s.median_fan_in)} suffix={s.median_fan_in == null ? '' : ' senders'} />
+        <SummaryStat label="Total held" value={formatINR(s.total_held || 0)} />
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={rows}
+        renderExpanded={(a) => <AccountHistory reportId={reportId} account={a.account_no} />}
+        emptyMessage="No aggregator accounts in this trail — no account received money from 3 or more distinct senders."
+        exportFilename="aggregators.csv"
+      />
+    </>
+  );
+}
+
+// Compact metric for the aggregator summary strip (no card chrome).
+function SummaryStat({ label, value, suffix = '', info }) {
+  return (
+    <div className="agg-summary-item">
+      <div className="agg-summary-label">
+        {label}
+        {info && <span className="info-dot" title={info} tabIndex={0} role="img" aria-label={info}>i</span>}
+      </div>
+      <div className="agg-summary-value">{value}<span className="agg-summary-suffix">{suffix}</span></div>
     </div>
   );
 }
