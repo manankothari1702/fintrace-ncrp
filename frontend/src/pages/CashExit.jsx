@@ -190,7 +190,7 @@ export default function CashExit() {
           subtitle={summary.risk_flag_count > 0 ? (flagBreakdown || 'behavioural flags') : 'none detected'}
           icon={summary.risk_flag_count > 0 ? <span style={{ color: 'var(--risk-high)' }}>⚑</span> : undefined}
           color={summary.risk_flag_count > 0 ? 'var(--risk-high)' : 'var(--risk-low)'}
-          info="Behavioural flags across all channels: rapid withdrawals, multi-ATM accounts, and suspicious POS merchants."
+          info="Behavioural flags across all channels: rapid withdrawals, multi-ATM accounts, and suspicious POS merchants. Any flag warrants review; 0 means no suspicious cash-out behaviour was detected."
         />
       </div>
 

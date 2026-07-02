@@ -24,6 +24,29 @@ import { useActiveReportId } from '../context/ReportContext.jsx';
 
 const STATUSES = ['pending', 'applied', 'success', 'rejected'];
 
+// Interpretation copy (Batch 2, Area 1). The recoverable-amount definition prints
+// the ACTUAL lien formula verified in code (see LienBreakdown / buildAccountRollup):
+// lien = min(Received − Forwarded − Cash-out − On Hold, Disputed inflow), floored
+// at 0 — not an assumed formula.
+const ELIGIBLE_TIP = 'Freezable balance still sitting in the mule accounts: '
+  + 'Received − Forwarded − Cash-out − On Hold, capped at each account’s disputed '
+  + 'inflow (never below zero). This is the amount a Section 102 lien can target.';
+// Recovery-rate band reuses Batch 1’s Recovery Rate thresholds as the source of
+// truth (RECOVERY_RATE_AMBER_PCT=25, RECOVERY_RATE_RED_PCT=0 in
+// backend/src/lib/thresholds.js) — same numbers, no new thresholds decided here.
+const RECOVERY_RATE_AMBER_PCT = 25;
+const RECOVERY_TIP = 'Share of the lien-eligible funds actually recovered so far — '
+  + 'lien successes ÷ total eligible. Under 25% needs chasing; 0% means nothing '
+  + 'has been recovered yet.';
+
+/** Recovery-rate colour band, consistent with the Dashboard Recovery Rate card. */
+function recoveryRateColor(ratio) {
+  const pct = (Number(ratio) || 0) * 100;
+  if (pct <= 0) return 'var(--risk-high)';
+  if (pct < RECOVERY_RATE_AMBER_PCT) return 'var(--risk-medium)';
+  return 'var(--risk-low)';
+}
+
 export default function Lien() {
   const reportId = useActiveReportId();
 
@@ -236,10 +259,10 @@ export default function Lien() {
       </header>
 
       <div className="grid grid-stats" style={{ marginBottom: 20 }}>
-        <StatCard title="Total Eligible" value={formatCrore(summary.eligible)} icon="💰" color="var(--accent)" />
+        <StatCard title="Total Eligible" value={formatCrore(summary.eligible)} subtitle="freezable balance" icon="💰" color="var(--accent)" info={ELIGIBLE_TIP} />
         <StatCard title="Lien Applied" value={formatCrore(summary.applied)} icon="📨" color="var(--brand-text)" />
         <StatCard title="Lien Success" value={formatCrore(summary.success)} icon="✅" color="var(--accent)" />
-        <StatCard title="Recovery Rate" value={formatPercent(summary.recoveryRate, 1)} subtitle="success ÷ eligible" icon="📈" color={summary.recoveryRate > 0 ? 'var(--accent)' : 'var(--accent-orange)'} />
+        <StatCard title="Recovery Rate" value={formatPercent(summary.recoveryRate, 1)} subtitle="success ÷ eligible" icon="📈" color={recoveryRateColor(summary.recoveryRate)} info={RECOVERY_TIP} />
       </div>
 
       {saveError && (
