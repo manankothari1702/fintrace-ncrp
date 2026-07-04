@@ -34,7 +34,7 @@ import {
 import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
-import { AccountLink } from '../components/EntityLink.jsx';
+import EntityLink, { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatDate, formatHours } from '../utils/format.js';
 import {
@@ -223,24 +223,38 @@ const PRIORITY_COLORS = {
   P3: 'var(--text-muted)',
 };
 
-// Account numbers inside the P0–P3 roadmap prose become drill-down doorways
+// Identifiers inside the P0–P3 roadmap prose become drill-down doorways
 // ("verify before acting"). ONLY the identifier text is clickable — the rest
 // of the card stays inert so the planned "Go to Lien Tracker →" style action
-// control can later coexist without click-target conflicts. 9–18 digit runs
-// are account numbers in this prose; \b keeps digits inside alphanumeric
-// tokens (ack numbers) and 19+ digit runs from matching.
-const ACCOUNT_TOKEN = /\b\d{9,18}\b/g;
+// control can later coexist without click-target conflicts. Two token shapes:
+//   • "ATM <id>" (the P3 CCTV card) → the atm drill-down;
+//   • bare 9–18 digit runs → account numbers (\b keeps digits inside
+//     alphanumeric tokens like ack numbers, and 19+ digit runs, from matching).
+const IDENTIFIER_TOKEN = /ATM\s+([A-Za-z0-9_-]{4,})|\b\d{9,18}\b/g;
 
 function LinkifyAccounts({ text }) {
   const str = String(text || '');
   const parts = [];
   let last = 0;
   let m;
-  ACCOUNT_TOKEN.lastIndex = 0;
+  IDENTIFIER_TOKEN.lastIndex = 0;
   // eslint-disable-next-line no-cond-assign
-  while ((m = ACCOUNT_TOKEN.exec(str)) !== null) {
+  while ((m = IDENTIFIER_TOKEN.exec(str)) !== null) {
     if (m.index > last) parts.push(str.slice(last, m.index));
-    parts.push(<AccountLink key={m.index} account={m[0]} />);
+    if (m[1]) {
+      parts.push('ATM ');
+      parts.push(
+        <EntityLink
+          key={m.index}
+          type="atm"
+          params={{ id: m[1] }}
+          label={m[1]}
+          title={`Open ATM ${m[1]} details`}
+        />,
+      );
+    } else {
+      parts.push(<AccountLink key={m.index} account={m[0]} />);
+    }
     last = m.index + m[0].length;
   }
   parts.push(str.slice(last));
@@ -1057,7 +1071,11 @@ export default function Dashboard() {
               ) : (
                 (analysis?.cashout_analysis?.atm_cashouts || []).map((a) => (
                   <tr key={a.atm_id}>
-                    <td>{a.atm_id || '—'}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>
+                      {a.atm_id
+                        ? <EntityLink type="atm" params={{ id: a.atm_id }} label={a.atm_id} title={`Open ATM ${a.atm_id} details`} />
+                        : '—'}
+                    </td>
                     <td>{a.atm_location || '—'}</td>
                     <td>{a.state || '—'}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(a.amount)}</td>

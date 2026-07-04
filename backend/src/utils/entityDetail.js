@@ -31,7 +31,7 @@
 
 // Entity types the routes accept. Grows per phase (A: account; B: atm/merchant/
 // flagged; C: layer/edge/bank/timelineDay/transaction).
-const ENTITY_TYPES = Object.freeze(['account']);
+const ENTITY_TYPES = Object.freeze(['account', 'atm', 'merchant', 'cashflag']);
 
 /**
  * Canonical account key — mirrors the analyzer's canonicalAccountKey and the
@@ -204,10 +204,186 @@ function buildAccountDetail(db, report, analysis, params) {
   };
 }
 
+// ─── atm / merchant (exit terminal) ──────────────────────────────────
+
+const TERMINAL_SEARCHABLE = Object.freeze([
+  'account', 'channel', 'location', 'city', 'state', 'atm_id', 'date',
+]);
+
+const CASH_CHANNELS = Object.freeze(['ATM', 'POS', 'AEPS']);
+
+/** Map one cash-exit channel transaction to a terminal-modal detail row. */
+function terminalRow(t, channel) {
+  return {
+    id: t.id,
+    date: t.date ?? null,
+    channel,
+    account: t.account ?? null,
+    amount: numOrNull(t.amount),
+    disputed: numOrNull(t.disputed),
+    atm_id: t.atm_id ?? null,
+    location: t.location ?? null,
+    city: t.city ?? null,
+    state: t.state ?? null,
+    same_day: !!t.same_day,
+  };
+}
+
+/** Chronological sort (undated rows last), stable by ledger id. */
+function byDateThenId(a, b) {
+  if (a.date == null && b.date == null) return (a.id || 0) - (b.id || 0);
+  if (a.date == null) return 1;
+  if (b.date == null) return -1;
+  return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id || 0) - (b.id || 0);
+}
+
+/**
+ * ATM / merchant drill-down: every cash-exit leg at one terminal id, gathered
+ * across ALL channels — the Dashboard's "Top Cashout Locations" spans ATM, POS
+ * and AEPS, while the Cash/Exit tabs split by channel; gathering across
+ * channels makes the modal reconcile with both (verified: per-terminal sums
+ * over channel.transactions equal top_points AND cashout_analysis.atm_cashouts
+ * on both gold cases). The placeholder id "UNKNOWN_ATM" (the cashout table's
+ * bucket for legs with no terminal id) matches blank/absent atm_id rows.
+ *
+ * The rows ARE the analysis snapshot's own channel transaction arrays — the
+ * exact rows the Cash/Exit page renders — so the roll-up chips (sums over
+ * those rows) equal the page's figures by construction.
+ */
+function buildTerminalDetail(db, report, analysis, params, entityType) {
+  const terminalId = String(params.id == null ? '' : params.id).trim();
+  if (terminalId === '') {
+    const err = new Error('Terminal id is required (query param "id").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const isUnknownBucket = terminalId === 'UNKNOWN_ATM';
+  const channels = (analysis && analysis.cash_exit_analysis
+    && analysis.cash_exit_analysis.channels) || {};
+
+  const rows = [];
+  for (const ch of CASH_CHANNELS) {
+    for (const t of (channels[ch] && channels[ch].transactions) || []) {
+      const tid = t.atm_id == null ? '' : String(t.atm_id).trim();
+      const match = isUnknownBucket ? tid === '' : tid === terminalId;
+      if (match) rows.push(terminalRow(t, ch));
+    }
+  }
+  rows.sort(byDateThenId);
+
+  const total = rows.reduce((s, r) => s + (r.amount || 0), 0);
+  const disputed = rows.reduce((s, r) => s + (r.disputed || 0), 0);
+  const accounts = new Set(rows.map((r) => r.account).filter((a) => a != null && a !== ''));
+  const channelsPresent = [...new Set(rows.map((r) => r.channel))];
+  const location = (rows.find((r) => r.location) || {}).location || null;
+  const firstDated = rows.find((r) => r.date != null) || null;
+  const lastDated = [...rows].reverse().find((r) => r.date != null) || null;
+
+  return {
+    entity_type: entityType,
+    entity_id: terminalId,
+    context: {
+      location,
+      channels: channelsPresent,
+      is_unknown_bucket: isUnknownBucket,
+    },
+    summary: {
+      total_amount: Math.round(total * 100) / 100,
+      total_disputed: Math.round(disputed * 100) / 100,
+      txn_count: rows.length,
+      unique_accounts: accounts.size,
+      first_seen: firstDated ? firstDated.date : null,
+      last_seen: lastDated ? lastDated.date : null,
+      row_count: rows.length,
+    },
+    notes: [],
+    rows,
+    searchable: [...TERMINAL_SEARCHABLE],
+  };
+}
+
+// ─── cashflag (behavioural flag card → pre-filtered set) ─────────────
+
+const CASHFLAG_SEARCHABLE = Object.freeze([
+  'account', 'location', 'city', 'state', 'atm_id', 'why', 'date',
+]);
+
+/**
+ * Flag-card drill-down: the cash-exit transactions behind one behavioural
+ * flag (rapid withdrawals / multi-ATM / suspicious merchant), each carrying
+ * its instance's "why flagged" line — the same txn_ids → why mapping the
+ * Cash/Exit page and generateCashExitExcel's view scope already use.
+ */
+function buildCashFlagDetail(db, report, analysis, params) {
+  const channelKey = String(params.channel == null ? '' : params.channel).trim().toUpperCase();
+  const flagKey = String(params.flag == null ? '' : params.flag).trim();
+  if (!CASH_CHANNELS.includes(channelKey)) {
+    const err = new Error(`channel must be one of: ${CASH_CHANNELS.join(', ')}.`);
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  if (flagKey === '') {
+    const err = new Error('flag key is required (query param "flag").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const channel = ((analysis && analysis.cash_exit_analysis
+    && analysis.cash_exit_analysis.channels) || {})[channelKey] || {};
+  const flag = (channel.flags || []).find((f) => f.key === flagKey);
+  if (!flag) {
+    const err = new Error(`Unknown flag "${flagKey}" for channel ${channelKey}.`);
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+
+  const whyById = new Map();
+  for (const inst of flag.instances || []) {
+    for (const id of inst.txn_ids || []) whyById.set(id, inst.why || flag.label);
+  }
+  const rows = (channel.transactions || [])
+    .filter((t) => whyById.has(t.id))
+    .map((t) => ({ ...terminalRow(t, channelKey), why: whyById.get(t.id) }));
+  rows.sort(byDateThenId);
+
+  const instances = flag.instances || [];
+  const accounts = new Set(
+    instances.map((i) => i.account).filter((a) => a != null && a !== '')
+  );
+  const instanceTotal = instances.reduce((s, i) => s + (Number(i.total_amount) || 0), 0);
+  const firstDated = rows.find((r) => r.date != null) || null;
+  const lastDated = [...rows].reverse().find((r) => r.date != null) || null;
+
+  return {
+    entity_type: 'cashflag',
+    entity_id: `${channelKey}:${flagKey}`,
+    context: {
+      channel: channelKey,
+      flag_key: flagKey,
+      flag_label: flag.label || flagKey,
+    },
+    summary: {
+      instance_count: numOrNull(flag.count) ?? instances.length,
+      flagged_txn_count: rows.length,
+      total_amount: Math.round(instanceTotal * 100) / 100,
+      unique_accounts: accounts.size,
+      first_seen: firstDated ? firstDated.date : null,
+      last_seen: lastDated ? lastDated.date : null,
+      row_count: rows.length,
+    },
+    // The per-instance "why" lines double as the modal's notes band.
+    notes: instances.map((i) => i.why).filter(Boolean),
+    rows,
+    searchable: [...CASHFLAG_SEARCHABLE],
+  };
+}
+
 // ─── Dispatch ────────────────────────────────────────────────────────
 
 const BUILDERS = Object.freeze({
   account: buildAccountDetail,
+  atm: (db, report, analysis, params) => buildTerminalDetail(db, report, analysis, params, 'atm'),
+  merchant: (db, report, analysis, params) => buildTerminalDetail(db, report, analysis, params, 'merchant'),
+  cashflag: buildCashFlagDetail,
 });
 
 /**

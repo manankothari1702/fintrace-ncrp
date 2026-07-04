@@ -174,8 +174,163 @@ const accountAdapter = {
   emptyMessage: () => 'No transactions recorded for this account in the uploaded file.',
 };
 
+// ─── atm / merchant (exit terminal) ──────────────────────────────────
+
+/** Columns shared by the terminal and flag-card drills (cash-exit legs). */
+function terminalColumns({ drill }, { withTerminal = false, withWhy = false } = {}) {
+  const cols = [
+    {
+      key: 'date',
+      header: 'Date',
+      render: (r) => (
+        <span style={{ whiteSpace: 'nowrap' }}>
+          {r.same_day && <span title="Withdrawn the same day it was received" style={{ marginRight: 4 }}>⚡</span>}
+          {r.date ? formatDateTimeUTC(r.date) : '—'}
+        </span>
+      ),
+    },
+    { key: 'channel', header: 'Channel' },
+    {
+      key: 'account',
+      header: 'Account',
+      mono: true,
+      render: (r) => (r.account
+        ? (
+          <button
+            type="button"
+            className="entity-link"
+            title={`Open account ${r.account}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              drill({ type: 'account', params: { id: r.account }, label: r.account });
+            }}
+          >
+            {r.account}
+          </button>
+        )
+        : '—'),
+    },
+    { key: 'amount', header: 'Amount', align: 'right', render: (r) => formatINR(r.amount) },
+    { key: 'disputed', header: 'Disputed', align: 'right', render: (r) => formatINR(r.disputed) },
+  ];
+  if (withTerminal) {
+    cols.push({ key: 'atm_id', header: 'ATM/Terminal', mono: true, render: (r) => r.atm_id || '—' });
+  }
+  cols.push(
+    { key: 'location', header: 'Location', render: (r) => trunc(r.location, 170) },
+    { key: 'city', header: 'City', render: (r) => r.city || '—' },
+    { key: 'state', header: 'State', render: (r) => r.state || '—' },
+  );
+  if (withWhy) {
+    cols.push({
+      key: 'why',
+      header: 'Why flagged',
+      render: (r) => <span className="why-flag">{r.why || '—'}</span>,
+    });
+  }
+  return cols;
+}
+
+function terminalSubtitle(d) {
+  const parts = [];
+  const s = d.summary || {};
+  const c = d.context || {};
+  parts.push(`${formatNumber(s.row_count || 0)} cash-exit leg${s.row_count === 1 ? '' : 's'}`);
+  if (c.channels && c.channels.length) parts.push(c.channels.join(' + '));
+  if (c.location) parts.push(c.location);
+  if (s.first_seen) {
+    parts.push(s.last_seen && s.last_seen !== s.first_seen
+      ? `${formatDate(s.first_seen)} – ${formatDate(s.last_seen)}`
+      : formatDate(s.first_seen));
+  }
+  return parts.join(' · ');
+}
+
+const TERMINAL_CHIP_HINTS = {
+  amount: 'Gross legs at this terminal — the same per-terminal figure as the Top ATMs/merchants table and the Dashboard cashout locations.',
+  disputed: 'Traced fraud portion of those legs.',
+};
+
+function makeTerminalAdapter({ icon, amountLabel }) {
+  return {
+    icon,
+    titleMono: true,
+    title: (d) => (d.context && d.context.is_unknown_bucket ? 'No terminal id' : d.entity_id),
+    subtitle: terminalSubtitle,
+    badges: (d) => (d.context && d.context.is_unknown_bucket
+      ? <Badge color="var(--text-muted)" dot={false}>Legs without a terminal id in the source file</Badge>
+      : null),
+    chips: (d) => {
+      const s = d.summary || {};
+      const chips = [];
+      pushChip(chips, amountLabel, s.total_amount, { tone: 'warn', hint: TERMINAL_CHIP_HINTS.amount });
+      pushChip(chips, 'Disputed', s.total_disputed, { tone: 'danger', hint: TERMINAL_CHIP_HINTS.disputed });
+      pushChip(chips, 'Transactions', s.txn_count, { raw: true, value: formatNumber(s.txn_count) });
+      pushChip(chips, 'Unique accounts', s.unique_accounts, { raw: true, value: formatNumber(s.unique_accounts) });
+      return chips;
+    },
+    notes: () => null,
+    columns: (ctx) => terminalColumns(ctx),
+    searchPlaceholder: () => 'Search account, channel, location, city, state…',
+    totals: (visibleRows) => [
+      { label: 'Total (shown)', value: formatINR(visibleRows.reduce((s, r) => s + (r.amount || 0), 0)) },
+      { label: 'Disputed', value: formatINR(visibleRows.reduce((s, r) => s + (r.disputed || 0), 0)) },
+    ],
+    emptyMessage: () => 'No cash-exit legs recorded at this terminal in the uploaded file.',
+  };
+}
+
+// ─── cashflag (behavioural flag card → pre-filtered set) ─────────────
+
+const cashflagAdapter = {
+  icon: '⚑',
+  titleMono: false,
+  title: (d) => (d.context && d.context.flag_label) || d.entity_id,
+  subtitle: (d) => {
+    const s = d.summary || {};
+    const c = d.context || {};
+    const parts = [`${c.channel || ''} channel`.trim()];
+    parts.push(`${formatNumber(s.instance_count || 0)} flagged instance${s.instance_count === 1 ? '' : 's'}`);
+    parts.push(`${formatNumber(s.flagged_txn_count || 0)} transaction${s.flagged_txn_count === 1 ? '' : 's'}`);
+    if (s.first_seen) {
+      parts.push(s.last_seen && s.last_seen !== s.first_seen
+        ? `${formatDate(s.first_seen)} – ${formatDate(s.last_seen)}`
+        : formatDate(s.first_seen));
+    }
+    return parts.join(' · ');
+  },
+  badges: (d) => (d.context && d.context.channel
+    ? <Badge color="var(--risk-high)">{d.context.channel}</Badge>
+    : null),
+  chips: (d) => {
+    const s = d.summary || {};
+    const chips = [];
+    pushChip(chips, 'Instances', s.instance_count, { tone: 'danger', raw: true, value: formatNumber(s.instance_count) });
+    pushChip(chips, 'Flagged txns', s.flagged_txn_count, { raw: true, value: formatNumber(s.flagged_txn_count) });
+    pushChip(chips, 'Total amount', s.total_amount, {
+      tone: 'warn',
+      hint: 'Sum of the flagged instances’ amounts, as computed by the behavioural-flag analysis.',
+    });
+    pushChip(chips, 'Accounts', s.unique_accounts, { raw: true, value: formatNumber(s.unique_accounts) });
+    return chips;
+  },
+  notes: (d) => (Array.isArray(d.notes) && d.notes.length > 0
+    ? { title: 'Why these were flagged', items: d.notes }
+    : null),
+  columns: (ctx) => terminalColumns(ctx, { withTerminal: true, withWhy: true }),
+  searchPlaceholder: () => 'Search account, terminal, location, why flagged…',
+  totals: (visibleRows) => [
+    { label: 'Total (shown)', value: formatINR(visibleRows.reduce((s, r) => s + (r.amount || 0), 0)) },
+    { label: 'Disputed', value: formatINR(visibleRows.reduce((s, r) => s + (r.disputed || 0), 0)) },
+  ],
+  emptyMessage: () => 'No instances of this behavioural flag in the uploaded file.',
+};
+
 // ─── Registry ────────────────────────────────────────────────────────
 
 export const ENTITY_ADAPTERS = {
   account: accountAdapter,
+  atm: makeTerminalAdapter({ icon: '🏧', amountLabel: 'Withdrawn' }),
+  merchant: makeTerminalAdapter({ icon: '🏪', amountLabel: 'Total spend' }),
+  cashflag: cashflagAdapter,
 };

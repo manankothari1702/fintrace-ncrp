@@ -19,11 +19,12 @@ import {
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
-import { AccountLink } from '../components/EntityLink.jsx';
+import EntityLink, { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber, formatDateTimeUTC } from '../utils/format.js';
 import { getCashExit, openCashExitExcel, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useDetailModal } from '../context/DetailModalContext.jsx';
 import { useChartTheme } from '../utils/useChartTheme.js';
 import { useSortableRows } from '../utils/useSortableRows.js';
 
@@ -36,11 +37,11 @@ const FLAG_TIPS = {
 
 export default function CashExit() {
   const reportId = useActiveReportId();
+  const { openDetail } = useDetailModal();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [channel, setChannel] = useState(null);
-  const [activeFlag, setActiveFlag] = useState(null);
   const chart = useChartTheme();
 
   useEffect(() => {
@@ -70,25 +71,14 @@ export default function CashExit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
-  // Switching channel clears any active flag filter.
-  const selectChannel = (ch) => { setChannel(ch); setActiveFlag(null); };
+  const selectChannel = (ch) => setChannel(ch);
 
   const active = channel ? channels[channel] : null;
 
-  // Map txn id → "why flagged" for the currently active flag, and the filtered
-  // transaction set the table renders.
-  const { rows, whyById } = useMemo(() => {
-    if (!active) return { rows: [], whyById: null };
-    if (!activeFlag) return { rows: active.transactions || [], whyById: null };
-    const flag = (active.flags || []).find((f) => f.key === activeFlag);
-    if (!flag) return { rows: active.transactions || [], whyById: null };
-    const why = new Map();
-    for (const inst of flag.instances || []) {
-      for (const id of inst.txn_ids || []) why.set(id, inst.why);
-    }
-    const filtered = (active.transactions || []).filter((t) => why.has(t.id));
-    return { rows: filtered, whyById: why };
-  }, [active, activeFlag]);
+  // Flag drill-downs open the shared DetailModal (pre-filtered to the flagged
+  // instances with a "Why flagged" column) — the page table always shows the
+  // full channel.
+  const rows = useMemo(() => (active ? active.transactions || [] : []), [active]);
 
   // Click-to-sort over the channel's transaction table (default: source order).
   const { sorted: sortedRows, toggle: toggleTxnSort, indicator: txnIndicator } = useSortableRows(rows);
@@ -112,16 +102,15 @@ export default function CashExit() {
   const [exportError, setExportError] = useState(null);
 
   // Both exports produce a real multi-sheet .xlsx from the backend (reusing the
-  // NCRP workbook infra). "view" = the current channel/flag filter (one sheet);
-  // "all" = the full channel breakdown (overview + per-channel + flags + tops).
+  // NCRP workbook infra). "view" = the current channel (one sheet); "all" = the
+  // full channel breakdown. Flagged-set exports live in the flag drill-down
+  // modal's own Export button.
   const runExport = async (scope) => {
     if (!reportId) return;
     setExporting(scope);
     setExportError(null);
     try {
-      const params = scope === 'view'
-        ? { scope: 'view', channel, ...(activeFlag ? { flag: activeFlag } : {}) }
-        : { scope: 'full' };
+      const params = scope === 'view' ? { scope: 'view', channel } : { scope: 'full' };
       await openCashExitExcel(reportId, params);
     } catch (e) {
       // Surface to the officer (not console-only) — the buttons re-enable below.
@@ -259,8 +248,11 @@ export default function CashExit() {
                   <FlagCard
                     key={f.key}
                     flag={f}
-                    active={activeFlag === f.key}
-                    onToggle={() => setActiveFlag((cur) => (cur === f.key ? null : f.key))}
+                    onOpen={() => openDetail({
+                      type: 'cashflag',
+                      params: { channel, flag: f.key },
+                      label: f.label,
+                    })}
                   />
                 ))}
               </div>
@@ -312,7 +304,18 @@ export default function CashExit() {
                         <tbody>
                           {active.top_points.map((p, i) => (
                             <tr key={`${p.terminal || p.location || i}`}>
-                              <td style={{ fontFamily: 'var(--font-mono)' }}>{p.terminal || '—'}</td>
+                              <td style={{ fontFamily: 'var(--font-mono)' }}>
+                                {p.terminal
+                                  ? (
+                                    <EntityLink
+                                      type={isPos ? 'merchant' : 'atm'}
+                                      params={{ id: p.terminal }}
+                                      label={p.terminal}
+                                      title={`Open ${isPos ? 'merchant' : 'ATM'} ${p.terminal} details`}
+                                    />
+                                  )
+                                  : '—'}
+                              </td>
                               <td><span title={p.location || ''} style={{ display: 'inline-block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{p.location || '—'}</span></td>
                               <td style={{ textAlign: 'right' }}>{formatNumber(p.txn_count)}</td>
                               <td style={{ textAlign: 'right' }}>{formatNumber(p.account_count)}</td>
@@ -326,18 +329,14 @@ export default function CashExit() {
                 </div>
               </div>
 
-              {/* Transaction table — filtered to flagged instances when a flag card is active. */}
+              {/* Transaction table — the full channel; flag cards above open the
+                  drill-down modal pre-filtered to their flagged instances. */}
               <div className="card">
                 <div className="cash-exit-table-head">
                   <h3 style={{ fontSize: 15 }}>
-                    {activeFlag
-                      ? <>Flagged {channel} transactions · <span style={{ color: 'var(--risk-high)' }}>{(active.flags.find((f) => f.key === activeFlag) || {}).label}</span></>
-                      : `${channel} transactions`}
+                    {`${channel} transactions`}
                     <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 8 }}>({formatNumber(rows.length)})</span>
                   </h3>
-                  {activeFlag && (
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setActiveFlag(null)}>✕ Clear filter</button>
-                  )}
                 </div>
                 {rows.length === 0 ? (
                   <div className="empty-state" style={{ padding: 24 }}>No transactions to show.</div>
@@ -353,7 +352,6 @@ export default function CashExit() {
                           <th className="th-sort" onClick={() => toggleTxnSort('atm_id')}>{isPos ? 'Terminal / MID' : 'ATM ID'}<span className="sort-ind">{txnIndicator('atm_id')}</span></th>
                           <th className="th-sort" onClick={() => toggleTxnSort('location')}>{isPos ? 'Merchant' : 'Location'}<span className="sort-ind">{txnIndicator('location')}</span></th>
                           <th className="th-sort" onClick={() => toggleTxnSort('city')}>City<span className="sort-ind">{txnIndicator('city')}</span></th>
-                          {whyById && <th>Why flagged</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -366,7 +364,6 @@ export default function CashExit() {
                             <td style={{ fontFamily: 'var(--font-mono)' }}>{t.atm_id || '—'}</td>
                             <td><span title={t.location || ''} style={{ display: 'inline-block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{t.location || '—'}</span></td>
                             <td>{t.city || '—'}</td>
-                            {whyById && <td className="why-flag">{whyById.get(t.id) || '—'}</td>}
                           </tr>
                         ))}
                       </tbody>
@@ -390,29 +387,29 @@ export default function CashExit() {
 // ─── Clickable behavioural flag card (Feature 4/5) ───────────────────────────
 
 /**
- * A flag card doubles as a filter: clicking it filters the transaction table to
- * the flagged instances. Colour + ⚑ icon + count + label (never colour alone);
- * a 0-count card is shown but not clickable.
+ * A flag card is a doorway (drill-down spec §6): clicking it opens the shared
+ * DetailModal pre-filtered to the flagged instances, each row carrying its
+ * "Why flagged" line, with search/sort/export. Colour + ⚑ icon + count + label
+ * (never colour alone); a 0-count card is shown but not clickable.
  */
-function FlagCard({ flag, active, onToggle }) {
+function FlagCard({ flag, onOpen }) {
   const has = flag.count > 0;
   const color = has ? 'var(--risk-high)' : 'var(--text-muted)';
   return (
     <button
       type="button"
-      className={`stat-card flag-card${active ? ' active' : ''}`}
+      className="stat-card flag-card"
       style={{ borderLeftColor: color }}
-      onClick={has ? onToggle : undefined}
+      onClick={has ? onOpen : undefined}
       disabled={!has}
-      aria-pressed={active}
-      title={has ? `${FLAG_TIPS[flag.key] || ''} Click to filter the table to these ${flag.count} instances.` : `No ${flag.label.toLowerCase()} detected. ${FLAG_TIPS[flag.key] || ''}`}
+      title={has ? `${FLAG_TIPS[flag.key] || ''} Click to open these ${flag.count} instances with the reason each was flagged.` : `No ${flag.label.toLowerCase()} detected. ${FLAG_TIPS[flag.key] || ''}`}
     >
       <div className="stat-head">
         <span className="stat-title">{has ? '⚑ ' : ''}{flag.label}</span>
         {has && <span className="stat-icon" aria-hidden="true">▸</span>}
       </div>
       <div className="stat-value" style={{ color }}>{formatNumber(flag.count)}</div>
-      <div className="stat-footer"><span>{has ? (active ? 'filtering table — click to clear' : 'click to filter table') : 'none detected'}</span></div>
+      <div className="stat-footer"><span>{has ? 'click for details & why flagged' : 'none detected'}</span></div>
     </button>
   );
 }

@@ -751,8 +751,25 @@ function generateCashExitExcel(cashExit = {}, opts = {}) {
 // in the <DetailModal> (the route applies the shared entityDetail.filterRows
 // before calling this, so the export always matches the modal's filtered view).
 
+/** Shared cash-exit leg columns (atm / merchant / cashflag rows). */
+const TERMINAL_COLUMNS = [
+  ['Date', (r) => fmtDate(r.date)],
+  ['Channel', (r) => r.channel || ''],
+  ['Account', (r) => r.account || ''],
+  ['Amount [Rs.]', (r) => num(r.amount)],
+  ['Disputed [Rs.]', (r) => num(r.disputed)],
+  ['ATM/Terminal', (r) => r.atm_id || ''],
+  ['Location', (r) => r.location || ''],
+  ['City', (r) => r.city || ''],
+  ['State', (r) => r.state || ''],
+  ['Same-day', (r) => (r.same_day ? 'YES' : '')],
+];
+
 /** Per-entity-type column map: header label ↔ row-field extractor. */
 const ENTITY_SHEET_COLUMNS = {
+  atm: TERMINAL_COLUMNS,
+  merchant: TERMINAL_COLUMNS,
+  cashflag: [...TERMINAL_COLUMNS, ['Why flagged', (r) => r.why || '']],
   account: [
     ['Date', (r) => fmtDate(r.date)],
     ['Direction', (r) => (r.direction === 'in' ? 'IN' : 'OUT')],
@@ -776,6 +793,12 @@ const ENTITY_SHEET_COLUMNS = {
 
 /** Officer-facing labels for the summary sheet's Metric column. */
 const ENTITY_SUMMARY_LABELS = {
+  total_amount: 'Total amount [Rs.]',
+  total_disputed: 'Disputed [Rs.]',
+  txn_count: 'Transactions',
+  unique_accounts: 'Unique accounts',
+  instance_count: 'Flagged instances',
+  flagged_txn_count: 'Flagged transactions',
   total_received: 'Received (gross) [Rs.]',
   disputed_received: 'Traced fraud in [Rs.]',
   onward_forwarded: 'Forwarded [Rs.]',
@@ -785,7 +808,7 @@ const ENTITY_SUMMARY_LABELS = {
   amount_sent: 'Sent (victim outflow) [Rs.]',
   first_seen: 'First seen',
   last_seen: 'Last seen',
-  row_count: 'Ledger rows (raw)',
+  row_count: 'Detail rows',
   duplicate_count: 'Exact duplicates (excluded from totals)',
 };
 

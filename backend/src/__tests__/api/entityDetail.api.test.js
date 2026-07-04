@@ -19,7 +19,7 @@ const XLSX = require('xlsx');
 
 const { initializeDatabase } = require('../../db/schema');
 const { createApp } = require('../../server');
-const { makeTestXlsx, buildStandardRows } = require('../helpers/xlsx');
+const { makeTestXlsx, buildStandardRows, STANDARD_HEADERS } = require('../helpers/xlsx');
 const { filterRows, canonAcct } = require('../../utils/entityDetail');
 
 async function waitForAnalysis(agent, reportId, timeoutMs = 8000) {
@@ -210,5 +210,111 @@ describe('GET /api/ncrp/:id/entity/account/excel', () => {
     const res = await agent.get(`/api/ncrp/${reportId}/entity/account/excel?id=M0003&mode=file`);
     expect(res.status).toBe(200);
     expect(res.body.fileName).toMatch(/^FinTrace-Drilldown-account-.*\.xlsx$/);
+  });
+});
+
+// ─── Phase B: atm / merchant / cashflag ──────────────────────────────
+
+describe('GET /api/ncrp/:id/entity/atm (and merchant)', () => {
+  test('gathers every cash-exit leg at the terminal; chips are sums over those rows', async () => {
+    // buildStandardRows: two ATM legs at ATM1234 (25000 + 20000), one account.
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/atm?id=ATM1234`);
+    expect(res.status).toBe(200);
+    expect(res.body.entity_type).toBe('atm');
+    expect(res.body.rows).toHaveLength(2);
+    expect(res.body.rows.every((r) => r.channel === 'ATM')).toBe(true);
+    expect(res.body.summary.txn_count).toBe(2);
+    expect(res.body.summary.total_amount).toBe(45000);
+    expect(res.body.summary.unique_accounts).toBe(1);
+    // These rows are the cash_exit_analysis channel rows themselves.
+    const report2 = await agent.get(`/api/ncrp/${reportId}`).then((r) => r.body);
+    const chTxns = report2.analysis_json.cash_exit_analysis.channels.ATM.transactions
+      .filter((t) => t.atm_id === 'ATM1234');
+    expect(res.body.rows.map((r) => r.id).sort()).toEqual(chTxns.map((t) => t.id).sort());
+  });
+
+  test('merchant is the same terminal gatherer with entity_type "merchant"', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/merchant?id=ATM1234`);
+    expect(res.status).toBe(200);
+    expect(res.body.entity_type).toBe('merchant');
+    expect(res.body.rows).toHaveLength(2);
+  });
+
+  test('an unknown terminal returns an empty row set (not an error)', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/atm?id=NO_SUCH_TERMINAL`);
+    expect(res.status).toBe(200);
+    expect(res.body.rows).toEqual([]);
+    expect(res.body.summary.total_amount).toBe(0);
+  });
+});
+
+describe('GET /api/ncrp/:id/entity/cashflag', () => {
+  /** Second report whose ATM legs FIRE the rapid-withdrawals flag
+   *  (3 withdrawals by one account within 60 minutes). */
+  let rapidReportId;
+
+  beforeAll(async () => {
+    const base = [
+      'NCRP202699999999', '2024-01-14T00:00:00.000Z',
+      'V0001', 'HDFC Bank',
+      'M0009', 'Axis Bank', 'Mule Nine', 'UTIB0005555',
+    ];
+    const atmLeg = (time, amount, utr) => [
+      ...base, time, amount, 100000, utr, 'ATM', 1,
+      'ATMRAPID', 'Fast Branch', 'Delhi', 'Delhi', 'rapid leg',
+    ];
+    const rows = [
+      [...STANDARD_HEADERS],
+      [...base, '2024-01-15T05:00:00.000Z', 100000, 100000, 'UTRX001', 'IMPS', 1,
+        null, null, 'Mumbai', 'Maharashtra', 'transfer in'],
+      atmLeg('2024-01-15T09:00:00.000Z', 10000, 'UTRX002'),
+      atmLeg('2024-01-15T09:10:00.000Z', 12000, 'UTRX003'),
+      atmLeg('2024-01-15T09:20:00.000Z', 15000, 'UTRX004'),
+    ];
+    const res = await agent.post('/api/ncrp/upload')
+      .attach('ncrpFile', makeTestXlsx(rows), 'rapid_ncrp.xlsx');
+    expect(res.status).toBe(202);
+    rapidReportId = res.body.reportId;
+    await waitForAnalysis(agent, rapidReportId);
+  });
+
+  test('returns the flagged transactions with their instance "why" line', async () => {
+    const res = await agent.get(`/api/ncrp/${rapidReportId}/entity/cashflag?channel=ATM&flag=rapid`);
+    expect(res.status).toBe(200);
+    expect(res.body.entity_type).toBe('cashflag');
+    expect(res.body.context.channel).toBe('ATM');
+    expect(res.body.context.flag_label).toMatch(/rapid/i);
+    expect(res.body.summary.instance_count).toBeGreaterThanOrEqual(1);
+    expect(res.body.rows.length).toBeGreaterThanOrEqual(3);
+    expect(res.body.rows.every((r) => typeof r.why === 'string' && r.why.length > 0)).toBe(true);
+    expect(res.body.notes.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('a defined-but-quiet flag returns an empty row set; bad params are 400s', async () => {
+    const quiet = await agent.get(`/api/ncrp/${reportId}/entity/cashflag?channel=ATM&flag=rapid`);
+    expect(quiet.status).toBe(200);
+    expect(quiet.body.rows).toEqual([]);
+
+    const badChannel = await agent.get(`/api/ncrp/${reportId}/entity/cashflag?channel=WIRE&flag=rapid`);
+    expect(badChannel.status).toBe(400);
+
+    const badFlag = await agent.get(`/api/ncrp/${reportId}/entity/cashflag?channel=ATM&flag=nope`);
+    expect(badFlag.status).toBe(400);
+  });
+
+  test('cashflag excel export carries the Why flagged column', async () => {
+    const res = await agent
+      .get(`/api/ncrp/${rapidReportId}/entity/cashflag/excel?channel=ATM&flag=rapid`)
+      .buffer(true)
+      .parse((r, cb) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(res.status).toBe(200);
+    const wb = XLSX.read(res.body, { type: 'buffer' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets.Rows, { header: 1, blankrows: false });
+    expect(rows[0]).toContain('Why flagged');
+    expect(rows.length).toBeGreaterThanOrEqual(1 + 3);
   });
 });
