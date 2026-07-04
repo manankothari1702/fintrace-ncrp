@@ -22,6 +22,7 @@ import {
 import Sidebar from './components/Sidebar.jsx';
 import LoadingSpinner from './components/LoadingSpinner.jsx';
 import { ReportProvider } from './context/ReportContext.jsx';
+import { DetailModalProvider } from './context/DetailModalContext.jsx';
 
 // Upload is the entry point (`/` redirects here), so it stays in the main
 // chunk — first paint must never wait on a lazy fetch. Every other page is
@@ -91,6 +92,9 @@ export default function App() {
     <ErrorBoundary>
       <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <ReportProvider>
+          {/* Row drill-down modal: one provider so every page (and every nested
+              counterparty inside the modal itself) opens the SAME <DetailModal>. */}
+          <DetailModalProvider>
           <div className="app-shell">
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
             <main className={`app-main${collapsed ? ' is-collapsed' : ''}`}>
@@ -118,6 +122,7 @@ export default function App() {
               </Suspense>
             </main>
           </div>
+          </DetailModalProvider>
         </ReportProvider>
       </HashRouter>
     </ErrorBoundary>

@@ -745,4 +745,94 @@ function generateCashExitExcel(cashExit = {}, opts = {}) {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
-module.exports = { generateReportExcel, generateCashExitExcel };
+// ─── Entity drill-down workbook (Row Drill-Down Modal) ─────────────────────
+//
+// One sheet of summary context + one sheet of the detail rows currently shown
+// in the <DetailModal> (the route applies the shared entityDetail.filterRows
+// before calling this, so the export always matches the modal's filtered view).
+
+/** Per-entity-type column map: header label ↔ row-field extractor. */
+const ENTITY_SHEET_COLUMNS = {
+  account: [
+    ['Date', (r) => fmtDate(r.date)],
+    ['Direction', (r) => (r.direction === 'in' ? 'IN' : 'OUT')],
+    ['Counterparty A/C', (r) => r.counterparty || ''],
+    ['Counterparty Name', (r) => r.counterparty_name || ''],
+    ['Bank', (r) => r.bank || ''],
+    ['IFSC', (r) => r.ifsc || ''],
+    ['Amount [Rs.]', (r) => num(r.amount)],
+    ['Disputed [Rs.]', (r) => num(r.disputed)],
+    ['Mode', (r) => r.mode || ''],
+    ['Layer', (r) => (r.layer == null ? '' : r.layer)],
+    ['UTR', (r) => r.utr || ''],
+    ['ATM/Terminal', (r) => r.atm_id || ''],
+    ['Location', (r) => r.location || ''],
+    ['City', (r) => r.city || ''],
+    ['State', (r) => r.state || ''],
+    ['Same-day', (r) => (r.same_day ? 'YES' : '')],
+    ['Duplicate', (r) => (r.is_duplicate ? 'YES' : '')],
+  ],
+};
+
+/** Officer-facing labels for the summary sheet's Metric column. */
+const ENTITY_SUMMARY_LABELS = {
+  total_received: 'Received (gross) [Rs.]',
+  disputed_received: 'Traced fraud in [Rs.]',
+  onward_forwarded: 'Forwarded [Rs.]',
+  total_cashout: 'Cashed out [Rs.]',
+  total_on_hold: 'On hold [Rs.]',
+  lien_eligible_amount: 'Lien eligible [Rs.]',
+  amount_sent: 'Sent (victim outflow) [Rs.]',
+  first_seen: 'First seen',
+  last_seen: 'Last seen',
+  row_count: 'Ledger rows (raw)',
+  duplicate_count: 'Exact duplicates (excluded from totals)',
+};
+
+/**
+ * Build the .xlsx for one drill-down modal view.
+ *
+ * @param {{ entity_type: string, entity_id: string,
+ *   summary?: Record<string, unknown>, rows?: Array<Record<string, unknown>> }} detail
+ *   Payload from entityDetail.buildEntityDetail, rows ALREADY filtered to the view.
+ * @param {{ caseRef?: string, generatedAt?: string, search?: string|null,
+ *   totalRows?: number }} [opts]
+ * @returns {Buffer}
+ */
+function generateEntityDetailExcel(detail = {}, opts = {}) {
+  const type = detail.entity_type || 'account';
+  const columns = ENTITY_SHEET_COLUMNS[type] || ENTITY_SHEET_COLUMNS.account;
+  const rows = Array.isArray(detail.rows) ? detail.rows : [];
+  const summary = detail.summary || {};
+  const wb = XLSX.utils.book_new();
+
+  const summaryRows = Object.entries(ENTITY_SUMMARY_LABELS)
+    .filter(([key]) => summary[key] !== null && summary[key] !== undefined)
+    .map(([key, label]) => [
+      label,
+      key === 'first_seen' || key === 'last_seen' ? fmtDate(summary[key]) : summary[key],
+    ]);
+
+  const filterNote = opts.search
+    ? [`Filter applied: "${opts.search}" — ${rows.length} of ${num(opts.totalRows ?? rows.length)} rows exported`]
+    : [`All ${rows.length} rows exported (no filter)`];
+
+  addSheet(wb, 'Drill-Down Summary', [
+    [`FinTrace NCRP — Drill-down: ${type} ${detail.entity_id || ''}`],
+    ['Case', opts.caseRef || ''],
+    ['Generated', fmtDate(opts.generatedAt || new Date(0).toISOString())],
+    filterNote,
+    [],
+    ['Metric', 'Value'],
+    ...(summaryRows.length ? summaryRows : [['—', 'No roll-ups computed for this entity']]),
+  ]);
+
+  addSheet(wb, 'Rows', [
+    columns.map(([header]) => header),
+    ...rows.map((r) => columns.map(([, extract]) => extract(r))),
+  ]);
+
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+module.exports = { generateReportExcel, generateCashExitExcel, generateEntityDetailExcel };

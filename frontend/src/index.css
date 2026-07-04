@@ -2428,6 +2428,215 @@ table.data-table tbody td.expanded-cell {
   background: rgba(255, 255, 255, 0.22);
 }
 
+/* ─── Row drill-down modal (shared <DetailModal>) ────────────────────
+   One modal for every entity drill (spec §2): breadcrumb → header →
+   summary chips → toolbar → sortable detail table → footer totals.
+   Styled entirely from the existing tokens; the dark theme falls out of
+   the token overrides with no separate dark block (except where noted). */
+
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100; /* above the Lien toast (50) and popovers (30) */
+  background: rgba(10, 14, 24, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+
+.detail-modal {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  width: min(1140px, 100%);
+  max-height: min(88vh, 940px);
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 20px 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.detail-crumb-current {
+  color: var(--text);
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.detail-modal-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-modal-icon {
+  font-size: 22px;
+  line-height: 1.3;
+}
+
+.detail-modal-title {
+  font-size: 16px;
+  font-weight: 800;
+  margin: 0;
+  word-break: break-all;
+}
+
+.detail-modal-subtitle {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* Summary chips: compact per-entity roll-ups (spec §2 "summary chips"). */
+.detail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-chip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 7px 12px;
+  min-width: 108px;
+}
+
+.detail-chip-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.detail-chip-value {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 1px;
+}
+
+/* Chip tones reuse the theme-lifted risk grammar (AA in both themes). */
+.detail-chip.tone-good .detail-chip-value { color: var(--risk-low); }
+.detail-chip.tone-warn .detail-chip-value { color: var(--risk-medium); }
+.detail-chip.tone-danger .detail-chip-value { color: var(--risk-high); }
+
+/* "Why flagged" notes band (mule suspicion reasons, flag explanations). */
+.detail-notes {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-notes h4 {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+.detail-notes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+}
+
+.detail-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The single scroll container: table headers (already position:sticky in
+   .data-table) pin to its top edge while rows scroll beneath. */
+.detail-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 100px;
+}
+
+.detail-body .data-table tbody tr:focus {
+  outline: 2px solid var(--brand-text);
+  outline-offset: -2px;
+}
+
+.detail-foot {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Direction marker in the account drill: icon + word, never colour alone. */
+.dir-pill {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.dir-pill.dir-in { color: var(--risk-low); }
+.dir-pill.dir-out { color: var(--brand-text); }
+
+/* ─── Entity link (clickable identifier → drill-down modal) ──────────
+   A real <button> reset to read as an accent monospace link. Colour is set
+   EXPLICITLY (buttons don't inherit text colour through the reset — the
+   dark-mode invisible-label gotcha). */
+
+.entity-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-family: var(--font-mono);
+  color: var(--brand-text);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brand-text) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+.entity-link:hover {
+  text-decoration-color: currentColor;
+}
+
+.entity-link:focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* ─── Print stylesheet ───────────────────────────────────────────────
    Optimised for the Lien worksheet and the Draft Emails letters, which
    officers print for the case file. Strips the app chrome (sidebar,
@@ -2455,6 +2664,7 @@ table.data-table tbody td.expanded-cell {
   .col-filter,
   .dropzone,
   .sort-indicator,
+  .detail-overlay,
   [role="status"] {
     display: none !important;
   }

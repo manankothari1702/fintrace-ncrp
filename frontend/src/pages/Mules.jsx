@@ -14,6 +14,7 @@ import { Link } from 'react-router-dom';
 
 import DataTable from '../components/DataTable.jsx';
 import Badge from '../components/Badge.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
@@ -176,7 +177,13 @@ export default function Mules() {
   };
 
   const columns = [
-    { accessorKey: 'account_no', header: 'Account No.' },
+    {
+      accessorKey: 'account_no',
+      header: 'Account No.',
+      // Identifier-as-doorway (drill-down spec §1): the account number opens the
+      // account modal; the rest of the row still click-expands as before.
+      cell: ({ getValue }) => <AccountLink account={getValue()} />,
+    },
     {
       accessorKey: 'bank_name',
       header: 'Bank',
@@ -397,7 +404,13 @@ function AggregatorsView({ agg, reportId }) {
   const s = agg.summary || {};
 
   const columns = [
-    { accessorKey: 'account_no', header: 'Account No.' },
+    {
+      accessorKey: 'account_no',
+      header: 'Account No.',
+      // Identifier-as-doorway (drill-down spec §1): the account number opens the
+      // account modal; the rest of the row still click-expands as before.
+      cell: ({ getValue }) => <AccountLink account={getValue()} />,
+    },
     {
       accessorKey: 'bank',
       header: 'Bank',

@@ -34,6 +34,7 @@ import {
 import StatCard from '../components/StatCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatDate, formatHours } from '../utils/format.js';
 import {
@@ -221,6 +222,30 @@ const PRIORITY_COLORS = {
   P2: 'var(--brand)',
   P3: 'var(--text-muted)',
 };
+
+// Account numbers inside the P0–P3 roadmap prose become drill-down doorways
+// ("verify before acting"). ONLY the identifier text is clickable — the rest
+// of the card stays inert so the planned "Go to Lien Tracker →" style action
+// control can later coexist without click-target conflicts. 9–18 digit runs
+// are account numbers in this prose; \b keeps digits inside alphanumeric
+// tokens (ack numbers) and 19+ digit runs from matching.
+const ACCOUNT_TOKEN = /\b\d{9,18}\b/g;
+
+function LinkifyAccounts({ text }) {
+  const str = String(text || '');
+  const parts = [];
+  let last = 0;
+  let m;
+  ACCOUNT_TOKEN.lastIndex = 0;
+  // eslint-disable-next-line no-cond-assign
+  while ((m = ACCOUNT_TOKEN.exec(str)) !== null) {
+    if (m.index > last) parts.push(str.slice(last, m.index));
+    parts.push(<AccountLink key={m.index} account={m[0]} />);
+    last = m.index + m[0].length;
+  }
+  parts.push(str.slice(last));
+  return <>{parts}</>;
+}
 
 function findingIcon(text) {
   const t = text.toLowerCase();
@@ -971,7 +996,9 @@ export default function Dashboard() {
                 }}>{item.priority}</span>
                 <div>
                   <div style={{ fontWeight: 700 }}>{item.title}</div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>{item.description}</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>
+                    <LinkifyAccounts text={item.description} />
+                  </div>
                 </div>
               </div>
             ))}

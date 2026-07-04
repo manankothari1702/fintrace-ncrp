@@ -17,6 +17,7 @@ import { Link } from 'react-router-dom';
 import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { getDataQuality, getReport, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
@@ -226,8 +227,8 @@ export default function DataQuality() {
                   const meta = flagMeta(r.bank_flag);
                   return (
                     <tr key={r.account_no}>
-                      <td>
-                        {r.account_no}
+                      <td style={{ fontFamily: 'var(--font-mono)' }}>
+                        <AccountLink account={r.account_no} />
                         {r.severity === 'actionable' && r.freeze_target && (
                           <div><Badge color="var(--risk-high)">Freeze target</Badge></div>
                         )}

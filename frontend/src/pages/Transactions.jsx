@@ -16,6 +16,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonLine } from '../components/Skeleton.jsx';
 import { formatINR, formatDateTimeUTC, formatNumber } from '../utils/format.js';
 import { getTransactions, getTransactionFacets, getAggregators, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -597,7 +598,7 @@ export default function Transactions() {
                           {formatDateTimeUTC(t.transaction_date)}
                         </td>
                         <td style={MONO}>
-                          {t.beneficiary_account || '—'}
+                          <AccountLink account={t.beneficiary_account} />
                           {(() => {
                             const a = aggMap.get(canonAcct(t.beneficiary_account));
                             if (!a) return null;

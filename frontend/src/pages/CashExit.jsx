@@ -19,6 +19,7 @@ import {
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber, formatDateTimeUTC } from '../utils/format.js';
 import { getCashExit, openCashExitExcel, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -359,7 +360,7 @@ export default function CashExit() {
                         {sortedRows.map((t) => (
                           <tr key={t.id}>
                             <td style={{ whiteSpace: 'nowrap' }}>{t.date ? formatDateTimeUTC(t.date) : '—'}{t.same_day ? <span title="Withdrawn the same day it was received" style={{ marginLeft: 4 }}>⚡</span> : null}</td>
-                            <td style={{ fontFamily: 'var(--font-mono)' }}>{t.account}</td>
+                            <td style={{ fontFamily: 'var(--font-mono)' }}><AccountLink account={t.account} /></td>
                             <td style={{ textAlign: 'right' }}>{formatINR(t.amount)}</td>
                             <td style={{ textAlign: 'right' }}>{formatINR(t.disputed)}</td>
                             <td style={{ fontFamily: 'var(--font-mono)' }}>{t.atm_id || '—'}</td>

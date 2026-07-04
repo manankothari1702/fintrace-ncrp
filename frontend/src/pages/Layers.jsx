@@ -18,6 +18,7 @@ import {
 
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonLine, SkeletonCards } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getLayers, getMules, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -270,7 +271,7 @@ export default function Layers() {
                         <tbody>
                           {accounts.map((a) => (
                             <tr key={a.account_no}>
-                              <td>{a.account_no}</td>
+                              <td style={{ fontFamily: 'var(--font-mono)' }}><AccountLink account={a.account_no} /></td>
                               <td>{a.bank_name || '—'}</td>
                               <td style={{ textAlign: 'right' }}>{formatINR(a.total_received)}</td>
                               <td style={{ textAlign: 'right', fontWeight: 700, color: getMuleRiskColor(a.mule_score) }}>

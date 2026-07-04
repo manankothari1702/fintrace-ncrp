@@ -17,6 +17,7 @@ import { Link } from 'react-router-dom';
 import StatCard from '../components/StatCard.jsx';
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatDate, formatPercent } from '../utils/format.js';
 import { getLiens, getReport, saveLien, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -326,7 +327,7 @@ export default function Lien() {
                             ▸
                           </button>
                         </td>
-                        <td style={{ fontFamily: 'var(--font-mono)' }}>{l.account_no}</td>
+                        <td style={{ fontFamily: 'var(--font-mono)' }}><AccountLink account={l.account_no} /></td>
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <span

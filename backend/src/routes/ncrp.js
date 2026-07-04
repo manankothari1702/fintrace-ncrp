@@ -54,7 +54,10 @@ const {
 } = require('../db/queries');
 const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
-const { generateReportExcel, generateCashExitExcel } = require('../utils/excelGenerator');
+const {
+  generateReportExcel, generateCashExitExcel, generateEntityDetailExcel,
+} = require('../utils/excelGenerator');
+const { ENTITY_TYPES, buildEntityDetail, filterRows } = require('../utils/entityDetail');
 const { generateDraftEmails, buildEmailArtifacts } = require('../utils/emailGenerator');
 
 // ─── On-disk locations (backend/uploads, backend/exports) ────────────
@@ -1318,6 +1321,109 @@ function createNcrpRouter(db) {
       .sort((a, b) => (b.count - a.count) || (a.mode < b.mode ? -1 : a.mode > b.mode ? 1 : 0));
     const total = modes.reduce((s, m) => s + m.count, 0);
     res.json({ modes, total });
+  });
+
+  // ── Row Drill-Down Modal — entity detail endpoints ──────────────────
+  //
+  // Read-only query/aggregation endpoints behind the shared <DetailModal>.
+  // They ONLY read already-parsed ledger rows and already-computed analysis
+  // roll-ups (see utils/entityDetail.js for the parity contract); they never
+  // introduce a new metric. Entity identifiers travel as QUERY params, not a
+  // path segment, because account numbers / edge pairs may carry characters
+  // that are unsafe or ambiguous in a path (leading zeros, slashes, pairs).
+
+  /** Sanitise the recognised entity-identifier query params for the builders. */
+  function entityParamsFromQuery(q) {
+    return {
+      id: sanitizeStringParam(q.id, 64),
+      from: sanitizeStringParam(q.from, 64),
+      to: sanitizeStringParam(q.to, 64),
+      channel: sanitizeStringParam(q.channel, 16),
+      flag: sanitizeStringParam(q.flag, 32),
+      date: sanitizeStringParam(q.date, 32),
+    };
+  }
+
+  /** Shared validate + build for the two entity routes; null on handled error. */
+  function loadEntityDetail(req, res) {
+    const report = loadReport(req, res);
+    if (!report) return null;
+    const type = String(req.params.type || '');
+    if (!ENTITY_TYPES.includes(type)) {
+      sendError(res, 400, 'VALIDATION_FAILED',
+        `Unknown entity type "${type}". Expected one of: ${ENTITY_TYPES.join(', ')}.`);
+      return null;
+    }
+    try {
+      const analysis = parseAnalysis(report);
+      const detail = buildEntityDetail(db, report, analysis, type, entityParamsFromQuery(req.query));
+      return { report, analysis, detail };
+    } catch (err) {
+      if (err && err.code === 'VALIDATION_FAILED') {
+        sendError(res, 400, 'VALIDATION_FAILED', err.message);
+        return null;
+      }
+      console.error('[ncrp] entity detail failed:', err);
+      sendError(res, 500, 'ENTITY_DETAIL_FAILED', 'Could not load the entity details.');
+      return null;
+    }
+  }
+
+  // GET /api/ncrp/:id/entity/:type — detail payload for one entity
+  // (?id=… for account/atm/…; see entityParamsFromQuery for the identifier keys).
+  router.get('/ncrp/:id/entity/:type', (req, res) => {
+    const loaded = loadEntityDetail(req, res);
+    if (!loaded) return;
+    res.json(loaded.detail);
+  });
+
+  // GET /api/ncrp/:id/entity/:type/excel — export the modal's CURRENT view.
+  // `?search=` re-applies the modal's own filter rule (shared filterRows over
+  // the payload's `searchable` fields), so the workbook holds exactly the rows
+  // shown. Same dual delivery as the other exports (?mode=file for Electron).
+  router.get('/ncrp/:id/entity/:type/excel', (req, res) => {
+    const loaded = loadEntityDetail(req, res);
+    if (!loaded) return;
+    const { report, analysis, detail } = loaded;
+    const fileMode = req.query.mode === 'file';
+    try {
+      const search = sanitizeStringParam(req.query.search, 100);
+      const totalRows = detail.rows.length;
+      const rows = filterRows(detail.rows, detail.searchable, search);
+      const ci = stmt.caseInfo.get(report.id) || {};
+      const buffer = generateEntityDetailExcel({ ...detail, rows }, {
+        caseRef: ci.ack_no || report.original_filename || `report-${report.id}`,
+        generatedAt: analysis && analysis.generated_at,
+        search,
+        totalRows,
+      });
+
+      const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
+      const safeEntity = String(detail.entity_id || detail.entity_type)
+        .replace(/[^\w.-]+/g, '_').slice(0, 40);
+      const fileName = `FinTrace-Drilldown-${detail.entity_type}-${safeEntity}-${safeAck}-${Date.now()}.xlsx`;
+      insertAuditLog(db, {
+        report_id: report.id,
+        action: 'entity_excel.generated',
+        details: { file: fileName, entity_type: detail.entity_type, entity_id: detail.entity_id },
+      });
+
+      if (fileMode) {
+        const outPath = path.join(EXPORTS_DIR, fileName);
+        fs.writeFileSync(outPath, buffer);
+        return res.json({ fileName });
+      }
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(buffer.length));
+      return res.end(buffer);
+    } catch (err) {
+      console.error('[ncrp] entity Excel generation failed:', err);
+      if (!res.headersSent) {
+        return sendError(res, 500, 'EXCEL_GENERATION_FAILED', 'Could not generate the drill-down workbook.');
+      }
+      return undefined;
+    }
   });
 
   // GET /api/ncrp/:id/pdf — generate the dossier and return it.

@@ -16,6 +16,7 @@ import { ResponsiveContainer, Sankey, Tooltip } from 'recharts';
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber } from '../utils/format.js';
 import { getReport, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -364,8 +365,8 @@ export default function MoneyFlow() {
                 <tr><td colSpan={7}><div className="empty-state">No transfer edges detected.</div></td></tr>
               ) : edges.map((e, i) => (
                 <tr key={`${e.source}-${e.destination}-${i}`}>
-                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>{e.source}</td>
-                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>→ {e.destination}</td>
+                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}><AccountLink account={e.source} /></td>
+                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>→ <AccountLink account={e.destination} /></td>
                   <td>{e.banks || '—'}</td>
                   <td>{e.layers || '—'}</td>
                   <td style={{ textAlign: 'right' }}>{formatNumber(e.txn_count)}</td>
@@ -402,7 +403,7 @@ export default function MoneyFlow() {
                 <tr><td colSpan={6}><div className="empty-state">No collector accounts detected.</div></td></tr>
               ) : aggregators.map((a) => (
                 <tr key={a.account_no}>
-                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>{a.account_no}</td>
+                  <td style={{ fontFamily: 'var(--font-mono, monospace)' }}><AccountLink account={a.account_no} /></td>
                   <td>{a.bank || '—'}</td>
                   <td style={{ textAlign: 'right', fontWeight: 700, color: a.in_degree >= 3 ? 'var(--danger)' : 'inherit' }}>{formatNumber(a.in_degree)}</td>
                   <td style={{ textAlign: 'right' }}>{formatNumber(a.out_degree)}</td>
@@ -440,7 +441,13 @@ export default function MoneyFlow() {
                 {cycles.map((c, i) => (
                   <tr key={`${(c.path || []).join('-')}-${i}`}>
                     <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>
-                      {(c.path || []).join(' → ')}{(c.path && c.path.length) ? ` → ${c.path[0]}` : ''}
+                      {(c.path || []).map((acct, pi) => (
+                        <span key={`${acct}-${pi}`}>
+                          {pi > 0 && ' → '}
+                          <AccountLink account={acct} />
+                        </span>
+                      ))}
+                      {(c.path && c.path.length) ? <> → <AccountLink account={c.path[0]} /></> : ''}
                     </td>
                     <td style={{ textAlign: 'right' }}>{formatNumber(c.length)}</td>
                     <td style={{ textAlign: 'right' }}>{formatNumber(c.txns)}</td>
@@ -474,7 +481,7 @@ export default function MoneyFlow() {
               <tbody>
                 {circular.map((c) => (
                   <tr key={c.account_no}>
-                    <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>{c.account_no}</td>
+                    <td style={{ fontFamily: 'var(--font-mono, monospace)' }}><AccountLink account={c.account_no} /></td>
                     <td style={{ textAlign: 'right' }}>{formatNumber(c.txn_count)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatINR(c.amount)}</td>
                   </tr>

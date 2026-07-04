@@ -242,6 +242,50 @@ export const getEmails = (id) => api.get(`/ncrp/${id}/emails`).then((r) => r.dat
 export const updateEmailStatus = (id, emailId, status) =>
   api.post(`/ncrp/${id}/emails/${emailId}`, { status }).then((r) => r.data);
 
+/**
+ * Row Drill-Down Modal — entity detail payload.
+ * @param {number|string} id - Report id.
+ * @param {string} type - 'account' | (later phases: 'atm', 'merchant', …).
+ * @param {Record<string, string|number>} params - Identifier params (e.g. { id: accountNo }).
+ * @returns {Promise<{ entity_type: string, entity_id: string, context: object,
+ *   summary: object, notes: string[], rows: object[], searchable: string[] }>}
+ */
+export const getEntityDetail = (id, type, params = {}) =>
+  api.get(`/ncrp/${id}/entity/${type}`, { params }).then((r) => r.data);
+
+/** Streaming-attachment URL for a drill-down export (browser/dev). */
+export function entityExcelUrl(id, type, params = {}) {
+  const clean = Object.fromEntries(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+  );
+  const q = new URLSearchParams(clean).toString();
+  return `${API_BASE_URL}${API_PREFIX}/ncrp/${id}/entity/${type}/excel${q ? `?${q}` : ''}`;
+}
+
+/**
+ * Export the drill-down modal's CURRENT view as .xlsx. Same dual behaviour as
+ * {@link openReportExcel}: Electron writes via ?mode=file + opens over IPC;
+ * the browser opens the attachment URL. Pass `search` so the workbook holds
+ * exactly the rows the modal is showing.
+ *
+ * @param {number|string} id
+ * @param {string} type
+ * @param {Record<string, string|number>} [params] - Identifier params + { search }.
+ */
+export async function openEntityExcel(id, type, params = {}) {
+  if (isElectron()) {
+    const { fileName } = await api
+      .get(`/ncrp/${id}/entity/${type}/excel`, { params: { ...params, mode: 'file' } })
+      .then((r) => r.data);
+    const res = await window.fintrace.openFile(fileName);
+    if (!res || !res.ok) {
+      throw new ApiError((res && res.error) || 'Could not open the workbook.', { code: 'OPEN_FAILED' });
+    }
+    return;
+  }
+  window.open(entityExcelUrl(id, type, params), '_blank', 'noopener');
+}
+
 /** Daily timeline from the analysis snapshot. */
 export const getTimeline = (id) => api.get(`/ncrp/${id}/timeline`).then((r) => r.data);
 
