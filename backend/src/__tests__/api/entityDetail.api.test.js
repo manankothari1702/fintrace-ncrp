@@ -318,3 +318,84 @@ describe('GET /api/ncrp/:id/entity/cashflag', () => {
     expect(rows.length).toBeGreaterThanOrEqual(1 + 3);
   });
 });
+
+// ─── Phase C: layer / edge / bank / timelineDay / transaction ────────
+
+describe('Phase C entity types', () => {
+  test('layer: accounts at the hop + roll-ups EQUAL layer_analysis', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/layer?id=2`);
+    expect(res.status).toBe(200);
+    const layer = report.analysis_json.layer_analysis.find((l) => l.layer_no === 2);
+    const mulesAtLayer = report.analysis_json.mule_detection.filter((m) => m.layer_no === 2);
+    expect(res.body.rows).toHaveLength(mulesAtLayer.length);
+    expect(res.body.rows.map((r) => r.account_no).sort())
+      .toEqual(mulesAtLayer.map((m) => m.account_no).sort());
+    expect(res.body.summary.total_amount).toBe(layer.total_amount);
+    expect(res.body.summary.account_count).toBe(layer.account_count);
+
+    const bad = await agent.get(`/api/ncrp/${reportId}/entity/layer?id=notanumber`);
+    expect(bad.status).toBe(400);
+  });
+
+  test('edge: deduped HOP legs only; rows SUM to the top_edges figure', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/edge?from=M0002&to=M0003`);
+    expect(res.status).toBe(200);
+    // M0002→M0003: the L3 transfer ONLY — the two ATM legs naming the same
+    // pair are EXIT dispositions and are not part of the money-flow edge.
+    expect(res.body.rows).toHaveLength(1);
+    const edge = report.analysis_json.money_flow_network.top_edges
+      .find((e) => e.source === 'M0002' && e.destination === 'M0003');
+    expect(edge).toBeTruthy();
+    expect(res.body.summary.txn_count).toBe(edge.txn_count);
+    expect(res.body.summary.total_amount).toBe(edge.amount);
+    // The rows must SUM to the edge figure (same computation basis).
+    const sum = res.body.rows.reduce((s, r) => s + r.amount, 0);
+    expect(sum).toBe(edge.amount);
+
+    const bad = await agent.get(`/api/ncrp/${reportId}/entity/edge?from=M0002`);
+    expect(bad.status).toBe(400);
+  });
+
+  test('bank: raw legs at the bank match the transactions ?bank= filter', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/bank?id=Axis Bank`);
+    expect(res.status).toBe(200);
+    const txns = await agent.get(`/api/ncrp/${reportId}/transactions?bank=${encodeURIComponent('Axis Bank')}&limit=500`);
+    expect(res.body.rows).toHaveLength(txns.body.total);
+    expect(res.body.summary.unique_accounts).toBe(
+      new Set(txns.body.data.map((t) => t.beneficiary_account)).size,
+    );
+  });
+
+  test('timelineDay: deduped rows on the day; roll-ups equal the timeline entry', async () => {
+    const day = report.analysis_json.timeline[0].date;
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/timelineDay?date=${day}`);
+    expect(res.status).toBe(200);
+    const entry = report.analysis_json.timeline[0];
+    expect(res.body.summary.txn_count).toBe(entry.transaction_count);
+    expect(res.body.summary.total_amount).toBe(entry.total_amount);
+    expect(res.body.rows).toHaveLength(entry.transaction_count);
+    const sum = res.body.rows.reduce((s, r) => s + r.amount, 0);
+    expect(sum).toBe(entry.total_amount);
+
+    const bad = await agent.get(`/api/ncrp/${reportId}/entity/timelineDay?date=15-01-2024`);
+    expect(bad.status).toBe(400);
+  });
+
+  test('transaction: every stored field of one row as Field/Value pairs', async () => {
+    const txns = await agent.get(`/api/ncrp/${reportId}/transactions?limit=1`);
+    const txn = txns.body.data[0];
+    const res = await agent.get(`/api/ncrp/${reportId}/entity/transaction?id=${txn.id}`);
+    expect(res.status).toBe(200);
+    const byField = Object.fromEntries(res.body.rows.map((r) => [r.id, r.value]));
+    expect(byField.beneficiary_account).toBe(txn.beneficiary_account);
+    expect(byField.transaction_amount).toBe(txn.transaction_amount);
+    expect(byField.victim_account).toBe(txn.victim_account);
+    // Raw values — exact paise preserved, no formatting server-side.
+    expect(typeof byField.transaction_amount).toBe('number');
+    // Report-level provenance is attached when the report carries a hash.
+    if (report.source_sha256) expect(byField.source_sha256).toBe(report.source_sha256);
+
+    const missing = await agent.get(`/api/ncrp/${reportId}/entity/transaction?id=99999999`);
+    expect(missing.status).toBe(400);
+  });
+});

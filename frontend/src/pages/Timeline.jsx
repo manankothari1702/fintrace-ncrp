@@ -27,6 +27,7 @@ import {
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
+import EntityLink from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatDate, formatNumber } from '../utils/format.js';
 import { getReport, getTimeline, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -270,7 +271,15 @@ export default function Timeline() {
             <tbody>
               {timeline.map((d) => (
                 <tr key={d.date}>
-                  <td>{formatDate(d.date)}</td>
+                  <td>
+                    <EntityLink
+                      type="timelineDay"
+                      params={{ date: d.date }}
+                      label={formatDate(d.date)}
+                      mono={false}
+                      title={`Open all ${formatNumber(d.transaction_count)} transaction(s) on ${formatDate(d.date)}`}
+                    />
+                  </td>
                   <td style={{ textAlign: 'right' }}>{formatNumber(d.transaction_count)}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatINR(d.total_amount)}</td>
                   <td>{Object.keys(d.layer_breakdown || {}).map((l) => `L${l}`).join(', ') || '—'}</td>

@@ -2637,6 +2637,37 @@ table.data-table tbody td.expanded-cell {
   border-radius: 2px;
 }
 
+/* Prose-label variant (dates, "Layer 2"): same link affordance, app font. */
+.entity-link.entity-link-plain {
+  font-family: var(--font);
+}
+
+/* Bank chip as a doorway: keeps the .badge look but is a real <button>
+   (font/cursor don't come through the reset on buttons). */
+.bank-chip-btn {
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+
+.bank-chip-btn:hover {
+  filter: brightness(1.12);
+  text-decoration: underline;
+}
+
+.bank-chip-btn:focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 2px;
+}
+
+/* Popover bank names double as bank drill links; keep the list ellipsis. */
+.bank-more-list .bank-more-name {
+  font-family: inherit;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* ─── Print stylesheet ───────────────────────────────────────────────
    Optimised for the Lien worksheet and the Draft Emails letters, which
    officers print for the case file. Strips the app chrome (sidebar,

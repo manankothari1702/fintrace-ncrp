@@ -16,7 +16,7 @@ import { ResponsiveContainer, Sankey, Tooltip } from 'recharts';
 
 import StatCard from '../components/StatCard.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
-import { AccountLink } from '../components/EntityLink.jsx';
+import EntityLink, { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonStats, SkeletonTable } from '../components/Skeleton.jsx';
 import { formatINR, formatCrore, formatNumber } from '../utils/format.js';
 import { getReport, friendlyErrorMessage, ApiError } from '../utils/api.js';
@@ -369,7 +369,14 @@ export default function MoneyFlow() {
                   <td style={{ fontFamily: 'var(--font-mono, monospace)' }}>→ <AccountLink account={e.destination} /></td>
                   <td>{e.banks || '—'}</td>
                   <td>{e.layers || '—'}</td>
-                  <td style={{ textAlign: 'right' }}>{formatNumber(e.txn_count)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <EntityLink
+                      type="edge"
+                      params={{ from: e.source, to: e.destination }}
+                      label={formatNumber(e.txn_count)}
+                      title={`Open the ${formatNumber(e.txn_count)} transaction(s) behind ${e.source} → ${e.destination}`}
+                    />
+                  </td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatINR(e.amount)}</td>
                   <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatINR(e.disputed)}</td>
                 </tr>

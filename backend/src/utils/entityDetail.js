@@ -29,9 +29,19 @@
  * @module backend/src/utils/entityDetail
  */
 
-// Entity types the routes accept. Grows per phase (A: account; B: atm/merchant/
-// flagged; C: layer/edge/bank/timelineDay/transaction).
-const ENTITY_TYPES = Object.freeze(['account', 'atm', 'merchant', 'cashflag']);
+// The analyzer's own row-kind classifier (HOP vs EXIT/HOLD/OTHER disposition).
+// Reused — same precedent as the payment-modes endpoint reusing dedupeRows —
+// so the edge drill counts exactly the rows the money-flow network counted,
+// rather than re-deriving the hop predicate in a second place.
+const { _internals: analyzerInternals } = require('../analyzers/analyzer');
+const { classifyRowKind, ROW_KIND } = analyzerInternals;
+
+// Entity types the routes accept (A: account; B: atm/merchant/cashflag;
+// C: layer/edge/bank/timelineDay/transaction).
+const ENTITY_TYPES = Object.freeze([
+  'account', 'atm', 'merchant', 'cashflag',
+  'layer', 'edge', 'bank', 'timelineDay', 'transaction',
+]);
 
 /**
  * Canonical account key — mirrors the analyzer's canonicalAccountKey and the
@@ -377,6 +387,375 @@ function buildCashFlagDetail(db, report, analysis, params) {
   };
 }
 
+// ─── layer ───────────────────────────────────────────────────────────
+
+const LAYER_SEARCHABLE = Object.freeze(['account_no', 'bank_name', 'risk_label']);
+
+/**
+ * Layer drill-down: the scored accounts at one hop (the same mule_detection
+ * subset the Layers page lists under each layer card, highest score first),
+ * with the layer's own aggregates from layer_analysis as the roll-ups.
+ */
+function buildLayerDetail(db, report, analysis, params) {
+  const raw = String(params.id == null ? '' : params.id).trim();
+  if (!/^\d{1,2}$/.test(raw)) {
+    const err = new Error('Layer id must be an integer 0–50 (query param "id").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const layerNo = Number(raw);
+  const a = analysis || {};
+  const layer = (Array.isArray(a.layer_analysis) ? a.layer_analysis : [])
+    .find((l) => l.layer_no === layerNo) || null;
+
+  const rows = (Array.isArray(a.mule_detection) ? a.mule_detection : [])
+    .filter((m) => m.layer_no === layerNo)
+    .map((m) => ({
+      id: m.account_no,
+      account_no: m.account_no,
+      bank_name: m.bank_name ?? null,
+      total_received: numOrNull(m.total_received),
+      disputed_received: numOrNull(m.disputed_received),
+      total_cashout: numOrNull(m.total_cashout),
+      mule_score: numOrNull(m.mule_score),
+      risk_label: m.risk_label ?? null,
+      txn_count: numOrNull(m.txn_count),
+    }))
+    .sort((x, y) => (y.mule_score || 0) - (x.mule_score || 0));
+
+  // The hop's account_count can exceed the scored list: an account is scored
+  // once, under the layer of its FIRST traced appearance, while the hop count
+  // counts every distinct account the hop touches (verified on gold …145:
+  // hop-3 touches 4 accounts, one of which is scored under layer 2).
+  const notes = [];
+  const layerAccountCount = layer ? numOrNull(layer.account_count) : null;
+  if (layerAccountCount != null && rows.length !== layerAccountCount) {
+    notes.push(
+      `${rows.length} scored account(s) are attributed to this layer; the hop touches `
+      + `${layerAccountCount} distinct account(s) in total — accounts first traced at an `
+      + 'earlier layer are listed under that layer.'
+    );
+  }
+
+  return {
+    entity_type: 'layer',
+    entity_id: String(layerNo),
+    context: {
+      layer_no: layerNo,
+      fan_out_ratio: layer ? numOrNull(layer.fan_out_ratio) : null,
+      fan_out_high: layer ? !!layer.fan_out_high : false,
+      avg_forward_time_hours: layer ? numOrNull(layer.avg_forward_time_hours) : null,
+    },
+    summary: {
+      txn_count: layer ? numOrNull(layer.txn_count) : null,
+      account_count: layer ? numOrNull(layer.account_count) : null,
+      bank_count: layer ? numOrNull(layer.bank_count ?? layer.unique_banks) : null,
+      total_amount: layer ? numOrNull(layer.total_amount) : null,
+      total_disputed: layer ? numOrNull(layer.disputed_amount) : null,
+      cashout_count: layer ? numOrNull(layer.cashout_count) : null,
+      row_count: rows.length,
+    },
+    notes,
+    rows,
+    searchable: [...LAYER_SEARCHABLE],
+  };
+}
+
+// ─── edge (sender → receiver) ────────────────────────────────────────
+
+const EDGE_SEARCHABLE = Object.freeze([
+  'bank', 'ifsc', 'utr', 'mode', 'location', 'city', 'state', 'date',
+]);
+
+/**
+ * Edge drill-down: the transactions that make up one sender→receiver edge.
+ * Two-part basis, both the analyzer's own: DEDUPLICATED (is_duplicate = 0)
+ * AND HOP rows only (classifyRowKind — the money-flow network is built over
+ * fund movements between distinct accounts; ATM/POS/HOLD dispositions that
+ * happen to name the same pair are NOT part of the edge). Only these rows sum
+ * to the edge's gross/disputed figures on the Money Flow page. Roll-ups are
+ * read from the top_edges entry when the edge is in the displayed top-10;
+ * otherwise they are the sums over the same rows (identical basis by
+ * construction).
+ */
+function buildEdgeDetail(db, report, analysis, params) {
+  const from = String(params.from == null ? '' : params.from).trim();
+  const to = String(params.to == null ? '' : params.to).trim();
+  if (from === '' || to === '') {
+    const err = new Error('Edge requires "from" and "to" account query params.');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const canonFrom = canonAcct(from);
+  const canonTo = canonAcct(to);
+
+  const all = db.prepare(
+    'SELECT * FROM ncrp_transactions WHERE report_id = ? AND is_duplicate = 0 ORDER BY transaction_date ASC, id ASC'
+  ).all(report.id);
+  const rows = all
+    .filter((t) => classifyRowKind(t) === ROW_KIND.HOP
+      && canonAcct(t.victim_account) === canonFrom
+      && canonAcct(t.beneficiary_account) === canonTo)
+    .map((t) => ({
+      id: t.id,
+      date: t.transaction_date,
+      amount: numOrNull(t.transaction_amount),
+      disputed: numOrNull(t.disputed_amount),
+      mode: t.payment_mode ?? null,
+      layer: t.layer_no ?? null,
+      utr: t.utr_no ?? null,
+      bank: t.beneficiary_bank ?? null,
+      ifsc: t.ifsc_code ?? null,
+      atm_id: t.atm_id ?? null,
+      location: t.atm_location ?? null,
+      city: t.city ?? null,
+      state: t.state ?? null,
+      same_day: !!t.same_day_cashout,
+    }));
+
+  const net = (analysis && analysis.money_flow_network) || {};
+  const edge = (net.top_edges || []).find(
+    (e) => canonAcct(e.source) === canonFrom && canonAcct(e.destination) === canonTo
+  ) || null;
+  const sum = rows.reduce((s, r) => s + (r.amount || 0), 0);
+  const disputedSum = rows.reduce((s, r) => s + (r.disputed || 0), 0);
+  const firstDated = rows.find((r) => r.date != null) || null;
+  const lastDated = [...rows].reverse().find((r) => r.date != null) || null;
+
+  return {
+    entity_type: 'edge',
+    entity_id: `${from} → ${to}`,
+    context: {
+      from,
+      to,
+      layers: edge ? edge.layers : [...new Set(rows.map((r) => r.layer).filter((l) => l != null))].join(', '),
+      banks: edge ? edge.banks : null,
+    },
+    summary: {
+      txn_count: edge ? numOrNull(edge.txn_count) : rows.length,
+      total_amount: edge ? numOrNull(edge.amount) : Math.round(sum * 100) / 100,
+      total_disputed: edge ? numOrNull(edge.disputed) : Math.round(disputedSum * 100) / 100,
+      first_seen: firstDated ? firstDated.date : null,
+      last_seen: lastDated ? lastDated.date : null,
+      row_count: rows.length,
+    },
+    notes: [],
+    rows,
+    searchable: [...EDGE_SEARCHABLE],
+  };
+}
+
+// ─── bank ────────────────────────────────────────────────────────────
+
+const BANK_SEARCHABLE = Object.freeze([
+  'account', 'name', 'ifsc', 'utr', 'mode', 'city', 'state', 'date',
+]);
+
+/**
+ * Bank drill-down: every RAW ledger leg whose beneficiary sits at that bank —
+ * exactly what the Transactions page shows when filtered by the same bank
+ * (its ?bank= filter matches beneficiary_bank verbatim), duplicates kept and
+ * ⧉-flagged. Roll-ups are facet-style counts of the same rows (row count,
+ * distinct accounts, layers touched) — no per-bank money figure exists in the
+ * analysis, so none is invented; the modal footer sums the visible rows.
+ */
+function buildBankDetail(db, report, analysis, params) {
+  const bankName = String(params.id == null ? '' : params.id).trim();
+  if (bankName === '') {
+    const err = new Error('Bank name is required (query param "id").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const legs = db.prepare(`
+    SELECT * FROM ncrp_transactions
+     WHERE report_id = ? AND beneficiary_bank = ?
+     ORDER BY transaction_date ASC, id ASC
+  `).all(report.id, bankName);
+  const rows = legs.map((t) => ({
+    id: t.id,
+    date: t.transaction_date,
+    account: t.beneficiary_account ?? null,
+    name: t.beneficiary_name ?? null,
+    ifsc: t.ifsc_code ?? null,
+    amount: numOrNull(t.transaction_amount),
+    disputed: numOrNull(t.disputed_amount),
+    mode: t.payment_mode ?? null,
+    layer: t.layer_no ?? null,
+    utr: t.utr_no ?? null,
+    city: t.city ?? null,
+    state: t.state ?? null,
+    same_day: !!t.same_day_cashout,
+    is_duplicate: !!t.is_duplicate,
+  }));
+
+  const accounts = new Set(rows.map((r) => r.account).filter((a) => a != null && a !== ''));
+  const layers = [...new Set(rows.map((r) => r.layer).filter((l) => l != null))].sort((a, b) => a - b);
+  const firstDated = rows.find((r) => r.date != null) || null;
+  const lastDated = [...rows].reverse().find((r) => r.date != null) || null;
+
+  return {
+    entity_type: 'bank',
+    entity_id: bankName,
+    context: {
+      layers_touched: layers,
+    },
+    summary: {
+      row_count: rows.length,
+      unique_accounts: accounts.size,
+      layer_count: layers.length,
+      duplicate_count: rows.reduce((s, r) => s + (r.is_duplicate ? 1 : 0), 0),
+      first_seen: firstDated ? firstDated.date : null,
+      last_seen: lastDated ? lastDated.date : null,
+    },
+    notes: [],
+    rows,
+    searchable: [...BANK_SEARCHABLE],
+  };
+}
+
+// ─── timelineDay ─────────────────────────────────────────────────────
+
+const TIMELINE_DAY_SEARCHABLE = Object.freeze([
+  'from_account', 'to_account', 'bank', 'ifsc', 'utr', 'mode', 'date',
+]);
+
+/**
+ * Timeline-day drill-down: the transactions on one calendar day (UTC day of
+ * the stored instant — the analyzer's own bucketing). DEDUPLICATED basis
+ * (is_duplicate = 0): verified against both gold cases, the timeline's
+ * per-day count/amount equal the deduped rows exactly. Roll-ups read from
+ * the analysis timeline entry itself.
+ */
+function buildTimelineDayDetail(db, report, analysis, params) {
+  const day = String(params.date == null ? '' : params.date).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    const err = new Error('date must be YYYY-MM-DD (query param "date").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const legs = db.prepare(`
+    SELECT * FROM ncrp_transactions
+     WHERE report_id = ? AND is_duplicate = 0 AND substr(transaction_date, 1, 10) = ?
+     ORDER BY transaction_date ASC, id ASC
+  `).all(report.id, day);
+  const rows = legs.map((t) => ({
+    id: t.id,
+    date: t.transaction_date,
+    from_account: t.victim_account ?? null,
+    to_account: t.beneficiary_account ?? null,
+    bank: t.beneficiary_bank ?? null,
+    ifsc: t.ifsc_code ?? null,
+    amount: numOrNull(t.transaction_amount),
+    disputed: numOrNull(t.disputed_amount),
+    mode: t.payment_mode ?? null,
+    layer: t.layer_no ?? null,
+    utr: t.utr_no ?? null,
+    same_day: !!t.same_day_cashout,
+  }));
+
+  const entry = ((analysis && analysis.timeline) || []).find((d) => d.date === day) || null;
+
+  return {
+    entity_type: 'timelineDay',
+    entity_id: day,
+    context: {
+      layers_active: entry ? Object.keys(entry.layer_breakdown || {}) : [],
+    },
+    summary: {
+      txn_count: entry ? numOrNull(entry.transaction_count) : rows.length,
+      total_amount: entry ? numOrNull(entry.total_amount) : null,
+      cashout_count: entry ? numOrNull(entry.cashouts) : null,
+      row_count: rows.length,
+    },
+    notes: [],
+    rows,
+    searchable: [...TIMELINE_DAY_SEARCHABLE],
+  };
+}
+
+// ─── transaction (single ledger row, fully expanded) ─────────────────
+
+const TRANSACTION_SEARCHABLE = Object.freeze(['field', 'value']);
+
+/** Field order + labels + render kinds for the single-transaction view. */
+const TXN_FIELDS = Object.freeze([
+  ['ack_no', 'Acknowledgement No', 'text'],
+  ['complaint_date', 'Complaint Date', 'date'],
+  ['transaction_date', 'Transaction Date', 'date'],
+  ['victim_account', 'Victim / Sender Account', 'account'],
+  ['victim_bank', 'Victim Bank', 'text'],
+  ['beneficiary_account', 'Beneficiary Account', 'account'],
+  ['beneficiary_name', 'Beneficiary Name', 'text'],
+  ['beneficiary_bank', 'Beneficiary Bank (IFSC-resolved)', 'text'],
+  ['raw_beneficiary_bank', 'Beneficiary Bank (source text)', 'text'],
+  ['bank_source', 'Bank Attribution Source', 'text'],
+  ['bank_flag', 'Bank Attribution Flag', 'text'],
+  ['ifsc_code', 'IFSC', 'text'],
+  ['transaction_amount', 'Transaction Amount', 'money'],
+  ['disputed_amount', 'Disputed Amount', 'money'],
+  ['utr_no', 'UTR / Reference No', 'text'],
+  ['payment_mode', 'Payment Mode', 'text'],
+  ['layer_no', 'Layer', 'text'],
+  ['atm_id', 'ATM / Terminal Id', 'text'],
+  ['atm_location', 'ATM / Terminal Location', 'text'],
+  ['city', 'City', 'text'],
+  ['state', 'State', 'text'],
+  ['same_day_cashout', 'Same-day Cashout', 'bool'],
+  ['cashout_mode', 'Cashout Mode', 'text'],
+  ['is_duplicate', 'Exact Duplicate (excluded from totals)', 'bool'],
+  ['remarks', 'Remarks', 'text'],
+]);
+
+/**
+ * Single-transaction drill-down: every stored field of one ledger row as
+ * Field/Value pairs (raw values — exact paise preserved), plus report-level
+ * provenance (source file SHA-256). No roll-up chips (spec §5).
+ */
+function buildTransactionDetail(db, report, analysis, params) {
+  const raw = String(params.id == null ? '' : params.id).trim();
+  if (!/^\d+$/.test(raw)) {
+    const err = new Error('Transaction id must be a positive integer (query param "id").');
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+  const txn = db.prepare(
+    'SELECT * FROM ncrp_transactions WHERE report_id = ? AND id = ? LIMIT 1'
+  ).get(report.id, Number(raw));
+  if (!txn) {
+    const err = new Error(`No transaction ${raw} in this report.`);
+    err.code = 'VALIDATION_FAILED';
+    throw err;
+  }
+
+  const rows = TXN_FIELDS
+    .map(([key, label, kind]) => ({
+      id: key,
+      field: label,
+      value: txn[key] ?? null,
+      kind,
+    }))
+    .filter((r) => r.value !== null && r.value !== '');
+  // Report-level provenance (there is no per-row sheet column; the source-file
+  // hash is the evidentiary anchor for every row of this report).
+  if (report.source_sha256) {
+    rows.push({ id: 'source_sha256', field: 'Source File SHA-256', value: report.source_sha256, kind: 'text' });
+  }
+
+  return {
+    entity_type: 'transaction',
+    entity_id: raw,
+    context: {
+      payment_mode: txn.payment_mode ?? null,
+      layer_no: txn.layer_no ?? null,
+      is_duplicate: !!txn.is_duplicate,
+    },
+    summary: { row_count: rows.length },
+    notes: [],
+    rows,
+    searchable: [...TRANSACTION_SEARCHABLE],
+  };
+}
+
 // ─── Dispatch ────────────────────────────────────────────────────────
 
 const BUILDERS = Object.freeze({
@@ -384,6 +763,11 @@ const BUILDERS = Object.freeze({
   atm: (db, report, analysis, params) => buildTerminalDetail(db, report, analysis, params, 'atm'),
   merchant: (db, report, analysis, params) => buildTerminalDetail(db, report, analysis, params, 'merchant'),
   cashflag: buildCashFlagDetail,
+  layer: buildLayerDetail,
+  edge: buildEdgeDetail,
+  bank: buildBankDetail,
+  timelineDay: buildTimelineDayDetail,
+  transaction: buildTransactionDetail,
 });
 
 /**

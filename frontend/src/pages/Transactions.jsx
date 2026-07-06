@@ -28,6 +28,7 @@ function canonAcct(v) {
   return /^\d+$/.test(s) ? s.replace(/^0+(?=\d)/, '') : s;
 }
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useDetailModal } from '../context/DetailModalContext.jsx';
 
 const PAGE_SIZES = [100, 250, 500];
 const PAYMENT_MODES = ['UPI', 'IMPS', 'NEFT', 'RTGS', 'ATM', 'POS', 'AEPS', 'HOLD'];
@@ -124,6 +125,7 @@ function serverParams(filters) {
 export default function Transactions() {
   const [searchParams, setSearchParams] = useSearchParams();
   const reportId = useActiveReportId();
+  const { openDetail } = useDetailModal();
 
   const [filters, setFilters] = useState(() => filtersFromParams(searchParams));
   const [searchText, setSearchText] = useState(() => searchParams.get('search') || '');
@@ -584,7 +586,18 @@ export default function Transactions() {
                     if (isCashout) rowStyle.background = 'color-mix(in srgb, var(--danger) 8%, transparent)';
                     else if (isDuplicate) rowStyle.background = 'color-mix(in srgb, var(--text-muted) 12%, transparent)';
                     return (
-                      <tr key={t.id} style={rowStyle}>
+                      <tr
+                        key={t.id}
+                        style={{ ...rowStyle, cursor: 'pointer' }}
+                        tabIndex={0}
+                        title="Open this transaction's full detail (Enter or click)"
+                        onClick={() => openDetail({ type: 'transaction', params: { id: t.id }, label: `Txn #${t.id}` })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && e.target === e.currentTarget) {
+                            openDetail({ type: 'transaction', params: { id: t.id }, label: `Txn #${t.id}` });
+                          }
+                        }}
+                      >
                         <td style={{ whiteSpace: 'nowrap', borderLeft: isDuplicate ? '3px solid var(--accent-orange)' : undefined }}>
                           {isDuplicate ? (
                             <span

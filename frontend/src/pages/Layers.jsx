@@ -18,11 +18,12 @@ import {
 
 import Badge from '../components/Badge.jsx';
 import ErrorAlert from '../components/ErrorAlert.jsx';
-import { AccountLink } from '../components/EntityLink.jsx';
+import EntityLink, { AccountLink } from '../components/EntityLink.jsx';
 import { SkeletonLine, SkeletonCards } from '../components/Skeleton.jsx';
 import { formatCrore, formatINR, formatNumber, formatHours, getMuleRiskColor } from '../utils/format.js';
 import { getLayers, getMules, friendlyErrorMessage, ApiError } from '../utils/api.js';
 import { useActiveReportId } from '../context/ReportContext.jsx';
+import { useDetailModal } from '../context/DetailModalContext.jsx';
 import { useChartTheme } from '../utils/useChartTheme.js';
 
 // Clarity copy surfaced by the correctness audit. The per-layer "total amount"
@@ -251,9 +252,18 @@ export default function Layers() {
                     </div>
                   )}
 
-                  <h4 style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-                    Accounts in this layer
-                  </h4>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
+                    <h4 style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', margin: 0 }}>
+                      Accounts in this layer
+                    </h4>
+                    <EntityLink
+                      type="layer"
+                      params={{ id: l.layer_no }}
+                      label="⧉ open in detail view"
+                      mono={false}
+                      title={`Open Layer ${l.layer_no} details (sortable, searchable, exportable)`}
+                    />
+                  </div>
                   {accounts.length === 0 ? (
                     <div className="empty-state" style={{ padding: 20 }}>No flagged accounts recorded at this layer.</div>
                   ) : (
@@ -347,6 +357,8 @@ function FanOutFlag({ ratio, showRatio = false }) {
 function BankChips({ banks, legacy }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const { openDetail } = useDetailModal();
+  const drillBank = (bank) => openDetail({ type: 'bank', params: { id: bank }, label: bank });
 
   const list = useMemo(() => {
     if (Array.isArray(banks) && banks.length) return banks;
@@ -378,9 +390,15 @@ function BankChips({ banks, legacy }) {
   return (
     <span className="bank-chip-group" ref={ref}>
       {shown.map((b) => (
-        <span key={b.bank} className="badge badge-brand">
+        <button
+          key={b.bank}
+          type="button"
+          className="badge badge-brand bank-chip-btn"
+          onClick={() => drillBank(b.bank)}
+          title={`Open every ledger row at ${b.bank}`}
+        >
           {b.bank}{b.count != null ? ` ·${b.count}` : ''}
-        </span>
+        </button>
       ))}
       {rest > 0 && (
         <button
@@ -399,7 +417,14 @@ function BankChips({ banks, legacy }) {
           <ul className="bank-more-list">
             {list.map((b) => (
               <li key={b.bank}>
-                <span className="bank-more-name">{b.bank}</span>
+                <button
+                  type="button"
+                  className="entity-link bank-more-name"
+                  onClick={() => { setOpen(false); drillBank(b.bank); }}
+                  title={`Open every ledger row at ${b.bank}`}
+                >
+                  {b.bank}
+                </button>
                 {b.count != null && <span className="bank-more-count">{b.count}</span>}
               </li>
             ))}
@@ -489,7 +514,15 @@ function FlowStep({ layer, isLast }) {
           ? `Layer ${layer.layer_no} · ${formatNumber(layer.cashout_count)} cash-out${layer.cashout_count === 1 ? '' : 's'} (money leaving the chain)`
           : undefined}
       >
-        <div className="layer-flow-layer-no">Layer {layer.layer_no}</div>
+        <div className="layer-flow-layer-no">
+          <EntityLink
+            type="layer"
+            params={{ id: layer.layer_no }}
+            label={`Layer ${layer.layer_no}`}
+            mono={false}
+            title={`Open Layer ${layer.layer_no} details`}
+          />
+        </div>
         <div style={{ fontSize: 13, fontWeight: 700 }} title={GROSS_TIP}>{formatCrore(layer.total_amount)}</div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {formatNumber(layer.account_count)} acct ·{' '}

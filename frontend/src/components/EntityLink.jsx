@@ -18,13 +18,14 @@ export default function EntityLink({
   title,
   className,
   children,
+  mono = true, // identifiers read as monospace; prose labels (dates, "Layer 2") opt out
 }) {
   const { openDetail } = useDetailModal();
   const text = children ?? label ?? (params && params.id) ?? '';
   return (
     <button
       type="button"
-      className={`entity-link${className ? ` ${className}` : ''}`}
+      className={`entity-link${mono ? '' : ' entity-link-plain'}${className ? ` ${className}` : ''}`}
       title={title || `Open ${type} details`}
       onClick={(e) => {
         e.stopPropagation();
