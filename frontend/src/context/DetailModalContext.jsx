@@ -26,7 +26,7 @@ import {
 
 import DetailModal from '../components/DetailModal.jsx';
 import { ENTITY_ADAPTERS } from '../components/detail/entityAdapters.jsx';
-import { getEntityDetail, openEntityExcel, ApiError } from '../utils/api.js';
+import { getEntityDetail, saveEntityExcel, ApiError } from '../utils/api.js';
 import { useActiveReportId } from './ReportContext.jsx';
 
 const DetailModalContext = createContext(null);
@@ -104,7 +104,16 @@ export function DetailModalProvider({ children }) {
     setExporting(true);
     setExportError(null);
     try {
-      await openEntityExcel(reportId, ref.type, { ...ref.params, ...(search ? { search } : {}) });
+      // Native Save As (Electron) / browser download — same dialog-first flow
+      // as the Dashboard's report exports. A cancelled dialog is not an error.
+      const idPart = String(ref.label || (ref.params && ref.params.id) || ref.type)
+        .replace(/[^\w.-]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+      await saveEntityExcel(
+        reportId,
+        ref.type,
+        { ...ref.params, ...(search ? { search } : {}) },
+        `FinTrace_Drilldown_${ref.type}_${idPart || 'export'}.xlsx`,
+      );
     } catch (e) {
       setExportError(e);
     } finally {

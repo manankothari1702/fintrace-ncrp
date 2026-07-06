@@ -263,27 +263,41 @@ export function entityExcelUrl(id, type, params = {}) {
 }
 
 /**
- * Export the drill-down modal's CURRENT view as .xlsx. Same dual behaviour as
- * {@link openReportExcel}: Electron writes via ?mode=file + opens over IPC;
- * the browser opens the attachment URL. Pass `search` so the workbook holds
- * exactly the rows the modal is showing.
+ * Export the drill-down modal's CURRENT view as .xlsx via the native "Save As"
+ * dialog — the same dialog-first dual-mode flow as {@link saveReportExcel}:
+ *
+ *   • Electron → show the OS save dialog FIRST ({@link suggestExportName}-style
+ *     default). If the user cancels, return { canceled: true } and generate
+ *     nothing. Otherwise generate via ?mode=file (backend writes to the
+ *     per-user exports folder) and copy to the chosen path over IPC.
+ *   • Browser (Vite dev) → open the streaming attachment URL; the browser's
+ *     own download prompt handles the destination.
+ *
+ * Pass `search` in params so the workbook holds exactly the rows the modal is
+ * showing (the backend re-applies the same filter rule).
  *
  * @param {number|string} id
  * @param {string} type
  * @param {Record<string, string|number>} [params] - Identifier params + { search }.
+ * @param {string} [suggestedName] - Pre-filled file name for the dialog.
+ * @returns {Promise<{ savedTo: string|null } | { canceled: true }>}
  */
-export async function openEntityExcel(id, type, params = {}) {
-  if (isElectron()) {
-    const { fileName } = await api
-      .get(`/ncrp/${id}/entity/${type}/excel`, { params: { ...params, mode: 'file' } })
-      .then((r) => r.data);
-    const res = await window.fintrace.openFile(fileName);
-    if (!res || !res.ok) {
-      throw new ApiError((res && res.error) || 'Could not open the workbook.', { code: 'OPEN_FAILED' });
-    }
-    return;
+export async function saveEntityExcel(id, type, params = {}, suggestedName) {
+  if (!isElectron()) {
+    window.open(entityExcelUrl(id, type, params), '_blank', 'noopener');
+    return { savedTo: null };
   }
-  window.open(entityExcelUrl(id, type, params), '_blank', 'noopener');
+  const dlg = await window.fintrace.showSaveDialog({ type: 'excel', defaultName: suggestedName });
+  if (!dlg || dlg.canceled || !dlg.filePath) return { canceled: true };
+
+  const { fileName } = await api
+    .get(`/ncrp/${id}/entity/${type}/excel`, { params: { ...params, mode: 'file' } })
+    .then((r) => r.data);
+  const res = await window.fintrace.saveExportAs(fileName, dlg.filePath);
+  if (!res || !res.ok) {
+    throw new ApiError((res && res.error) || 'Could not save the workbook.', { code: 'SAVE_FAILED' });
+  }
+  return { savedTo: res.savedTo };
 }
 
 /** Daily timeline from the analysis snapshot. */
