@@ -31,7 +31,7 @@ const {
   insertLienRecord,
   insertDraftEmail,
   insertAuditLog,
-  upsertRepeatAccount,
+  replaceReportRepeatContributions,
 } = require('./queries');
 
 // ─── Reference data ──────────────────────────────────────────────────
@@ -448,18 +448,21 @@ function seedDatabase(db) {
     for (const email of emails) insertDraftEmail(db, email);
     result.emailsInserted = emails.length;
 
-    // 6. Cross-case repeat-account registry. One upsert per transaction
-    //    so appearance_count and total_amount_passed grow naturally.
-    for (const r of rows) {
-      upsertRepeatAccount(db, {
-        account_no:           r.beneficiary_account,
-        bank_name:            r.beneficiary_bank,
-        first_seen_report_id: reportId,
-        amount_passed:        r.transaction_amount,
-        mule_score:           SEED_MULE_SCORES[r.beneficiary_account] ?? 0,
-      });
-    }
-    result.repeatAccountsTouched = rows.length;
+    // 6. Cross-case repeat-account registry: ONE contribution per beneficiary
+    //    account for this report (replace() folds the per-transaction entries
+    //    by canonical key — amounts sum, mule_score takes the max). Idempotent:
+    //    re-seeding replaces this report's contribution instead of inflating
+    //    appearance_count, which now counts contributing reports, not calls.
+    const { accounts: repeatAccounts } = replaceReportRepeatContributions(
+      db, reportId,
+      rows.map((r) => ({
+        account_no:    r.beneficiary_account,
+        bank_name:     r.beneficiary_bank,
+        amount_passed: r.transaction_amount,
+        mule_score:    SEED_MULE_SCORES[r.beneficiary_account] ?? 0,
+      }))
+    );
+    result.repeatAccountsTouched = repeatAccounts;
 
     // 7. Update report row with totals + flip status to complete.
     const totalDisputed = layerAggs.reduce((s, l) => s + l.disputed_amount, 0);

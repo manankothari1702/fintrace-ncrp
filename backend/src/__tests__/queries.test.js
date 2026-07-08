@@ -21,7 +21,6 @@ const {
   updateLienStatus,
   insertDraftEmail,
   insertAuditLog,
-  upsertRepeatAccount,
   updateTransactionCashout,
 } = require('../db/queries');
 
@@ -187,18 +186,9 @@ describe('helper edge cases', () => {
     expect(JSON.parse(row.details)).toEqual({ foo: 'bar' });
   });
 
-  test('upsertRepeatAccount inserts then increments on second call', () => {
-    upsertRepeatAccount(db, {
-      account_no: 'REP-1', bank_name: 'Z', amount_passed: 100, mule_score: 50,
-    });
-    upsertRepeatAccount(db, {
-      account_no: 'REP-1', bank_name: 'Z', amount_passed: 200, mule_score: 70,
-    });
-    const row = db.prepare('SELECT * FROM repeat_accounts WHERE account_no = ?').get('REP-1');
-    expect(row.appearance_count).toBe(2);
-    expect(row.total_amount_passed).toBe(300);
-    expect(row.mule_score).toBe(70);
-  });
+  // repeat_accounts registry coverage lives in repeatAccounts.test.js — the
+  // legacy increment-on-upsert API was replaced by the per-report contribution
+  // ledger (replaceReportRepeatContributions / removeReportRepeatContributions).
 
   test('insertLayerAnalysis is idempotent on (report_id, layer_no)', () => {
     insertLayerAnalysis(db, { report_id: reportId, layer_no: 7, account_count: 1 });

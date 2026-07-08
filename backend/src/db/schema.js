@@ -105,6 +105,24 @@ const CREATE_TABLES = Object.freeze([
     FOREIGN KEY (first_seen_report_id) REFERENCES ncrp_reports(id) ON DELETE SET NULL
   )`,
 
+  // ─── repeat_account_reports ──────────────────────────────────────
+  // Contribution ledger behind repeat_accounts: one row per (canonical
+  // account, report). repeat_accounts is DERIVED from this table — its
+  // appearance_count counts contributing reports, never upsert calls — so
+  // re-analysing a report replaces its contribution instead of inflating
+  // the aggregate, and deleting a report withdraws it. All writes go
+  // through queries.replaceReportRepeatContributions /
+  // removeReportRepeatContributions.
+  `CREATE TABLE IF NOT EXISTS repeat_account_reports (
+    account_no    TEXT    NOT NULL,
+    report_id     INTEGER NOT NULL,
+    bank_name     TEXT,
+    amount_passed REAL    DEFAULT 0,
+    mule_score    REAL    DEFAULT 0,
+    PRIMARY KEY (account_no, report_id),
+    FOREIGN KEY (report_id) REFERENCES ncrp_reports(id) ON DELETE CASCADE
+  )`,
+
   // ─── layer_analysis ──────────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS layer_analysis (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +209,10 @@ const CREATE_INDEXES = Object.freeze([
   // a named index is added per spec for explicit query planning)
   'CREATE INDEX IF NOT EXISTS idx_repeat_account_no ON repeat_accounts(account_no)',
 
+  // repeat_account_reports: the PK covers by-account lookups; per-report
+  // withdrawal (report delete / re-analysis replace) needs the reverse path.
+  'CREATE INDEX IF NOT EXISTS idx_rar_report_id ON repeat_account_reports(report_id)',
+
   // draft_emails lookups
   'CREATE INDEX IF NOT EXISTS idx_email_report_id ON draft_emails(report_id)',
 ]);
@@ -266,6 +288,60 @@ function applyColumnMigrations(db) {
 }
 
 /**
+ * One-time rebuild of the repeat-account registry for databases created
+ * before the contribution ledger existed (≤ v0.5.x). The legacy upsert
+ * incremented appearance_count on EVERY analysis run — so re-analysing a
+ * report inflated counts — keyed rows on raw display strings (zero-padded
+ * variants of one account split into two rows), and never withdrew a
+ * deleted report's contribution.
+ *
+ * Rebuild strategy: re-derive each complete report's contribution from its
+ * stored analysis_json (mule_detection) via the same idempotent replace
+ * path new analyses use, then drop aggregate rows left with no backing
+ * contribution (deleted reports / unparseable snapshots) — those counts
+ * were unreliable by construction and self-heal on the next re-analysis.
+ *
+ * Guarded: runs only when the ledger is empty but legacy aggregates exist,
+ * so it executes at most once per database and never on fresh installs.
+ *
+ * @param {Database.Database} db - Open connection (schema already applied).
+ */
+function rebuildRepeatRegistryFromSnapshots(db) {
+  const hasLedger = db.prepare('SELECT 1 FROM repeat_account_reports LIMIT 1').get();
+  const hasLegacy = db.prepare('SELECT 1 FROM repeat_accounts LIMIT 1').get();
+  if (hasLedger || !hasLegacy) return;
+
+  // Lazy: queries.js is require-free at load, but keep schema.js importable
+  // without pulling the analyzer chain in unless a rebuild actually runs.
+  const { replaceReportRepeatContributions } = require('./queries');
+
+  const reports = db.prepare(`
+    SELECT id, analysis_json FROM ncrp_reports
+     WHERE analysis_status = 'complete' AND analysis_json IS NOT NULL
+  `).all();
+  for (const r of reports) {
+    let mules;
+    try {
+      const parsed = JSON.parse(r.analysis_json);
+      mules = parsed && Array.isArray(parsed.mule_detection) ? parsed.mule_detection : [];
+    } catch (_e) {
+      continue; // malformed snapshot — heals on next re-analysis
+    }
+    replaceReportRepeatContributions(db, r.id, mules.map((m) => ({
+      account_no: m.account_no,
+      bank_name: m.bank_name,
+      amount_passed: m.total_received,
+      mule_score: m.mule_score,
+    })));
+  }
+
+  db.prepare(`
+    DELETE FROM repeat_accounts
+     WHERE account_no NOT IN (SELECT DISTINCT account_no FROM repeat_account_reports)
+  `).run();
+}
+
+/**
  * Open the SQLite database at `dbPath`, ensuring its parent directory
  * exists, applying connection pragmas, and creating the schema + indexes
  * if not already present. Safe to call on every app launch.
@@ -326,6 +402,7 @@ function initializeDatabase(dbPath) {
       for (const ddl of CREATE_TABLES) db.exec(ddl);
       for (const ddl of CREATE_INDEXES) db.exec(ddl);
       applyColumnMigrations(db);
+      rebuildRepeatRegistryFromSnapshots(db);
     });
     initTxn();
 
@@ -340,6 +417,7 @@ function initializeDatabase(dbPath) {
 
 module.exports = {
   initializeDatabase,
+  rebuildRepeatRegistryFromSnapshots,
   PRAGMAS,
   CREATE_TABLES,
   CREATE_INDEXES,

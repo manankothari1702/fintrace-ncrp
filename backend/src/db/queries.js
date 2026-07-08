@@ -145,20 +145,64 @@ const SQL_INSERT_AUDIT = `
   VALUES (@report_id, @action, @details)
 `;
 
-const SQL_UPSERT_REPEAT_ACCOUNT = `
+// ─── repeat_accounts: contribution ledger + derived aggregates ───────
+//
+// repeat_account_reports holds one row per (canonical account, report) — a
+// report's contribution to that account. repeat_accounts is DERIVED from it:
+// appearance_count = COUNT of contributing reports (never of upsert calls),
+// total_amount_passed = SUM, mule_score = MAX, first_seen_report_id = MIN.
+// Replacing a report's contributions is therefore idempotent (re-analysis
+// never inflates), and withdrawing them on report delete leaves no orphans.
+
+const SQL_SELECT_REPORT_CONTRIB_KEYS = `
+  SELECT account_no FROM repeat_account_reports WHERE report_id = @report_id
+`;
+
+const SQL_DELETE_REPORT_CONTRIBS = `
+  DELETE FROM repeat_account_reports WHERE report_id = @report_id
+`;
+
+const SQL_INSERT_CONTRIB = `
+  INSERT INTO repeat_account_reports (
+    account_no, report_id, bank_name, amount_passed, mule_score
+  ) VALUES (
+    @account_no, @report_id, @bank_name, @amount_passed, @mule_score
+  )
+`;
+
+// Rebuild one account's aggregate row from its remaining contributions.
+// bank_name follows the earliest contributing report's non-null value —
+// the same "first sighting wins" semantics the legacy upsert had.
+const SQL_RECOMPUTE_AGGREGATE = `
   INSERT INTO repeat_accounts (
     account_no, bank_name, first_seen_report_id,
     appearance_count, total_amount_passed, mule_score, last_updated
-  ) VALUES (
-    @account_no, @bank_name, @first_seen_report_id,
-    1, @amount_passed, @mule_score, CURRENT_TIMESTAMP
   )
+  SELECT
+    c.account_no,
+    (SELECT c2.bank_name FROM repeat_account_reports c2
+      WHERE c2.account_no = c.account_no AND c2.bank_name IS NOT NULL
+      ORDER BY c2.report_id ASC LIMIT 1),
+    MIN(c.report_id), COUNT(*), SUM(c.amount_passed), MAX(c.mule_score),
+    CURRENT_TIMESTAMP
+  FROM repeat_account_reports c
+  WHERE c.account_no = @account_no
+  GROUP BY c.account_no
   ON CONFLICT(account_no) DO UPDATE SET
-    appearance_count    = appearance_count + 1,
-    total_amount_passed = total_amount_passed + excluded.total_amount_passed,
-    mule_score          = MAX(mule_score, excluded.mule_score),
-    bank_name           = COALESCE(repeat_accounts.bank_name, excluded.bank_name),
-    last_updated        = CURRENT_TIMESTAMP
+    bank_name            = excluded.bank_name,
+    first_seen_report_id = excluded.first_seen_report_id,
+    appearance_count     = excluded.appearance_count,
+    total_amount_passed  = excluded.total_amount_passed,
+    mule_score           = excluded.mule_score,
+    last_updated         = CURRENT_TIMESTAMP
+`;
+
+const SQL_DELETE_EMPTY_AGGREGATE = `
+  DELETE FROM repeat_accounts
+   WHERE account_no = @account_no
+     AND NOT EXISTS (
+       SELECT 1 FROM repeat_account_reports c WHERE c.account_no = @account_no
+     )
 `;
 
 // ─── Filter spec for getTransactionsByReport ─────────────────────────
@@ -651,34 +695,122 @@ function insertAuditLog(db, entry) {
   return Number(info.lastInsertRowid);
 }
 
+// Canonical account identity for registry keys — the analyzer's single
+// canonicalization scheme (leading-zero stripping for all-digit numbers,
+// verbatim otherwise). Lazily required because analyzer.js itself requires
+// this module at load time; by the time any registry write runs, the
+// analyzer module is fully initialized.
+let _canonicalAccountKey = null;
+function canonicalKey(acc) {
+  if (!_canonicalAccountKey) {
+    ({ canonicalAccountKey: _canonicalAccountKey } = require('../analyzers/analyzer'));
+  }
+  return _canonicalAccountKey(acc);
+}
+
 /**
- * Upsert a row in the repeat_accounts registry. On first sighting the
- * row is inserted with appearance_count=1; subsequent calls increment
- * the count, add to total_amount_passed, and lift mule_score to the
- * higher of the existing/new value.
+ * Recompute one account's derived repeat_accounts row from its remaining
+ * contributions; drops the row entirely when no contribution backs it.
  *
  * @param {Database.Database} db
- * @param {{
+ * @param {string} accountKey - CANONICAL account key.
+ */
+function recomputeRepeatAggregate(db, accountKey) {
+  getOrPrepare(db, SQL_RECOMPUTE_AGGREGATE).run({ account_no: accountKey });
+  getOrPrepare(db, SQL_DELETE_EMPTY_AGGREGATE).run({ account_no: accountKey });
+}
+
+/**
+ * Replace a report's contributions to the repeat-account registry and
+ * recompute the derived aggregates for every touched account, atomically.
+ *
+ * Idempotent by construction: re-running analysis for a report REPLACES its
+ * ledger rows instead of incrementing anything, so appearance_count only
+ * ever counts distinct contributing reports. Incoming entries are folded by
+ * canonical account key first, so two display variants of one account
+ * (zero-padded vs bare) contribute once — amounts sum, mule_score takes the
+ * max, the first non-null bank name wins.
+ *
+ * @param {Database.Database} db
+ * @param {number} reportId
+ * @param {ReadonlyArray<{
  *   account_no: string,
  *   bank_name?: string|null,
- *   first_seen_report_id?: number|null,
  *   amount_passed?: number,
  *   mule_score?: number,
- * }} accountData
- * @returns {number} Rows affected (1 on insert, 1 on update).
+ * }>} [contributions=[]]
+ * @returns {{accounts: number, touched: number}} Ledger rows written for
+ *   this report, and distinct aggregate rows recomputed (including ones
+ *   withdrawn because the new list no longer mentions them).
  */
-function upsertRepeatAccount(db, accountData) {
-  if (!accountData || !accountData.account_no) {
-    throw new Error('upsertRepeatAccount: account_no is required');
+function replaceReportRepeatContributions(db, reportId, contributions = []) {
+  if (!Number.isInteger(reportId) || reportId <= 0) {
+    throw new TypeError(
+      'replaceReportRepeatContributions: reportId must be a positive integer'
+    );
   }
-  const params = {
-    account_no:           accountData.account_no,
-    bank_name:            nz(accountData.bank_name),
-    first_seen_report_id: nz(accountData.first_seen_report_id),
-    amount_passed:        accountData.amount_passed ?? 0,
-    mule_score:           accountData.mule_score ?? 0,
-  };
-  return getOrPrepare(db, SQL_UPSERT_REPEAT_ACCOUNT).run(params).changes;
+  const run = db.transaction(() => {
+    const before = getOrPrepare(db, SQL_SELECT_REPORT_CONTRIB_KEYS)
+      .all({ report_id: reportId })
+      .map((r) => r.account_no);
+    getOrPrepare(db, SQL_DELETE_REPORT_CONTRIBS).run({ report_id: reportId });
+
+    /** @type {Map<string, {bank_name: string|null, amount_passed: number, mule_score: number}>} */
+    const byKey = new Map();
+    for (const c of contributions || []) {
+      const key = canonicalKey(c && c.account_no);
+      if (!key) continue;
+      const agg = byKey.get(key) ||
+        { bank_name: null, amount_passed: 0, mule_score: 0 };
+      agg.amount_passed += Number(c.amount_passed) || 0;
+      agg.mule_score = Math.max(agg.mule_score, Number(c.mule_score) || 0);
+      if (!agg.bank_name && c.bank_name) agg.bank_name = String(c.bank_name);
+      byKey.set(key, agg);
+    }
+
+    const ins = getOrPrepare(db, SQL_INSERT_CONTRIB);
+    for (const [key, agg] of byKey) {
+      ins.run({
+        account_no:    key,
+        report_id:     reportId,
+        bank_name:     nz(agg.bank_name),
+        amount_passed: agg.amount_passed,
+        mule_score:    agg.mule_score,
+      });
+    }
+
+    const touched = new Set([...before, ...byKey.keys()]);
+    for (const key of touched) recomputeRepeatAggregate(db, key);
+    return { accounts: byKey.size, touched: touched.size };
+  });
+  return run();
+}
+
+/**
+ * Withdraw a report's contributions from the repeat-account registry (on
+ * report delete) and recompute the affected aggregates — accounts left with
+ * no contributing report drop out of repeat_accounts entirely.
+ *
+ * @param {Database.Database} db
+ * @param {number} reportId
+ * @returns {number} Ledger rows removed.
+ */
+function removeReportRepeatContributions(db, reportId) {
+  if (!Number.isInteger(reportId) || reportId <= 0) {
+    throw new TypeError(
+      'removeReportRepeatContributions: reportId must be a positive integer'
+    );
+  }
+  const run = db.transaction(() => {
+    const keys = getOrPrepare(db, SQL_SELECT_REPORT_CONTRIB_KEYS)
+      .all({ report_id: reportId })
+      .map((r) => r.account_no);
+    const removed = getOrPrepare(db, SQL_DELETE_REPORT_CONTRIBS)
+      .run({ report_id: reportId }).changes;
+    for (const key of keys) recomputeRepeatAggregate(db, key);
+    return removed;
+  });
+  return run();
 }
 
 /**
@@ -716,7 +848,8 @@ module.exports = {
   getReportById,
   getTransactionsByReport,
   updateLienStatus,
-  upsertRepeatAccount,
+  replaceReportRepeatContributions,
+  removeReportRepeatContributions,
 
   // Additional helpers used by ingest + seed pipelines
   insertReport,

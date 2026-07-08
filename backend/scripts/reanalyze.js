@@ -21,9 +21,12 @@
  *   • layer_analysis / lien_records / draft_emails — amounts & counts, unchanged
  *     by the date fix; the layers endpoint reads layer_analysis from the snapshot
  *     anyway. (A full re-upload would rewrite these to identical values.)
- *   • repeat_accounts — a CROSS-report registry whose appearance_count is
- *     incremented on upsert; re-running upserts here would wrongly inflate it, so
- *     this script never writes it (it only READS it as analyzer input).
+ *
+ * repeat_accounts IS refreshed: the registry is now a per-report contribution
+ * ledger (queries.replaceReportRepeatContributions), so re-recording a report's
+ * contribution REPLACES it instead of inflating appearance_count — this script
+ * historically had to skip the registry precisely because the old upsert
+ * double-counted on every rerun.
  *
  * Usage:  node scripts/reanalyze.js [path/to/fintrace.db]
  *   (defaults to the dev DB: backend/data/fintrace.db)
@@ -32,7 +35,11 @@
 const path = require('path');
 const { initializeDatabase } = require('../src/db/schema');
 const { analyzeReport } = require('../src/analyzers/analyzer');
-const { getReportById, updateReportAnalysis } = require('../src/db/queries');
+const {
+  getReportById,
+  updateReportAnalysis,
+  replaceReportRepeatContributions,
+} = require('../src/db/queries');
 
 async function main() {
   const dbPath = process.argv[2]
@@ -84,6 +91,16 @@ async function main() {
       total_layers: result.summary.total_layers,
       fraud_start_date: result.summary.fraud_start_date,
     });
+
+    // Refresh this report's cross-case registry contribution (idempotent
+    // replace — safe to rerun, unlike the legacy increment-on-upsert).
+    replaceReportRepeatContributions(db, r.id,
+      result.mule_detection.map((m) => ({
+        account_no: m.account_no,
+        bank_name: m.bank_name,
+        amount_passed: m.total_received,
+        mule_score: m.mule_score,
+      })));
 
     const dupCount = result.summary.duplicate_count;
     const sdc = result.cashout_analysis.same_day_cashouts;

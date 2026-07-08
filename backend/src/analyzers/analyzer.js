@@ -927,7 +927,10 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
   /** @type {Map<string, number>} */
   const historyCount = new Map();
   for (const r of existingRepeatAccounts || []) {
-    const acct = str(r.account_no);
+    // Registry rows are keyed canonically (db/queries.js); canonicalize here
+    // too so legacy raw-keyed rows still match. With an empty registry this
+    // is a no-op, so single-file analyses are unaffected.
+    const acct = canonicalAccountKey(str(r.account_no));
     if (!acct) continue;
     historyCount.set(acct, num(r.appearance_count) || 0);
   }
@@ -967,7 +970,9 @@ function muleDetection(txns, rollup, existingRepeatAccounts = []) {
     if (a.txn_count > 5) reasons.push(`High transaction velocity (${a.txn_count} txns)`);
 
     // 4. Cross-case — distinct cases in this file plus historical appearances.
-    const appearsInCases = Math.max(a.acks.size, historyCount.get(a.account_no) || 0);
+    // a.account_no is the display variant; the history map is keyed canonically.
+    const appearsInCases = Math.max(
+      a.acks.size, historyCount.get(canonicalAccountKey(a.account_no)) || 0);
     const crossPts = appearsInCases > 1 ? num(w.crossCase) : 0;
     if (appearsInCases > 1) reasons.push(`Appears across ${appearsInCases} cases`);
 
@@ -1450,14 +1455,15 @@ function repeatAccountDetection(txns, existingRepeatAccounts = []) {
   /** @type {Map<string, number>} */
   const known = new Map();
   for (const r of existingRepeatAccounts || []) {
-    const acct = str(r.account_no);
+    // Canonical keys — matches the registry ledger (see muleDetection note).
+    const acct = canonicalAccountKey(str(r.account_no));
     if (acct) known.set(acct, num(r.appearance_count) || 0);
   }
 
   const out = [];
   for (const [acct, r] of inFile) {
     const casesInFile = r.acks.size;
-    const knownCount = known.get(acct) || 0;
+    const knownCount = known.get(canonicalAccountKey(acct)) || 0;
     // Surface if multi-case within this file OR already a known repeat.
     if (casesInFile <= 1 && knownCount <= 1) continue;
     out.push({
@@ -3093,6 +3099,11 @@ module.exports = {
   // payment-modes endpoint so the donut counts the same de-duplicated ledger as
   // every other figure (rather than re-deriving the dedup key in a second place).
   dedupeRows,
+  // Canonical account identity — the single canonicalization scheme for
+  // account numbers (leading-zero stripping for all-digit values, verbatim
+  // otherwise). Exported for the repeat-account registry (db/queries.js) so
+  // ledger keys use exactly the identity the rollup aggregates by.
+  canonicalAccountKey,
   // Helpers exposed for testing; not part of the stable contract.
   _internals: Object.freeze({
     classifyCashoutMode,

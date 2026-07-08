@@ -48,7 +48,8 @@ const {
   insertLienRecord,
   updateLienStatus,
   insertDraftEmail,
-  upsertRepeatAccount,
+  replaceReportRepeatContributions,
+  removeReportRepeatContributions,
   insertAuditLog,
   findReportsByAckNo,
 } = require('../db/queries');
@@ -425,8 +426,12 @@ function createNcrpRouter(db) {
     const liens = stmt.delLiens.run(reportId).changes;
     const layers = stmt.delLayers.run(reportId).changes;
     const transactions = stmt.delTxns.run(reportId).changes;
+    // Withdraw this report's cross-case registry contributions and recompute
+    // the affected aggregates — a deleted report must not leave orphan counts
+    // in repeat_accounts (accounts with no remaining contributor drop out).
+    const repeat_contributions = removeReportRepeatContributions(db, reportId);
     stmt.delReport.run(reportId);
-    return { emails, liens, layers, transactions };
+    return { emails, liens, layers, transactions, repeat_contributions };
   });
 
   // ── Multer (disk storage, UUID names, size + type guards) ─────────
@@ -551,15 +556,15 @@ function createNcrpRouter(db) {
           });
         }
         for (const email of emails) insertDraftEmail(db, email);
-        for (const mule of result.mule_detection) {
-          upsertRepeatAccount(db, {
+        // Cross-case registry: REPLACE this report's contributions (idempotent
+        // — re-analysis must never inflate appearance counts; see queries.js).
+        replaceReportRepeatContributions(db, reportId,
+          result.mule_detection.map((mule) => ({
             account_no: mule.account_no,
             bank_name: mule.bank_name,
-            first_seen_report_id: reportId,
             amount_passed: mule.total_received,
             mule_score: mule.mule_score,
-          });
-        }
+          })));
         updateReportAnalysis(db, reportId, {
           analysis_status: 'complete',
           analysis_json: JSON.stringify(result),
