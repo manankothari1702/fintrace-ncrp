@@ -8,6 +8,17 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: './',
+  // Vitest (unit/smoke tests) — reads this same config so the React plugin and
+  // resolution behave identically to the dev server. `globals` mirrors the
+  // backend's jest idiom (describe/test/expect without imports); jsdom stands
+  // in for the browser; setup.js adds jest-dom matchers + layout-API stubs.
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.js',
+    include: ['src/**/*.test.{js,jsx}'],
+    css: false,
+  },
   server: {
     port: 5173,
     strictPort: true,
