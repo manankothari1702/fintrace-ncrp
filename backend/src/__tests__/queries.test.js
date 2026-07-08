@@ -3,10 +3,9 @@
 /**
  * Unit tests for backend/src/db/queries.js.
  *
- * Drives the prepared-statement helpers against an in-memory SQLite so the
- * filter-building branches in getTransactionsByReport are exercised (the
- * route layer composes its own SQL, so this only fires when the helper is
- * called directly).
+ * Drives the prepared-statement helpers against an in-memory SQLite.
+ * Transaction listing/filtering is exercised at the route level
+ * (api/reports.api.test.js) — the route composes its own SQL.
  */
 
 const { initializeDatabase } = require('../db/schema');
@@ -15,7 +14,6 @@ const {
   insertTransaction,
   insertManyTransactions,
   getReportById,
-  getTransactionsByReport,
   insertLayerAnalysis,
   insertLienRecord,
   updateLienStatus,
@@ -58,65 +56,6 @@ beforeAll(() => {
 
 afterAll(() => {
   try { db.close(); } catch (_e) { /* best effort */ }
-});
-
-// ─── getTransactionsByReport with filters ────────────────────────────
-
-describe('getTransactionsByReport', () => {
-  test('no filters → returns every transaction', () => {
-    const res = getTransactionsByReport(db, reportId);
-    expect(res.items.length).toBe(3);
-    expect(res.total).toBe(3);
-    expect(res.pageCount).toBe(1);
-  });
-
-  test('filter by layer_no', () => {
-    const res = getTransactionsByReport(db, reportId, { layer_no: 2 });
-    expect(res.items.length).toBe(1);
-    expect(res.items[0].beneficiary_account).toBe('B2');
-  });
-
-  test('filter by beneficiary_bank', () => {
-    const res = getTransactionsByReport(db, reportId, { beneficiary_bank: 'HDFC' });
-    expect(res.items.length).toBe(1);
-    expect(res.items[0].beneficiary_account).toBe('B1');
-  });
-
-  test('filter by date range', () => {
-    const res = getTransactionsByReport(db, reportId, {
-      date_from: '2024-01-16T00:00:00.000Z',
-      date_to: '2024-01-16T23:59:59.000Z',
-    });
-    expect(res.items.length).toBe(1);
-    expect(res.items[0].beneficiary_account).toBe('B2');
-  });
-
-  test('filter by amount range', () => {
-    const res = getTransactionsByReport(db, reportId, {
-      amount_min: 4000,
-      amount_max: 10000,
-    });
-    expect(res.items.length).toBe(1);
-    expect(res.items[0].beneficiary_account).toBe('B2');
-  });
-
-  test('cashout_only flag keeps ATM / POS rows', () => {
-    const res = getTransactionsByReport(db, reportId, { cashout_only: true });
-    expect(res.items.length).toBe(1);
-    expect(res.items[0].payment_mode).toBe('ATM');
-  });
-
-  test('pagination caps and offsets', () => {
-    const res = getTransactionsByReport(db, reportId, {}, 2, 2);
-    expect(res.page).toBe(2);
-    expect(res.limit).toBe(2);
-    expect(res.items.length).toBe(1); // only one row on page 2
-  });
-
-  test('rejects a non-positive-integer reportId', () => {
-    expect(() => getTransactionsByReport(db, 0)).toThrow();
-    expect(() => getTransactionsByReport(db, -1)).toThrow();
-  });
 });
 
 // ─── helper-side branch coverage ─────────────────────────────────────

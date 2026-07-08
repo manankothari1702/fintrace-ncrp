@@ -139,6 +139,45 @@ describe('POST /api/ncrp/upload + full analysis flow', () => {
     expect(Array.isArray(res.body.data)).toBe(true);
   });
 
+  // Exact-match filters (2026-07 audit, finding 2b): previously only reachable
+  // through a dead query helper; now first-class route params.
+
+  test('GET /api/ncrp/:id/transactions?beneficiary_account=M0002 matches exactly', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/transactions?beneficiary_account=M0002`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const row of res.body.data) {
+      expect(row.beneficiary_account).toBe('M0002');
+    }
+  });
+
+  test('beneficiary_account is exact, not substring (prefix must NOT match)', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/transactions?beneficiary_account=M000`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+  });
+
+  test('GET /api/ncrp/:id/transactions?state=Maharashtra filters by state', async () => {
+    const res = await agent.get(`/api/ncrp/${reportId}/transactions?state=Maharashtra`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const row of res.body.data) {
+      expect(row.state).toBe('Maharashtra');
+    }
+  });
+
+  test('GET /api/ncrp/:id/transactions?city=Delhi filters by city and combines with state', async () => {
+    const res = await agent
+      .get(`/api/ncrp/${reportId}/transactions`)
+      .query({ city: 'Delhi', state: 'Delhi' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const row of res.body.data) {
+      expect(row.city).toBe('Delhi');
+      expect(row.state).toBe('Delhi');
+    }
+  });
+
   test('POST /api/ncrp/:id/lien creates a lien record for a new account', async () => {
     const res = await agent
       .post(`/api/ncrp/${reportId}/lien`)

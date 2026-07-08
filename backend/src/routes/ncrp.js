@@ -859,6 +859,19 @@ function createNcrpRouter(db) {
       where.push('UPPER(payment_mode) = UPPER(@payment_mode)');
       params.payment_mode = paymentMode;
     }
+    // Exact-match filters (2026-07 audit, finding 2b): these lived in a query
+    // helper the route never called, so they were unreachable through the API.
+    // Additive — when the params are absent the query is unchanged. They also
+    // seed Phase 7's search work (dedicated exact account filter).
+    const benAcct = sanitizeStringParam(q.beneficiary_account, 64);
+    if (benAcct) {
+      where.push('beneficiary_account = @beneficiary_account');
+      params.beneficiary_account = benAcct;
+    }
+    const stateExact = sanitizeStringParam(q.state, 64);
+    if (stateExact) { where.push('state = @state'); params.state = stateExact; }
+    const cityExact = sanitizeStringParam(q.city, 64);
+    if (cityExact) { where.push('city = @city'); params.city = cityExact; }
     const dateFrom = sanitizeStringParam(q.date_from, 32);
     if (dateFrom) { where.push('transaction_date >= @date_from'); params.date_from = dateFrom; }
     const dateTo = sanitizeStringParam(q.date_to, 32);

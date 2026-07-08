@@ -205,27 +205,6 @@ const SQL_DELETE_EMPTY_AGGREGATE = `
      )
 `;
 
-// ─── Filter spec for getTransactionsByReport ─────────────────────────
-//
-// Each entry maps a filter key to a SQL fragment + the bound parameter
-// name. Filters are applied only when the caller supplies a non-null/
-// non-undefined value, so the cache key (built from sorted, present
-// filter keys) reflects exactly which fragments compose the final SQL.
-
-const TXN_FILTERS = Object.freeze({
-  layer_no:            { sql: 'layer_no = @layer_no',                                  bind: 'layer_no' },
-  beneficiary_account: { sql: 'beneficiary_account = @beneficiary_account',            bind: 'beneficiary_account' },
-  beneficiary_bank:    { sql: 'beneficiary_bank = @beneficiary_bank',                  bind: 'beneficiary_bank' },
-  payment_mode:        { sql: 'payment_mode = @payment_mode',                          bind: 'payment_mode' },
-  state:               { sql: 'state = @state',                                        bind: 'state' },
-  city:                { sql: 'city = @city',                                          bind: 'city' },
-  date_from:           { sql: 'transaction_date >= @date_from',                        bind: 'date_from' },
-  date_to:             { sql: 'transaction_date <= @date_to',                          bind: 'date_to' },
-  amount_min:          { sql: 'transaction_amount >= @amount_min',                     bind: 'amount_min' },
-  amount_max:          { sql: 'transaction_amount <= @amount_max',                     bind: 'amount_max' },
-  cashout_only:        { sql: "payment_mode IN ('ATM','POS','AEPS')",                   bind: null },
-});
-
 // ─── Prepared-statement cache ────────────────────────────────────────
 
 /**
@@ -240,12 +219,11 @@ const stmtCache = new WeakMap();
  * Return a cached prepared statement for (db, sql); compile on first use.
  *
  * Security: every SQL constant in this module uses either `?` (positional) or
- * `@name` (named) bind parameters — no string concatenation of user input. The
- * single dynamic place (`${whereSql}` in {@link getTransactionsByReport}) is
- * composed exclusively from fragments hard-coded in {@link TXN_FILTERS}; user
- * values still travel via named bind params. Auditing rule: any future
- * `db.prepare(...)` call MUST use placeholders, never template-interpolated
- * literals.
+ * `@name` (named) bind parameters — no string concatenation of user input.
+ * Auditing rule: any future `db.prepare(...)` call MUST use placeholders,
+ * never template-interpolated literals. (The Transaction Browser's dynamic
+ * WHERE composition lives in routes/ncrp.js, built from a fixed allow-list
+ * of column fragments with named binds.)
  *
  * @param {Database.Database} db
  * @param {string} sql
@@ -456,90 +434,6 @@ function insertManyTransactions(db, rows) {
     return batch.length;
   });
   return runBatch(rows);
-}
-
-/**
- * Paginated, filterable transaction listing for the Transaction Browser
- * screen. Returns items + total count + page metadata.
- *
- * Recognised filter keys: layer_no, beneficiary_account, beneficiary_bank,
- * payment_mode, state, city, date_from, date_to, amount_min, amount_max,
- * cashout_only (boolean).
- *
- * @param {Database.Database} db
- * @param {number} reportId
- * @param {Record<string, unknown>} [filters={}]
- * @param {number} [page=1]   1-indexed page number.
- * @param {number} [limit=100] Max 500 rows per page (enforced).
- * @returns {{
- *   items: ReadonlyArray<Record<string, unknown>>,
- *   total: number,
- *   page: number,
- *   limit: number,
- *   pageCount: number
- * }}
- */
-function getTransactionsByReport(db, reportId, filters = {}, page = 1, limit = 100) {
-  if (!Number.isInteger(reportId) || reportId <= 0) {
-    throw new TypeError('getTransactionsByReport: reportId must be a positive integer');
-  }
-  const safePage  = Math.max(1, Math.trunc(page) || 1);
-  const safeLimit = Math.min(500, Math.max(1, Math.trunc(limit) || 100));
-  const offset    = (safePage - 1) * safeLimit;
-
-  // Build WHERE clauses + bound params from the supplied filters.
-  /** @type {string[]} */
-  const whereParts = ['report_id = @report_id'];
-  /** @type {Record<string, unknown>} */
-  const params = { report_id: reportId };
-
-  // Stable, sorted iteration so the resulting SQL string (and therefore
-  // the prepared-statement cache key) is deterministic for a given filter
-  // shape — re-running the same filter shape reuses the prepared stmt.
-  const activeKeys = Object.keys(filters)
-    .filter((k) => {
-      if (!Object.prototype.hasOwnProperty.call(TXN_FILTERS, k)) return false;
-      const v = filters[k];
-      if (k === 'cashout_only') return v === true;
-      return v !== undefined && v !== null && v !== '';
-    })
-    .sort();
-
-  for (const key of activeKeys) {
-    const spec = TXN_FILTERS[key];
-    whereParts.push(spec.sql);
-    if (spec.bind) params[spec.bind] = filters[key];
-  }
-
-  const whereSql = whereParts.join(' AND ');
-
-  const listSql = `
-    SELECT *
-      FROM ncrp_transactions
-     WHERE ${whereSql}
-  ORDER BY transaction_date DESC, id DESC
-     LIMIT @limit OFFSET @offset
-  `;
-  const countSql = `
-    SELECT COUNT(*) AS total
-      FROM ncrp_transactions
-     WHERE ${whereSql}
-  `;
-
-  const items = getOrPrepare(db, listSql).all({
-    ...params,
-    limit: safeLimit,
-    offset,
-  });
-  const total = getOrPrepare(db, countSql).get(params).total;
-
-  return {
-    items,
-    total,
-    page: safePage,
-    limit: safeLimit,
-    pageCount: total === 0 ? 0 : Math.ceil(total / safeLimit),
-  };
 }
 
 /**
@@ -846,7 +740,6 @@ module.exports = {
   insertTransaction,
   updateTransactionCashout,
   getReportById,
-  getTransactionsByReport,
   updateLienStatus,
   replaceReportRepeatContributions,
   removeReportRepeatContributions,
