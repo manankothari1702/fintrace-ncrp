@@ -183,6 +183,23 @@ const CREATE_TABLES = Object.freeze([
     details    TEXT,
     timestamp  TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
+
+  // ─── users ───────────────────────────────────────────────────────
+  // Auth/RBAC (Phase 1 Sub-step B). Lives INSIDE the encrypted DB.
+  // role ∈ {system_admin, sho, io, data_entry_operator} (enforced in app
+  // code, not a CHECK, so the role set stays editable in one config place —
+  // lib/roles.js). must_change_password forces a change before any other
+  // access. is_active=0 deactivates a user without deleting audit history.
+  `CREATE TABLE IF NOT EXISTS users (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    username             TEXT    NOT NULL UNIQUE,
+    password_hash        TEXT    NOT NULL,
+    role                 TEXT    NOT NULL,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    is_active            INTEGER NOT NULL DEFAULT 1,
+    created_at           TEXT    DEFAULT CURRENT_TIMESTAMP,
+    last_login           TEXT
+  )`,
 ]);
 
 /**

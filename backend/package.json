@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
+    "bcryptjs": "^3.0.3",
     "better-sqlite3-multiple-ciphers": "^12.11.1",
     "dayjs": "^1.11.13",
     "electron-log": "^5.2.0",

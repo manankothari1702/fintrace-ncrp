@@ -357,11 +357,17 @@ function createNcrpRouter(db) {
   // hammer the upload endpoint without tripping the 5-per-minute cap.
   const isTestEnv = process.env.NODE_ENV === 'test';
   const noopLimiter = (_req, _res, next) => next();
+  // creationStack:false — this router is built lazily (exactly once, guarded)
+  // the first time a login unlocks the encrypted DB, which happens inside the
+  // login request. The limiters are still created only once and share one store;
+  // we opt out of express-rate-limit's "created in a request handler" warning,
+  // which is a false positive for this one-time lazy construction.
   const generalLimiter = isTestEnv ? noopLimiter : rateLimit({
     windowMs: 60 * 1000,
     max: 100,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { creationStack: false },
     handler: (_req, res) => sendError(res, 429, 'RATE_LIMITED',
       'Too many requests; please slow down.'),
   });
@@ -370,6 +376,7 @@ function createNcrpRouter(db) {
     max: 5,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { creationStack: false },
     handler: (_req, res) => sendError(res, 429, 'RATE_LIMITED',
       'Too many uploads in a short period; please wait a moment.'),
   });

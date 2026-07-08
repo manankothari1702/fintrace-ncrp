@@ -145,6 +145,74 @@ function applyKey(db, keyHex) {
   db.pragma(`key="x'${keyHex}'"`);
 }
 
+// ─── Envelope encryption of the DB key (Sub-step B) ──────────────────
+//
+// Auth ties DB access to a credential without ever storing the DB key in the
+// clear. A single random 256-bit Data Encryption Key (DEK) encrypts the DB.
+// Per user, the DEK is WRAPPED (AES-256-GCM) under a Key-Encryption-Key
+// derived from that user's password + a per-user salt, and the wrapped blob
+// lives in a keystore sidecar OUTSIDE the encrypted DB (lib/authStore.js).
+//
+//   login: KEK = PBKDF2(password, userSalt) → AES-GCM-decrypt(wrapped) → DEK
+//          → PRAGMA key = DEK → DB opens (wrong password ⇒ GCM tag fails)
+//
+// So every authorised user unlocks the SAME DEK; the admin password is no
+// longer a hardcoded/bootstrap secret — it is the credential the key derives
+// from. New users (Sub-step D) get the DEK re-wrapped under their password.
+
+/** Generate a fresh random 256-bit DEK as 64 hex chars. */
+function generateDek() {
+  return crypto.randomBytes(KDF.keyLenBytes).toString('hex');
+}
+
+/**
+ * Wrap (encrypt) a DEK under a password. Returns everything needed to unwrap
+ * except the password: a fresh salt, IV, ciphertext, and GCM auth tag (all hex).
+ *
+ * @param {string} dekHex - 64-char hex DEK to protect.
+ * @param {string} password - Credential the wrap is bound to.
+ * @returns {{salt:string, iv:string, ct:string, tag:string}}
+ */
+function wrapDek(dekHex, password) {
+  if (!/^[0-9a-f]{64}$/i.test(dekHex)) {
+    throw new TypeError('wrapDek: dekHex must be 64 hex characters');
+  }
+  const salt = crypto.randomBytes(KDF.saltLenBytes);
+  const kek = crypto.pbkdf2Sync(password, salt, KDF.iterations, KDF.keyLenBytes, KDF.digest);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', kek, iv);
+  const ct = Buffer.concat([cipher.update(Buffer.from(dekHex, 'hex')), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    salt: salt.toString('hex'),
+    iv: iv.toString('hex'),
+    ct: ct.toString('hex'),
+    tag: tag.toString('hex'),
+  };
+}
+
+/**
+ * Unwrap a DEK using the password. Throws if the password is wrong (the GCM
+ * auth tag will not verify) or the blob is malformed.
+ *
+ * @param {{salt:string, iv:string, ct:string, tag:string}} wrapped
+ * @param {string} password
+ * @returns {string} 64-char hex DEK.
+ */
+function unwrapDek(wrapped, password) {
+  if (!wrapped || !wrapped.salt || !wrapped.iv || !wrapped.ct || !wrapped.tag) {
+    throw new TypeError('unwrapDek: malformed wrapped-key blob');
+  }
+  const kek = crypto.pbkdf2Sync(
+    password, Buffer.from(wrapped.salt, 'hex'),
+    KDF.iterations, KDF.keyLenBytes, KDF.digest,
+  );
+  const decipher = crypto.createDecipheriv('aes-256-gcm', kek, Buffer.from(wrapped.iv, 'hex'));
+  decipher.setAuthTag(Buffer.from(wrapped.tag, 'hex'));
+  const out = Buffer.concat([decipher.update(Buffer.from(wrapped.ct, 'hex')), decipher.final()]);
+  return out.toString('hex');
+}
+
 module.exports = {
   KDF,
   getCredentialSecret,
@@ -153,4 +221,7 @@ module.exports = {
   deriveDbKey,
   resolveDbKey,
   applyKey,
+  generateDek,
+  wrapDek,
+  unwrapDek,
 };

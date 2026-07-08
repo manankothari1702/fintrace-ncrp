@@ -27,6 +27,8 @@ const express = require('express');
 const { initializeDatabase } = require('./db/schema');
 const { resolveDbKey } = require('./lib/dbKey');
 const { createNcrpRouter } = require('./routes/ncrp');
+const { createAuthContext } = require('./auth/authContext');
+const { createAuthRouter } = require('./routes/auth');
 
 // ─── Bind target ─────────────────────────────────────────────────────
 // Loopback only. Overridable via env for tests, but the host stays pinned
@@ -68,7 +70,9 @@ function corsMiddleware(req, res, next) {
   // Any other origin: no ACAO header → the browser blocks it.
 
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // Content-Type for JSON bodies; Authorization / X-Session-Token carry the
+  // session token (Sub-step B). Still no cookies/credentials.
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token');
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -94,26 +98,85 @@ function resolveDbPath(dbPath) {
 }
 
 /**
- * Build the Express app over an already-open DB connection. Pure: does not
- * listen, so it is reusable from tests.
+ * Build the Express app over an ALREADY-OPEN DB connection (the open-db path,
+ * used by the test harness and any in-process caller). Pure: does not listen.
  *
- * @param {import('better-sqlite3').Database} db - Open connection.
+ * Mounts the auth routes (Sub-step B) plus the NCRP routes. In Sub-step B the
+ * NCRP routes are still unauthenticated here; Sub-step C funnels them through
+ * the requireAuth choke-point and updates the test harness to authenticate.
+ * An auth context is created around the given db unless one is supplied, and is
+ * exposed via `app.locals.authContext` for tests/helpers.
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db - Open connection.
+ * @param {object} [opts]
+ * @param {object} [opts.authContext] - Pre-built context (else one is created).
  * @returns {import('express').Express}
  */
-function createApp(db) {
+function createApp(db, opts = {}) {
   const app = express();
 
   // Trust no proxy — we only ever see direct loopback connections.
   app.disable('x-powered-by');
 
+  const authContext = opts.authContext || createAuthContext({ db });
+  app.locals.authContext = authContext;
+
   app.use(corsMiddleware);
+  app.use('/api', createAuthRouter(authContext));
   app.use('/api', createNcrpRouter(db));
 
   return app;
 }
 
 /**
- * Open the database, build the app, and start listening on 127.0.0.1.
+ * Build the REAL, login-gated app used by the packaged/dev Electron backend.
+ * The DB starts LOCKED (not opened at boot); the NCRP routes are mounted
+ * lazily the first time a login unlocks and opens the DB. Auth routes and a
+ * always-available /api/health work while locked.
+ *
+ * @param {object} authContext - from createAuthContext({ dbPath }).
+ * @returns {import('express').Express}
+ */
+function createServerApp(authContext) {
+  const app = express();
+  app.disable('x-powered-by');
+  app.locals.authContext = authContext;
+
+  app.use(corsMiddleware);
+  app.use('/api', createAuthRouter(authContext));
+
+  // Health works even while the DB is locked (no auth required).
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', locked: authContext.isLocked(), timestamp: new Date().toISOString() });
+  });
+
+  // Lazily build + delegate to the NCRP router once a login has opened the DB.
+  // (createNcrpRouter prepares statements against the open connection, so it
+  // cannot be built until the DEK is unlocked at login.)
+  let ncrpRouter = null;
+  app.use('/api', (req, res, next) => {
+    const db = authContext.getDb();
+    if (!db) {
+      return res.status(503).json({
+        error: { code: 'DB_LOCKED', message: 'Sign in to load case data.' },
+      });
+    }
+    if (!ncrpRouter) ncrpRouter = createNcrpRouter(db);
+    return ncrpRouter(req, res, next);
+  });
+
+  return app;
+}
+
+/**
+ * Start the REAL login-gated backend and listen on 127.0.0.1.
+ *
+ * The DB is NOT opened at boot. `bootstrap()` guarantees a seeded admin +
+ * keystore exist (creating the encrypted DB on first run, or migrating a
+ * legacy plaintext one — see auth/authContext + Sub-step A). The encrypted DB
+ * is then opened by the first successful login, whose password unlocks the DEK
+ * from the keystore — i.e. the DB key is derived from the admin credential
+ * (the Sub-step A seam, now fulfilled). App close = logout = DB handle gone.
  *
  * @param {object} [opts]
  * @param {string} [opts.dbPath] - SQLite file path (see {@link resolveDbPath}).
@@ -121,37 +184,34 @@ function createApp(db) {
  * @param {string} [opts.host]   - Host to bind (default 127.0.0.1).
  * @returns {Promise<{ app: import('express').Express,
  *                      server: import('http').Server,
- *                      db: import('better-sqlite3').Database }>}
+ *                      authContext: object }>}
  */
 function startServer(opts = {}) {
   const dbPath = resolveDbPath(opts.dbPath);
   const port = opts.port || PORT;
   const host = opts.host || HOST;
 
-  // Encryption at rest (Sub-step A). Derive the SQLCipher key from the
-  // credential secret + per-install salt. `opts.dbKeySecret` is the Sub-step B
-  // seam: once auth exists, the caller passes the admin-password-derived
-  // secret here and the DB opens only after a successful login. Absent that,
-  // resolveDbKey falls back to the bootstrap secret (lib/dbKey.js).
-  const key = resolveDbKey(dbPath, opts.dbKeySecret);
-  const db = initializeDatabase(dbPath, { key });
-  const app = createApp(db);
+  const authContext = createAuthContext({ dbPath });
+  authContext.bootstrap(); // idempotent: seed admin + create/migrate encrypted DB
+  const app = createServerApp(authContext);
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, host, () => {
       // Required startup banner.
       console.log(`FinTrace backend ready on ${host}:${port}`);
-      resolve({ app, server, db });
+      resolve({ app, server, authContext });
     });
 
     server.on('error', (err) => {
-      try { db.close(); } catch (_e) { /* best effort */ }
+      const db = authContext.getDb();
+      if (db) { try { db.close(); } catch (_e) { /* best effort */ } }
       reject(err);
     });
 
     // Close the DB cleanly when the server stops.
     server.on('close', () => {
-      try { db.close(); } catch (_e) { /* already closed */ }
+      const db = authContext.getDb();
+      if (db) { try { db.close(); } catch (_e) { /* already closed */ } }
     });
   });
 }
@@ -164,4 +224,6 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app: createApp, createApp, startServer, resolveDbPath, HOST, PORT };
+module.exports = {
+  app: createApp, createApp, createServerApp, startServer, resolveDbPath, HOST, PORT,
+};
