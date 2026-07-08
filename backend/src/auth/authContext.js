@@ -238,6 +238,66 @@ function createAuthContext(opts = {}) {
     return publicUser(authQ.getUserByUsername(db, username));
   }
 
+  /** @returns {number} count of active system_admin users */
+  function activeAdminCount() {
+    return db.prepare(
+      "SELECT COUNT(*) AS n FROM users WHERE role = ? AND is_active = 1",
+    ).get(ROLES.SYSTEM_ADMIN).n;
+  }
+
+  /** List users (no hashes) for the admin screen. */
+  function listUsers() {
+    return authQ.listUsers(db).map((u) => ({
+      ...u,
+      must_change_password: !!u.must_change_password,
+      is_active: !!u.is_active,
+    }));
+  }
+
+  /**
+   * Activate/deactivate a user. Refuses to deactivate the last active admin
+   * (prevents locking everyone out).
+   */
+  function setUserActive(_actingSession, id, active) {
+    const target = authQ.getUserById(db, id);
+    if (!target) { const e = new Error('User not found.'); e.code = 'NOT_FOUND'; throw e; }
+    if (!active && target.role === ROLES.SYSTEM_ADMIN && target.is_active && activeAdminCount() <= 1) {
+      const e = new Error('Cannot deactivate the last active administrator.'); e.code = 'LAST_ADMIN'; throw e;
+    }
+    authQ.setUserActive(db, id, active);
+    return publicUser(authQ.getUserById(db, id));
+  }
+
+  /** Change a user's role. Refuses to demote the last active admin. */
+  function setUserRole(_actingSession, id, role) {
+    if (!isValidRole(role)) { const e = new Error('Unknown role.'); e.code = 'INVALID_ROLE'; throw e; }
+    const target = authQ.getUserById(db, id);
+    if (!target) { const e = new Error('User not found.'); e.code = 'NOT_FOUND'; throw e; }
+    if (target.role === ROLES.SYSTEM_ADMIN && role !== ROLES.SYSTEM_ADMIN
+        && target.is_active && activeAdminCount() <= 1) {
+      const e = new Error('Cannot change the role of the last active administrator.'); e.code = 'LAST_ADMIN'; throw e;
+    }
+    authQ.updateUserRole(db, id, role);
+    return publicUser(authQ.getUserById(db, id));
+  }
+
+  /**
+   * Admin resets another user's password: sets a new temporary password and
+   * forces a change at next login. Re-wraps the DEK for that user (locked path)
+   * using the admin's in-session DEK so they can still unlock the DB.
+   */
+  function resetUserPassword(actingSession, id, newPassword) {
+    const target = authQ.getUserById(db, id);
+    if (!target) { const e = new Error('User not found.'); e.code = 'NOT_FOUND'; throw e; }
+    const check = validatePassword(newPassword);
+    if (!check.ok) { const e = new Error(check.errors.join(' ')); e.code = 'WEAK_PASSWORD'; throw e; }
+    authQ.updateUserPassword(db, id, hashPassword(newPassword), true);
+    if (actingSession && actingSession.dekHex && keystore.hasEntry(target.username)) {
+      keystore.addEntry(target.username, actingSession.dekHex, newPassword);
+    }
+    return publicUser(authQ.getUserById(db, id));
+  }
+
   return {
     sessions,
     keystore,
@@ -248,7 +308,11 @@ function createAuthContext(opts = {}) {
     logout,
     changePassword,
     createUser,
-    // exposed for user-management (Sub-step D) + audit wiring (Sub-step C)
+    listUsers,
+    setUserActive,
+    setUserRole,
+    resetUserPassword,
+    // exposed for audit wiring (Sub-step C) + helpers
     authQ,
   };
 }

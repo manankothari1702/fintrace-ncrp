@@ -31,6 +31,7 @@ const XLSX = require('xlsx');
 const { parseNcrpFile, _internals } = require('../parsers/ncrpParser');
 const { initializeDatabase } = require('../db/schema');
 const { createApp } = require('../server');
+const { loginAs, authed } = require('./helpers/auth');
 
 const { SHEET_CATEGORY, classifySheet } = _internals;
 
@@ -207,9 +208,10 @@ describe('upload route: Old Transaction sheet does not block the upload', () => 
   let db;
   let agent;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     db = initializeDatabase(':memory:');
-    agent = request(createApp(db));
+    const app = createApp(db);
+    agent = authed(app, await loginAs(app));
   });
   afterAll(() => {
     try { db.close(); } catch (_e) { /* best effort */ }

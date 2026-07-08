@@ -20,6 +20,7 @@ const request = require('supertest');
 const { initializeDatabase } = require('../../db/schema');
 const { createApp } = require('../../server');
 const { makeTestXlsx, buildStandardRows } = require('../helpers/xlsx');
+const { loginAs, authed } = require('../helpers/auth');
 
 /**
  * Poll the report until its analysis_status leaves 'pending'/'processing'.
@@ -45,10 +46,13 @@ let db;
 let app;
 let agent;
 
-beforeAll(() => {
+beforeAll(async () => {
   db = initializeDatabase(':memory:');
   app = createApp(db);
-  agent = request(app);
+  // Sub-step C: routes now require auth. Authenticate as admin (all perms) via
+  // the REAL login path; `authed` wraps supertest so agent.* carries the token.
+  const token = await loginAs(app);
+  agent = authed(app, token);
 });
 
 afterAll(() => {

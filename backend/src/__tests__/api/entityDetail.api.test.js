@@ -21,6 +21,7 @@ const { initializeDatabase } = require('../../db/schema');
 const { createApp } = require('../../server');
 const { makeTestXlsx, buildStandardRows, STANDARD_HEADERS } = require('../helpers/xlsx');
 const { filterRows, canonAcct } = require('../../utils/entityDetail');
+const { loginAs, authed } = require('../helpers/auth');
 
 async function waitForAnalysis(agent, reportId, timeoutMs = 8000) {
   const start = Date.now();
@@ -44,7 +45,8 @@ let report;
 beforeAll(async () => {
   db = initializeDatabase(':memory:');
   app = createApp(db);
-  agent = request(app);
+  const token = await loginAs(app); // admin (all perms); routes require auth (Sub-step C)
+  agent = authed(app, token);
 
   const buf = makeTestXlsx(buildStandardRows());
   const res = await agent.post('/api/ncrp/upload').attach('ncrpFile', buf, 'sample_ncrp.xlsx');

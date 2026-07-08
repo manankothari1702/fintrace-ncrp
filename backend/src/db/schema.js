@@ -287,6 +287,15 @@ const COLUMN_MIGRATIONS = Object.freeze([
   // first occurrence and every non-duplicate row, 1 for an exact-duplicate leg.
   { table: 'ncrp_transactions', column: 'is_duplicate',
     ddl: 'ALTER TABLE ncrp_transactions ADD COLUMN is_duplicate INTEGER DEFAULT 0' },
+
+  // Phase 1 Sub-step C — audit-log user identity. WHO performed each action.
+  // Nullable (rows predating auth, or background/system events have no user).
+  // username is denormalised alongside user_id so the trail stays legible even
+  // if the user row is later removed.
+  { table: 'audit_log', column: 'user_id',
+    ddl: 'ALTER TABLE audit_log ADD COLUMN user_id INTEGER' },
+  { table: 'audit_log', column: 'username',
+    ddl: 'ALTER TABLE audit_log ADD COLUMN username TEXT' },
 ]);
 
 /**

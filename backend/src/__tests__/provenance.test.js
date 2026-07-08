@@ -26,6 +26,7 @@ const request = require('supertest');
 
 const { initializeDatabase } = require('../db/schema');
 const { createApp } = require('../server');
+const { loginAs, authed } = require('./helpers/auth');
 const { makeTestXlsx, buildStandardRows, STANDARD_HEADERS } = require('./helpers/xlsx');
 const { extractPdfText } = require('./helpers/pdfText');
 const { sha256File, sha256Buffer, appVersion } = require('../lib/provenance');
@@ -79,9 +80,10 @@ async function waitForAnalysis(agent, reportId, timeoutMs = 8000) {
 let db;
 let agent;
 
-beforeAll(() => {
+beforeAll(async () => {
   db = initializeDatabase(':memory:');
-  agent = request(createApp(db));
+  const app = createApp(db);
+  agent = authed(app, await loginAs(app));
 });
 
 afterAll(() => {

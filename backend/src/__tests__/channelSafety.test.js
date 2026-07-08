@@ -43,6 +43,7 @@ const { parseNcrpFile, _internals } = require('../parsers/ncrpParser');
 const { analyzeReport } = require('../analyzers/analyzer');
 const { initializeDatabase } = require('../db/schema');
 const { createApp } = require('../server');
+const { loginAs, authed } = require('./helpers/auth');
 
 const { SHEET_CATEGORY, classifySheet } = _internals;
 
@@ -292,10 +293,10 @@ describe('upload route: unknown-sheet policy is consequence-scoped', () => {
   let app;
   let agent;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     db = initializeDatabase(':memory:');
     app = createApp(db);
-    agent = request(app);
+    agent = authed(app, await loginAs(app));
   });
 
   afterAll(() => {

@@ -21,6 +21,7 @@ const request = require('supertest');
 
 const { initializeDatabase } = require('../db/schema');
 const { createApp } = require('../server');
+const { loginAs, authed } = require('./helpers/auth');
 const { insertReport } = require('../db/queries');
 const { _internals: emailInternals } = require('../utils/emailGenerator');
 
@@ -31,9 +32,14 @@ const { sanitizeIdentifier } = emailInternals;
 let db;
 let app;
 
-beforeAll(() => {
+let agent;
+
+beforeAll(async () => {
   db = initializeDatabase(':memory:');
   app = createApp(db);
+  // Sub-step C: routes require auth. Admin has every permission; validation/
+  // upload/etc. under test all run AFTER the auth choke-point.
+  agent = authed(app, await loginAs(app));
 });
 
 afterAll(() => {
@@ -73,7 +79,7 @@ describe('sanitizeIdentifier', () => {
 describe('upload filename sanitisation', () => {
   test('"../../../etc/passwd.xlsx" → safe basename in the response', async () => {
     const buf = makeTestXlsx(buildStandardRows());
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .attach('ncrpFile', buf, '../../../etc/passwd.xlsx');
 
@@ -90,7 +96,7 @@ describe('upload filename sanitisation', () => {
 
 describe(':id parameter validation', () => {
   test('GET /api/ncrp/1;DROP TABLE ncrp_reports → 400, no DB action', async () => {
-    const res = await request(app).get('/api/ncrp/1;DROP TABLE');
+    const res = await agent.get('/api/ncrp/1;DROP TABLE');
     expect(res.status).toBe(400);
     expect(res.body).toEqual(expect.objectContaining({
       error: expect.objectContaining({ code: 'VALIDATION_FAILED' }),
@@ -105,9 +111,9 @@ describe(':id parameter validation', () => {
   });
 
   test('negative numbers and floats are rejected', async () => {
-    const neg = await request(app).get('/api/ncrp/-1');
+    const neg = await agent.get('/api/ncrp/-1');
     expect(neg.status).toBe(400);
-    const flt = await request(app).get('/api/ncrp/1.5');
+    const flt = await agent.get('/api/ncrp/1.5');
     expect(flt.status).toBe(400);
   });
 });
@@ -120,7 +126,7 @@ describe('file size cap', () => {
     // LIMIT_FILE_SIZE before the parser sees the bytes, so this never touches
     // the magic-byte path.
     const big = Buffer.alloc(51 * 1024 * 1024);
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .attach('ncrpFile', big, 'huge.xlsx');
 
@@ -137,7 +143,7 @@ describe('Excel magic-byte gate', () => {
   test('non-Excel buffer with .xlsx extension → 400 INVALID_FILE_CONTENT', async () => {
     // 100 bytes of 'A' (0x41) — not a ZIP container, not an OLE2 doc.
     const fake = Buffer.alloc(100, 0x41);
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .attach('ncrpFile', fake, 'fake.xlsx');
 
@@ -152,7 +158,7 @@ describe('Excel magic-byte gate', () => {
 
 describe('CORS middleware', () => {
   test('Vite dev origin (http://localhost:5173) is echoed back', async () => {
-    const res = await request(app)
+    const res = await agent
       .get('/api/health')
       .set('Origin', 'http://localhost:5173');
     expect(res.status).toBe(200);
@@ -160,7 +166,7 @@ describe('CORS middleware', () => {
   });
 
   test('file:// origin (Electron renderer) gets wildcard', async () => {
-    const res = await request(app)
+    const res = await agent
       .get('/api/health')
       .set('Origin', 'file:///path/to/app');
     expect(res.status).toBe(200);
@@ -168,14 +174,14 @@ describe('CORS middleware', () => {
   });
 
   test('OPTIONS preflight returns 204', async () => {
-    const res = await request(app)
+    const res = await agent
       .options('/api/ncrp/reports')
       .set('Origin', 'http://localhost:5173');
     expect(res.status).toBe(204);
   });
 
   test('unknown origin → no ACAO header (browser will block)', async () => {
-    const res = await request(app)
+    const res = await agent
       .get('/api/health')
       .set('Origin', 'http://evil.example.com');
     expect(res.status).toBe(200);
@@ -188,7 +194,7 @@ describe('CORS middleware', () => {
 
 describe('404 fallback', () => {
   test('unmatched /api route → 404 NOT_FOUND', async () => {
-    const res = await request(app).get('/api/does-not-exist');
+    const res = await agent.get('/api/does-not-exist');
     expect(res.status).toBe(404);
     expect(res.body).toEqual(expect.objectContaining({
       error: expect.objectContaining({ code: 'NOT_FOUND' }),
@@ -207,7 +213,7 @@ describe('lien_status enum', () => {
       analysis_status: 'pending',
     });
 
-    const res = await request(app)
+    const res = await agent
       .post(`/api/ncrp/${reportId}/lien`)
       .send({ account_no: 'ACC-1', lien_status: 'hacked' });
 
@@ -222,7 +228,7 @@ describe('lien_status enum', () => {
       filename: 'sec2.xlsx', original_filename: 'sec2.xlsx',
       upload_date: new Date().toISOString(),
     });
-    const res = await request(app)
+    const res = await agent
       .post(`/api/ncrp/${reportId}/lien`)
       .send({ lien_status: 'pending' });
     expect(res.status).toBe(400);
@@ -236,7 +242,7 @@ describe('upload validation edges', () => {
   test('no file in the multipart body → 400 VALIDATION_FAILED', async () => {
     // Send a multipart body with no `ncrpFile` field — multer accepts the
     // request but req.file is undefined.
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .field('not_a_file', 'hello');
     expect(res.status).toBe(400);
@@ -244,7 +250,7 @@ describe('upload validation edges', () => {
   });
 
   test('wrong extension (.txt) → 400 INVALID_FILE_TYPE', async () => {
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .attach('ncrpFile', Buffer.from('plain text body'), 'notes.txt');
     expect(res.status).toBe(400);
@@ -256,7 +262,7 @@ describe('upload validation edges', () => {
     // garbage bytes that pass as not-quite-Excel still fail there. Verified
     // by the magic-byte test above; here we double-check the matching
     // 400 code on a totally empty buffer.
-    const res = await request(app)
+    const res = await agent
       .post('/api/ncrp/upload')
       .attach('ncrpFile', Buffer.alloc(0), 'empty.xlsx');
     expect([400, 500]).toContain(res.status);
@@ -271,7 +277,7 @@ describe('POST /api/ncrp/:id/emails/:emailId validation', () => {
       filename: 'em.xlsx', original_filename: 'em.xlsx',
       upload_date: new Date().toISOString(),
     });
-    const res = await request(app)
+    const res = await agent
       .post(`/api/ncrp/${reportId}/emails/notanint`)
       .send({ status: 'sent' });
     expect(res.status).toBe(400);
@@ -282,7 +288,7 @@ describe('POST /api/ncrp/:id/emails/:emailId validation', () => {
       filename: 'em2.xlsx', original_filename: 'em2.xlsx',
       upload_date: new Date().toISOString(),
     });
-    const res = await request(app)
+    const res = await agent
       .post(`/api/ncrp/${reportId}/emails/1`)
       .send({ status: 'archived' });
     expect(res.status).toBe(400);

@@ -53,6 +53,8 @@ const {
   insertAuditLog,
   findReportsByAckNo,
 } = require('../db/queries');
+const { createRequireAuth, createRequirePermission } = require('../middleware/requireAuth');
+const { PERMISSIONS } = require('../lib/roles');
 const { sha256File, appVersion } = require('../lib/provenance');
 const { generateReportPdf } = require('../utils/pdfGenerator');
 const {
@@ -332,10 +334,14 @@ function parseAnalysis(report) {
 /**
  * Build the NCRP API router bound to a specific database connection.
  *
- * @param {import('better-sqlite3').Database} db - Open, initialised connection.
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db - Open, initialised connection.
+ * @param {object} [authCtx] - Auth context (Sub-step C). When present, every
+ *   NCRP route below /health funnels through the requireAuth choke-point plus a
+ *   per-route permission check. Omitting it (legacy/no-auth callers) leaves the
+ *   routes open — but the app always passes it.
  * @returns {import('express').Router} Mount at `/api`.
  */
-function createNcrpRouter(db) {
+function createNcrpRouter(db, authCtx) {
   if (!db || typeof db.prepare !== 'function') {
     throw new TypeError('createNcrpRouter: db must be an open better-sqlite3 connection');
   }
@@ -343,6 +349,42 @@ function createNcrpRouter(db) {
   const router = express.Router();
   // JSON bodies only (skips multipart, so the upload route is unaffected).
   router.use(express.json({ limit: '2mb' }));
+
+  // ── Auth choke-point + per-route permission gate (Sub-step C) ──────
+  // requireAuth validates the session (and blocks forced-password-change users);
+  // P(permission) enforces the role→permission map (lib/roles.js). /health is
+  // registered ABOVE the choke-point so it stays public. A future LAN mode
+  // swaps ONLY createRequireAuth for a JWT variant — no route changes.
+  router.get('/health', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  const requireAuth = authCtx
+    ? createRequireAuth(authCtx)
+    : (_req, _res, next) => next();
+  /** Per-route permission middleware; a no-op only when auth is disabled. */
+  const P = authCtx
+    ? (permission) => createRequirePermission(permission)
+    : () => (_req, _res, next) => next();
+
+  router.use(requireAuth);
+
+  /**
+   * Write an audit row stamped with the acting user's identity (Sub-step C).
+   * Falls back to nulls when there is no authenticated user (e.g. background
+   * analysis triggered before auth, or the no-auth legacy path).
+   * @param {import('express').Request|null} req
+   * @param {{report_id?:number, action:string, details?:any}} entry
+   * @param {{userId?:number, username?:string}} [actor] - explicit actor when req is absent.
+   */
+  const audit = (req, entry, actor) => {
+    const u = (req && req.user) || actor || {};
+    insertAuditLog(db, {
+      ...entry,
+      user_id: u.userId != null ? u.userId : null,
+      username: u.username != null ? u.username : null,
+    });
+  };
 
   // ── Rate limiting (loopback-only, so limits are lenient) ──────────
   //
@@ -496,7 +538,7 @@ function createNcrpRouter(db) {
    *
    * @param {number} reportId
    */
-  async function runAnalysisInBackground(reportId) {
+  async function runAnalysisInBackground(reportId, actor) {
     try {
       updateReportAnalysis(db, reportId, { analysis_status: 'processing' });
 
@@ -580,7 +622,7 @@ function createNcrpRouter(db) {
           total_layers: result.summary.total_layers,
           fraud_start_date: result.summary.fraud_start_date,
         });
-        insertAuditLog(db, {
+        audit(null, {
           report_id: reportId,
           action: 'analysis.complete',
           details: {
@@ -588,7 +630,7 @@ function createNcrpRouter(db) {
             layers: result.summary.total_layers,
             module_errors: result.errors,
           },
-        });
+        }, actor);
       });
 
       // If the officer deleted this report while analysis was still running, the
@@ -602,11 +644,11 @@ function createNcrpRouter(db) {
     } catch (err) {
       try {
         updateReportAnalysis(db, reportId, { analysis_status: 'error' });
-        insertAuditLog(db, {
+        audit(null, {
           report_id: reportId,
           action: 'analysis.error',
           details: { message: err && err.message ? err.message : String(err) },
-        });
+        }, actor);
       } catch (_e) { /* nothing more we can do */ }
     }
   }
@@ -616,7 +658,7 @@ function createNcrpRouter(db) {
   // ════════════════════════════════════════════════════════════════
 
   // POST /api/ncrp/upload — ingest an NCRP Excel export, analyse in background.
-  router.post('/ncrp/upload', uploadLimiter, (req, res) => {
+  router.post('/ncrp/upload', uploadLimiter, P(PERMISSIONS.UPLOAD_REPORT), (req, res) => {
     uploadSingle(req, res, (err) => {
       if (err) {
         if (err.code === 'LIMIT_FILE_SIZE') {
@@ -772,7 +814,7 @@ function createNcrpRouter(db) {
         // Audit row carries the full provenance tuple: case id (report_id), the
         // original filename, the source SHA-256, the upload timestamp, and the
         // FinTrace version — a tamper-evident record of what was ingested.
-        insertAuditLog(db, {
+        audit(req, {
           report_id: reportId,
           action: 'upload.ingested',
           details: {
@@ -803,18 +845,21 @@ function createNcrpRouter(db) {
         warnings,
       });
 
-      setImmediate(() => { runAnalysisInBackground(reportId); });
+      const actor = req.user
+        ? { userId: req.user.userId, username: req.user.username }
+        : undefined;
+      setImmediate(() => { runAnalysisInBackground(reportId, actor); });
     });
   });
 
   // GET /api/ncrp/reports — all reports, newest first.
-  router.get('/ncrp/reports', (_req, res) => {
+  router.get('/ncrp/reports', P(PERMISSIONS.VIEW_CASES), (_req, res) => {
     const reports = stmt.listReports.all();
     res.json(reports);
   });
 
   // GET /api/ncrp/:id/transactions — paginated, filterable listing.
-  router.get('/ncrp/:id/transactions', (req, res) => {
+  router.get('/ncrp/:id/transactions', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -974,7 +1019,7 @@ function createNcrpRouter(db) {
   // chip matched zero rows (the data stores "State Bank of India" / "Kotak
   // Mahindra Bank"), silently returning a false "no transactions" for the
   // largest banks; deriving the options from the data makes every option real.
-  router.get('/ncrp/:id/transaction-facets', (req, res) => {
+  router.get('/ncrp/:id/transaction-facets', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const banks = db.prepare(`
@@ -998,7 +1043,7 @@ function createNcrpRouter(db) {
   // snapshot (which carries the rich Module-5 fields: txn_count, bank_count,
   // fan_out_ratio, top_banks), falling back to the persisted table for reports
   // analysed before those fields existed.
-  router.get('/ncrp/:id/layers', (req, res) => {
+  router.get('/ncrp/:id/layers', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1009,7 +1054,7 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id/mules — mule detection from the analysis snapshot.
-  router.get('/ncrp/:id/mules', (req, res) => {
+  router.get('/ncrp/:id/mules', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1018,7 +1063,7 @@ function createNcrpRouter(db) {
 
   // GET /api/ncrp/:id/aggregators — Feature 3: aggregator (collection-point)
   // accounts + summary strip, from the analysis snapshot.
-  router.get('/ncrp/:id/aggregators', (req, res) => {
+  router.get('/ncrp/:id/aggregators', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1030,7 +1075,7 @@ function createNcrpRouter(db) {
 
   // GET /api/ncrp/:id/cash-exit — Features 4/5: cash/exit channel analytics
   // (ATM/POS/AEPS KPIs, behavioural flags, top cities/points) from the snapshot.
-  router.get('/ncrp/:id/cash-exit', (req, res) => {
+  router.get('/ncrp/:id/cash-exit', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1048,7 +1093,7 @@ function createNcrpRouter(db) {
   //   • ?scope=view&channel=ATM[&flag=rapid] → the current filtered view, one sheet.
   // Same dual delivery as /excel: stream by default, ?mode=file for the Electron
   // renderer. Reuses the shared Excel infra (generateCashExitExcel).
-  router.get('/ncrp/:id/cash-exit/excel', (req, res) => {
+  router.get('/ncrp/:id/cash-exit/excel', P(PERMISSIONS.EXPORT), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const fileMode = req.query.mode === 'file';
@@ -1067,7 +1112,7 @@ function createNcrpRouter(db) {
 
       const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
       const fileName = `FinTrace-CashExit-${scope}-${safeAck}-${Date.now()}.xlsx`;
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id, action: 'cash_exit_excel.generated', details: { file: fileName, scope },
       });
 
@@ -1093,7 +1138,7 @@ function createNcrpRouter(db) {
   // sidebar count badges (aggregators on Mule Accounts, risk flags on Cash/Exit),
   // read from the cached snapshot so the sidebar never recomputes or pulls the
   // full analysis payload.
-  router.get('/ncrp/:id/badges', (req, res) => {
+  router.get('/ncrp/:id/badges', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1107,7 +1152,7 @@ function createNcrpRouter(db) {
   // GET /api/ncrp/:id/data-quality — accounts whose bank attribution needs IO
   // review (IFSC↔text mismatch, missing/invalid IFSC, unknown prefix). Served
   // from the analysis snapshot.
-  router.get('/ncrp/:id/data-quality', (req, res) => {
+  router.get('/ncrp/:id/data-quality', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1115,14 +1160,14 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id/lien — lien worksheet rows.
-  router.get('/ncrp/:id/lien', (req, res) => {
+  router.get('/ncrp/:id/lien', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     res.json(stmt.liens.all(report.id));
   });
 
   // POST /api/ncrp/:id/lien — insert or update one lien record by account.
-  router.post('/ncrp/:id/lien', (req, res) => {
+  router.post('/ncrp/:id/lien', P(PERMISSIONS.CASE_WORK), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1148,7 +1193,7 @@ function createNcrpRouter(db) {
         if (remarks !== undefined) {
           stmt.updateLienRemarks.run({ id: existing.id, remarks });
         }
-        insertAuditLog(db, {
+        audit(req, {
           report_id: report.id,
           action: 'lien.updated',
           details: { account_no: accountNo, lien_status: lienStatus ?? existing.lien_status },
@@ -1168,7 +1213,7 @@ function createNcrpRouter(db) {
         lien_status: lienStatus || 'pending',
         remarks: remarks ?? null,
       });
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id,
         action: 'lien.created',
         details: { account_no: accountNo, lien_status: lienStatus || 'pending' },
@@ -1189,7 +1234,7 @@ function createNcrpRouter(db) {
   // total. Persisted letters are regenerated when they no longer match the
   // freshly-derived set (re-analysis, or this build moving wallet/masked rows
   // out of the letters), preserving sent-status by bank name.
-  router.get('/ncrp/:id/emails', (req, res) => {
+  router.get('/ncrp/:id/emails', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1258,7 +1303,7 @@ function createNcrpRouter(db) {
   });
 
   // POST /api/ncrp/:id/emails/:emailId — update a draft email's status.
-  router.post('/ncrp/:id/emails/:emailId', (req, res) => {
+  router.post('/ncrp/:id/emails/:emailId', P(PERMISSIONS.CASE_WORK), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1280,7 +1325,7 @@ function createNcrpRouter(db) {
     }
 
     stmt.updateEmailStatus.run({ id: emailId, report_id: report.id, status });
-    insertAuditLog(db, {
+    audit(req, {
       report_id: report.id,
       action: 'email.status_updated',
       details: { email_id: emailId, status },
@@ -1290,7 +1335,7 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id/timeline — timeline from the analysis snapshot.
-  router.get('/ncrp/:id/timeline', (req, res) => {
+  router.get('/ncrp/:id/timeline', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1298,7 +1343,7 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id/geography — geography from the analysis snapshot.
-  router.get('/ncrp/:id/geography', (req, res) => {
+  router.get('/ncrp/:id/geography', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     const analysis = parseAnalysis(report);
@@ -1324,7 +1369,7 @@ function createNcrpRouter(db) {
   // kinds (transfers + HOLD/OTHER dispositions), which is why the donut is
   // labelled "LEDGER ROWS" — a deliberately different figure from the headline
   // transaction (hop) count.
-  router.get('/ncrp/:id/payment-modes', (req, res) => {
+  router.get('/ncrp/:id/payment-modes', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     // Reuse the analyzer's exact-duplicate collapse on the raw ledger rows (it
@@ -1396,7 +1441,7 @@ function createNcrpRouter(db) {
 
   // GET /api/ncrp/:id/entity/:type — detail payload for one entity
   // (?id=… for account/atm/…; see entityParamsFromQuery for the identifier keys).
-  router.get('/ncrp/:id/entity/:type', (req, res) => {
+  router.get('/ncrp/:id/entity/:type', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const loaded = loadEntityDetail(req, res);
     if (!loaded) return;
     res.json(loaded.detail);
@@ -1406,7 +1451,7 @@ function createNcrpRouter(db) {
   // `?search=` re-applies the modal's own filter rule (shared filterRows over
   // the payload's `searchable` fields), so the workbook holds exactly the rows
   // shown. Same dual delivery as the other exports (?mode=file for Electron).
-  router.get('/ncrp/:id/entity/:type/excel', (req, res) => {
+  router.get('/ncrp/:id/entity/:type/excel', P(PERMISSIONS.EXPORT), (req, res) => {
     const loaded = loadEntityDetail(req, res);
     if (!loaded) return;
     const { report, analysis, detail } = loaded;
@@ -1427,7 +1472,7 @@ function createNcrpRouter(db) {
       const safeEntity = String(detail.entity_id || detail.entity_type)
         .replace(/[^\w.-]+/g, '_').slice(0, 40);
       const fileName = `FinTrace-Drilldown-${detail.entity_type}-${safeEntity}-${safeAck}-${Date.now()}.xlsx`;
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id,
         action: 'entity_excel.generated',
         details: { file: fileName, entity_type: detail.entity_type, entity_id: detail.entity_id },
@@ -1459,7 +1504,7 @@ function createNcrpRouter(db) {
   //     The packaged Electron renderer uses this because new windows are denied
   //     (main.js setWindowOpenHandler), so it cannot rely on a browser download;
   //     instead it opens the returned file via the OS handler over IPC.
-  router.get('/ncrp/:id/pdf', async (req, res) => {
+  router.get('/ncrp/:id/pdf', P(PERMISSIONS.EXPORT), async (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1496,7 +1541,7 @@ function createNcrpRouter(db) {
         complaint_date: ci.complaint_date ?? null,
       }, outPath);
 
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id, action: 'pdf.generated', details: { file: fileName },
       });
 
@@ -1526,7 +1571,7 @@ function createNcrpRouter(db) {
   // Same dual delivery as /pdf: stream the buffer as an attachment by default,
   // or (?mode=file) write it to EXPORTS_DIR and return { fileName } for the
   // Electron renderer to open over IPC.
-  router.get('/ncrp/:id/excel', (req, res) => {
+  router.get('/ncrp/:id/excel', P(PERMISSIONS.EXPORT), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1551,7 +1596,7 @@ function createNcrpRouter(db) {
       const safeAck = String(ci.ack_no || `report-${report.id}`).replace(/[^\w.-]+/g, '_');
       const fileName = `FinTrace-${safeAck}-${Date.now()}.xlsx`;
 
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id, action: 'excel.generated', details: { file: fileName },
       });
 
@@ -1579,12 +1624,12 @@ function createNcrpRouter(db) {
   });
 
   // DELETE /api/ncrp/:id — delete report + cascade owned rows.
-  router.delete('/ncrp/:id', (req, res) => {
+  router.delete('/ncrp/:id', P(PERMISSIONS.DELETE_REPORT), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     try {
       const counts = deleteReportCascade(report.id);
-      insertAuditLog(db, {
+      audit(req, {
         report_id: report.id, action: 'report.deleted', details: counts,
       });
       res.json({ deleted: true, id: report.id, removed: counts });
@@ -1595,7 +1640,7 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id/audit — recent audit-log entries for a report.
-  router.get('/ncrp/:id/audit', (req, res) => {
+  router.get('/ncrp/:id/audit', P(PERMISSIONS.VIEW_AUDIT), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
 
@@ -1626,7 +1671,7 @@ function createNcrpRouter(db) {
   });
 
   // GET /api/ncrp/:id — full report with analysis_json parsed.
-  router.get('/ncrp/:id', (req, res) => {
+  router.get('/ncrp/:id', P(PERMISSIONS.VIEW_CASES), (req, res) => {
     const report = loadReport(req, res);
     if (!report) return;
     res.json({ ...report, analysis_json: parseAnalysis(report) });
@@ -1635,9 +1680,7 @@ function createNcrpRouter(db) {
   // GET /api/health — liveness probe. Does NOT leak the SQLite file path —
   // that's sensitive on a single-tenant desktop install where the path can
   // reveal the user's username under %AppData%.
-  router.get('/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
+  // (/health is registered above, before the auth choke-point, so it is public.)
 
   // ── Fallbacks ──────────────────────────────────────────────────────
 

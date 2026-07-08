@@ -141,8 +141,8 @@ const SQL_INSERT_DRAFT_EMAIL = `
 `;
 
 const SQL_INSERT_AUDIT = `
-  INSERT INTO audit_log (report_id, action, details)
-  VALUES (@report_id, @action, @details)
+  INSERT INTO audit_log (report_id, action, details, user_id, username)
+  VALUES (@report_id, @action, @details, @user_id, @username)
 `;
 
 // ─── repeat_accounts: contribution ledger + derived aggregates ───────
@@ -584,6 +584,8 @@ function insertAuditLog(db, entry) {
     report_id: nz(entry.report_id),
     action:    entry.action,
     details,
+    user_id:   nz(entry.user_id),   // WHO (Sub-step C) — null for system/legacy
+    username:  nz(entry.username),
   };
   const info = getOrPrepare(db, SQL_INSERT_AUDIT).run(params);
   return Number(info.lastInsertRowid);

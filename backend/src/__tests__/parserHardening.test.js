@@ -23,6 +23,7 @@ const XLSX = require('xlsx');
 const { parseNcrpFile, detectColumnMapping, _internals } = require('../parsers/ncrpParser');
 const { initializeDatabase } = require('../db/schema');
 const { createApp } = require('../server');
+const { loginAs, authed } = require('./helpers/auth');
 const { STANDARD_HEADERS, buildStandardRows, makeTestXlsx } = require('./helpers/xlsx');
 
 const { SHEET_CATEGORY, classifySheet, HEADER_SCAN_DEPTH } = _internals;
@@ -367,10 +368,10 @@ describe('POST /api/ncrp/upload blocks files with missing required columns', () 
   let app;
   let agent;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     db = initializeDatabase(':memory:');
     app = createApp(db);
-    agent = request(app);
+    agent = authed(app, await loginAs(app));
   });
 
   afterAll(() => {

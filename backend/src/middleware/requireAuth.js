@@ -18,6 +18,8 @@
  * @module backend/src/middleware/requireAuth
  */
 
+const { roleHasPermission } = require('../lib/roles');
+
 /**
  * Pull the bearer/session token off a request, or null.
  * @param {import('express').Request} req
@@ -75,4 +77,29 @@ function createRequireAuth(authCtx) {
   };
 }
 
-module.exports = { createRequireAuth, getSession, extractToken };
+/**
+ * Build a permission-enforcing middleware. MUST run AFTER requireAuth (it reads
+ * req.user). Returns 403 FORBIDDEN when the authenticated user's role lacks the
+ * permission. Roles→permissions live in lib/roles.js (the single tunable map).
+ *
+ * @param {string} permission - one of lib/roles PERMISSIONS.
+ * @returns {import('express').RequestHandler}
+ */
+function createRequirePermission(permission) {
+  return function requirePermission(req, res, next) {
+    const role = req.user && req.user.role;
+    if (!role || !roleHasPermission(role, permission)) {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Your role does not have permission to perform this action.',
+        },
+      });
+    }
+    return next();
+  };
+}
+
+module.exports = {
+  createRequireAuth, createRequirePermission, getSession, extractToken,
+};
