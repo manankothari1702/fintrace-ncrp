@@ -5,14 +5,21 @@
  *
  * Opens (creates if missing) a SQLite database at `dbPath`, applies the
  * production pragmas, and runs all CREATE TABLE / CREATE INDEX statements
- * idempotently. Uses the better-sqlite3 synchronous API throughout.
+ * idempotently.
+ *
+ * Driver: better-sqlite3-multiple-ciphers — an API-identical fork of
+ * better-sqlite3 that bundles SQLite3MultipleCiphers (SQLCipher). The
+ * synchronous API is unchanged; the ONLY additions are the encryption key
+ * (`PRAGMA key`) applied first on a keyed open, and legacy plaintext→
+ * encrypted migration. See lib/dbKey.js for how the key is derived.
  *
  * @module backend/src/db/schema
  */
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const Database = require('better-sqlite3-multiple-ciphers');
+const { applyKey } = require('../lib/dbKey');
 
 /**
  * Connection-level pragmas. Order matters:
@@ -342,6 +349,52 @@ function rebuildRepeatRegistryFromSnapshots(db) {
 }
 
 /**
+ * Probe an open connection: succeeds only if the page cache is readable —
+ * i.e. the DB is plaintext (no key needed) or the correct key was applied.
+ * A wrong/absent key on an encrypted DB throws SQLITE_NOTADB here.
+ *
+ * @param {Database.Database} db
+ * @returns {boolean}
+ */
+function canReadDatabase(db) {
+  try {
+    db.prepare('SELECT count(*) FROM sqlite_master').get();
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Migrate a legacy PLAINTEXT database file to encrypted IN PLACE.
+ *
+ * SQLite3MultipleCiphers encrypts a currently-plaintext database when
+ * `PRAGMA rekey` is issued on the open connection — the whole file is
+ * rewritten as ciphertext with the given raw key. No sibling copy or file
+ * swap is needed (and `sqlcipher_export` is not exposed by default in this
+ * driver, so rekey is the correct mechanism here).
+ *
+ * @param {string} resolvedPath - Absolute path of the plaintext DB.
+ * @param {string} keyHex - 64-char hex key to encrypt with.
+ */
+function migratePlaintextToEncrypted(resolvedPath, keyHex) {
+  const plain = new Database(resolvedPath);
+  try {
+    if (!canReadDatabase(plain)) {
+      throw new Error('source is not a readable plaintext database');
+    }
+    // Rekey is rejected in WAL mode, and our DBs open in WAL. Drop to a
+    // rollback journal for the rekey; initializeDatabase re-applies WAL on the
+    // next open (WAL is a persistent per-file setting).
+    plain.pragma('journal_mode = DELETE');
+    // Encrypt in place. Raw-key form matches how initializeDatabase re-opens.
+    plain.pragma(`rekey="x'${keyHex}'"`);
+  } finally {
+    plain.close();
+  }
+}
+
+/**
  * Open the SQLite database at `dbPath`, ensuring its parent directory
  * exists, applying connection pragmas, and creating the schema + indexes
  * if not already present. Safe to call on every app launch.
@@ -351,18 +404,27 @@ function rebuildRepeatRegistryFromSnapshots(db) {
  *
  * @param {string} dbPath - Absolute or relative path to the SQLite file.
  *                         Parent directory will be created recursively.
- * @returns {Database.Database} An open better-sqlite3 connection.
+ * @param {object} [opts]
+ * @param {string} [opts.key] - 64-char hex SQLCipher key (from lib/dbKey.js).
+ *   When supplied, the DB is opened encrypted: the key is applied first, and a
+ *   legacy plaintext file at this path is transparently migrated to encrypted.
+ *   When omitted, the DB is opened WITHOUT encryption — used by the in-memory
+ *   test harness and any explicit plaintext path. The real app (server.js)
+ *   always passes a key, so the at-rest file is always encrypted.
+ * @returns {Database.Database} An open connection.
  *
  * @example
  *   const { initializeDatabase } = require('./schema');
- *   const db = initializeDatabase(path.join(appData, 'fintrace.sqlite'));
+ *   const { resolveDbKey } = require('../lib/dbKey');
+ *   const db = initializeDatabase(dbPath, { key: resolveDbKey(dbPath) });
  */
-function initializeDatabase(dbPath) {
+function initializeDatabase(dbPath, opts = {}) {
   if (typeof dbPath !== 'string' || dbPath.trim() === '') {
     throw new TypeError(
       'initializeDatabase: dbPath must be a non-empty string'
     );
   }
+  const key = opts && opts.key ? opts.key : null;
 
   // ':memory:' is a better-sqlite3 sentinel for an in-memory DB; passing it
   // through path.resolve would convert it to a real filesystem path and break
@@ -379,6 +441,33 @@ function initializeDatabase(dbPath) {
         `initializeDatabase: failed to create parent directory ${parentDir}: ${err.message}`
       );
     }
+
+    // Encrypted open of an EXISTING file: if the key can't read it, the file
+    // may be a legacy plaintext DB (migrate it) or encrypted with a different
+    // key (fatal — wrong credential). Distinguish by trying a plaintext read.
+    if (key && fs.existsSync(resolvedPath)) {
+      const probe = new Database(resolvedPath);
+      let keyReadable = false;
+      try {
+        applyKey(probe, key);
+        keyReadable = canReadDatabase(probe);
+      } finally {
+        probe.close();
+      }
+      if (!keyReadable) {
+        const plainProbe = new Database(resolvedPath);
+        let isPlaintext = false;
+        try { isPlaintext = canReadDatabase(plainProbe); } finally { plainProbe.close(); }
+        if (isPlaintext) {
+          migratePlaintextToEncrypted(resolvedPath, key);
+        } else {
+          throw new Error(
+            `initializeDatabase: ${resolvedPath} could not be opened with the supplied ` +
+            'key and is not a plaintext database — wrong encryption credential or corrupt file.'
+          );
+        }
+      }
+    }
   }
 
   /** @type {Database.Database} */
@@ -392,6 +481,10 @@ function initializeDatabase(dbPath) {
   }
 
   try {
+    // The encryption key MUST be the first statement on the connection,
+    // before WAL/foreign_keys or any DDL, or SQLCipher rejects the page cache.
+    if (key) applyKey(db, key);
+
     // Pragmas must run *outside* an explicit transaction.
     for (const pragma of PRAGMAS) {
       db.pragma(pragma);
@@ -417,6 +510,8 @@ function initializeDatabase(dbPath) {
 
 module.exports = {
   initializeDatabase,
+  migratePlaintextToEncrypted,
+  canReadDatabase,
   rebuildRepeatRegistryFromSnapshots,
   PRAGMAS,
   CREATE_TABLES,

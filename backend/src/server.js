@@ -25,6 +25,7 @@ const path = require('path');
 const express = require('express');
 
 const { initializeDatabase } = require('./db/schema');
+const { resolveDbKey } = require('./lib/dbKey');
 const { createNcrpRouter } = require('./routes/ncrp');
 
 // ─── Bind target ─────────────────────────────────────────────────────
@@ -127,7 +128,13 @@ function startServer(opts = {}) {
   const port = opts.port || PORT;
   const host = opts.host || HOST;
 
-  const db = initializeDatabase(dbPath);
+  // Encryption at rest (Sub-step A). Derive the SQLCipher key from the
+  // credential secret + per-install salt. `opts.dbKeySecret` is the Sub-step B
+  // seam: once auth exists, the caller passes the admin-password-derived
+  // secret here and the DB opens only after a successful login. Absent that,
+  // resolveDbKey falls back to the bootstrap secret (lib/dbKey.js).
+  const key = resolveDbKey(dbPath, opts.dbKeySecret);
+  const db = initializeDatabase(dbPath, { key });
   const app = createApp(db);
 
   return new Promise((resolve, reject) => {

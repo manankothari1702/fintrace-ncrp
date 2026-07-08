@@ -14,13 +14,13 @@
     "build:frontend": "cd frontend && npx vite build",
     "build:win": "npm run build:frontend && npx electron-builder --win",
     "build": "npm run build:win",
-    "rebuild-sqlite": "npx electron-rebuild -f -w better-sqlite3",
-    "rebuild:sqlite": "npx @electron/rebuild -f -w better-sqlite3 -v 33.4.11 --module-dir backend",
+    "rebuild-sqlite": "npx electron-rebuild -f -w better-sqlite3-multiple-ciphers",
+    "rebuild:sqlite": "npx @electron/rebuild -f -w better-sqlite3-multiple-ciphers -v 33.4.11 --module-dir backend",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3-multiple-ciphers": "^12.11.1",
     "call-bind-apply-helpers": "1.0.2",
     "dayjs": "^1.11.13",
     "electron-log": "^5.2.0",
@@ -71,7 +71,7 @@
     ],
     "asar": false,
     "asarUnpack": [
-      "**/better-sqlite3/build/Release/*.node"
+      "**/better-sqlite3-multiple-ciphers/build/Release/*.node"
     ],
     "win": {
       "target": "nsis",
