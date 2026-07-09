@@ -30,6 +30,7 @@ const { createNcrpRouter } = require('./routes/ncrp');
 const { createAuthContext } = require('./auth/authContext');
 const { createAuthRouter } = require('./routes/auth');
 const { createUserRouter } = require('./routes/users');
+const { createBackupRouter } = require('./routes/backups');
 
 // ─── Bind target ─────────────────────────────────────────────────────
 // Loopback only. Overridable via env for tests, but the host stays pinned
@@ -125,6 +126,7 @@ function createApp(db, opts = {}) {
   app.use(corsMiddleware);
   app.use('/api', createAuthRouter(authContext));
   app.use('/api', createUserRouter(authContext));
+  app.use('/api', createBackupRouter(authContext));
   app.use('/api', createNcrpRouter(db, authContext));
 
   return app;
@@ -147,6 +149,7 @@ function createServerApp(authContext) {
   app.use(corsMiddleware);
   app.use('/api', createAuthRouter(authContext));
   app.use('/api', createUserRouter(authContext));
+  app.use('/api', createBackupRouter(authContext));
 
   // Health works even while the DB is locked (no auth required).
   app.get('/api/health', (_req, res) => {

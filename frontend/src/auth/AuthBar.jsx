@@ -9,12 +9,14 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PERMISSIONS, roleLabel } from './permissions.js';
 import UserManagement from './UserManagement.jsx';
+import BackupManager from './BackupManager.jsx';
 import ChangePasswordScreen from './ChangePasswordScreen.jsx';
 import './auth.css';
 
 export default function AuthBar() {
   const { user, logout, can } = useAuth();
   const [showUsers, setShowUsers] = useState(false);
+  const [showBackups, setShowBackups] = useState(false);
   const [showChange, setShowChange] = useState(false);
   if (!user) return null;
 
@@ -32,6 +34,11 @@ export default function AuthBar() {
             Users
           </button>
         )}
+        {can(PERMISSIONS.MANAGE_BACKUPS) && (
+          <button type="button" className="btn btn-sm" onClick={() => setShowBackups(true)}>
+            Backups
+          </button>
+        )}
         <button type="button" className="btn btn-sm" onClick={() => setShowChange(true)}>
           Change password
         </button>
@@ -41,6 +48,7 @@ export default function AuthBar() {
       </div>
 
       {showUsers && <UserManagement onClose={() => setShowUsers(false)} />}
+      {showBackups && <BackupManager onClose={() => setShowBackups(false)} />}
       {showChange && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 1000 }}>
           <ChangePasswordScreen

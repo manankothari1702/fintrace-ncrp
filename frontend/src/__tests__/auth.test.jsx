@@ -121,14 +121,16 @@ describe('AuthBar role-based UI', () => {
     return user;
   }
 
-  test('System Admin sees the Users (management) button', async () => {
+  test('System Admin sees the admin-only Users + Backups buttons', async () => {
     await renderBarAs(ROLES.SYSTEM_ADMIN);
     expect(screen.getAllByRole('button', { name: /^users$/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: /^backups$/i }).length).toBeGreaterThan(0);
   });
 
-  test('non-admin (IO) does NOT see the Users button', async () => {
+  test('non-admin (IO) does NOT see the Users or Backups buttons', async () => {
     await renderBarAs(ROLES.IO);
     expect(screen.queryByRole('button', { name: /^users$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^backups$/i })).not.toBeInTheDocument();
   });
 
   test('shows the current user and role, and logout clears the session', async () => {

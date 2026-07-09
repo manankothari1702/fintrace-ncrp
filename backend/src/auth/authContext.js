@@ -27,11 +27,13 @@
  * @module backend/src/auth/authContext
  */
 
+const path = require('path');
 const { initializeDatabase } = require('../db/schema');
 const { createSessionStore, hashPassword, verifyPassword, validatePassword } = require('../lib/authStore');
 const { createKeystore, keystorePathFor } = require('../lib/keystore');
 const { generateDek } = require('../lib/dbKey');
 const { ROLES, isValidRole } = require('../lib/roles');
+const { maybeDailyBackup } = require('../lib/backup');
 const authQ = require('../db/authQueries');
 
 /** Documented default admin credentials (first run only). The admin is forced
@@ -62,6 +64,16 @@ function createAuthContext(opts = {}) {
   /** @returns {import('better-sqlite3-multiple-ciphers').Database|null} */
   function getDb() { return db; }
   function isLocked() { return db === null; }
+  /** @returns {string|null} the live DB path (null in the open-db test path). */
+  function getDbPath() { return dbPath; }
+  /** Backups live next to the DB: <db-dir>/backups. */
+  function getBackupDir() { return dbPath ? path.join(path.dirname(dbPath), 'backups') : null; }
+  /** Close the DB and relock (used after a restore swaps the file on disk).
+   *  The next login re-opens the new file with the credential-derived key. */
+  function lockDb() {
+    if (db) { try { db.close(); } catch (_e) { /* ignore */ } }
+    db = null;
+  }
 
   /**
    * Seed the default admin idempotently and guarantee the app is never in an
@@ -160,6 +172,22 @@ function createAuthContext(opts = {}) {
       mustChange: !!user.must_change_password, // requireAuth gates on this
       dekHex, // null in the open-db path; the DEK in the locked path
     });
+
+    // Daily auto-backup (clause 6.9): once the DB is open (real/locked path),
+    // snapshot it if today has none. Non-blocking; failures are logged, never
+    // block login. Skipped for forced-change sessions (no real work yet) and
+    // the open-db test path (no dbPath).
+    if (dbPath && dekHex && !user.must_change_password) {
+      setImmediate(() => {
+        try {
+          maybeDailyBackup(db, getBackupDir(), { key: dekHex });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[backup] daily backup failed:', err && err.message);
+        }
+      });
+    }
+
     return { token, user: publicUser(user) };
   }
 
@@ -303,6 +331,9 @@ function createAuthContext(opts = {}) {
     keystore,
     getDb,
     isLocked,
+    getDbPath,
+    getBackupDir,
+    lockDb,
     bootstrap,
     login,
     logout,

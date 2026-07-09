@@ -562,3 +562,13 @@ export const setUserActive = (id, active) =>
 /** POST /api/users/:id/reset-password → { user }. */
 export const resetUserPassword = (id, newPassword) =>
   api.post(`/users/${id}/reset-password`, { newPassword }).then((r) => r.data.user);
+
+/** GET /api/backups → { backups, retention } (System Admin only). */
+export const getBackups = () => api.get('/backups').then((r) => r.data);
+
+/** POST /api/backups → { backup, retention }. */
+export const createBackupNow = () => api.post('/backups').then((r) => r.data);
+
+/** POST /api/backups/restore → { restored, note }. */
+export const restoreBackup = (file) =>
+  api.post('/backups/restore', { file }).then((r) => r.data);

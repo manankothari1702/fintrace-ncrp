@@ -44,6 +44,7 @@ const PERMISSIONS = Object.freeze({
   VIEW_AUDIT: 'view_audit',       // read a case's audit trail
   DELETE_REPORT: 'delete_report', // destructive — remove a report
   MANAGE_USERS: 'manage_users',   // create/edit/deactivate users, reset pw
+  MANAGE_BACKUPS: 'manage_backups', // create/list/restore encrypted backups
 });
 
 /**

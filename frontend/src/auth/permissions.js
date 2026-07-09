@@ -13,6 +13,7 @@ export const PERMISSIONS = Object.freeze({
   VIEW_AUDIT: 'view_audit',
   DELETE_REPORT: 'delete_report',
   MANAGE_USERS: 'manage_users',
+  MANAGE_BACKUPS: 'manage_backups',
 });
 
 export const ROLES = Object.freeze({
