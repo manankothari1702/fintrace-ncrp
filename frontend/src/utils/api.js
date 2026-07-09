@@ -36,13 +36,30 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// ─── Session token (Phase 1 auth) ───────────────────────────────────
+// The session token lives in memory only (set by AuthContext after login),
+// mirroring the backend's in-memory session — app close / reload = logout.
+let authToken = null;
+/** @param {string|null} token */
+export function setAuthToken(token) { authToken = token || null; }
+
+// Registered by AuthContext so a 401 anywhere (expired/invalid session) drops
+// the app back to the login screen instead of surfacing a raw error.
+let onUnauthorized = null;
+/** @param {null | (() => void)} cb */
+export function setUnauthorizedHandler(cb) { onUnauthorized = cb || null; }
+
 // ─── Request interceptor ────────────────────────────────────────────
 // Stamp every request with a relative `/api` prefix unless it is already
-// absolute. Keeps each call site terse (`/ncrp/reports`).
+// absolute, and attach the session token when we have one.
 api.interceptors.request.use((config) => {
   const url = config.url || '';
   if (!/^https?:\/\//i.test(url) && !url.startsWith(API_PREFIX)) {
     config.url = `${API_PREFIX}${url.startsWith('/') ? '' : '/'}${url}`;
+  }
+  if (authToken) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${authToken}`;
   }
   return config;
 });
@@ -55,9 +72,17 @@ api.interceptors.response.use(
     if (error.response) {
       const { status, data } = error.response;
       const env = data && typeof data === 'object' ? data.error : null;
+      const code = (env && env.code) || 'HTTP_ERROR';
+      // A 401 means the session is gone/expired — hand control back to the auth
+      // layer so the UI returns to login rather than showing a raw error. (Not
+      // for the login endpoint itself, whose 401 is a bad-credentials result.)
+      const isLoginCall = (error.config && error.config.url || '').includes('/auth/login');
+      if (status === 401 && onUnauthorized && !isLoginCall) {
+        try { onUnauthorized(code); } catch (_e) { /* never let the handler mask the error */ }
+      }
       throw new ApiError(
         (env && env.message) || `Request failed with status ${status}.`,
-        { code: (env && env.code) || 'HTTP_ERROR', status, details: env && env.details },
+        { code, status, details: env && env.details },
       );
     }
     if (error.request) {
@@ -498,3 +523,42 @@ export function pollReportUntilDone(id, { intervalMs = 2000, maxAttempts = 30 } 
     });
   })();
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  Auth + user management (Phase 1)
+// ════════════════════════════════════════════════════════════════════
+
+/** POST /api/auth/login → { token, user }. */
+export const authLogin = (username, password) =>
+  api.post('/auth/login', { username, password }).then((r) => r.data);
+
+/** POST /api/auth/logout. */
+export const authLogout = () => api.post('/auth/logout').then((r) => r.data);
+
+/** GET /api/auth/me → { user, must_change_password }. */
+export const authMe = () => api.get('/auth/me').then((r) => r.data);
+
+/** POST /api/auth/change-password → { user }. */
+export const authChangePassword = (oldPassword, newPassword) =>
+  api.post('/auth/change-password', { oldPassword, newPassword }).then((r) => r.data);
+
+/** GET /api/auth/policy → { policy }. */
+export const authPolicy = () => api.get('/auth/policy').then((r) => r.data);
+
+/** GET /api/users → { users } (System Admin only). */
+export const listUsers = () => api.get('/users').then((r) => r.data.users);
+
+/** POST /api/users → { user } (System Admin only). */
+export const createUser = (payload) => api.post('/users', payload).then((r) => r.data.user);
+
+/** PUT /api/users/:id/role → { user }. */
+export const setUserRole = (id, role) =>
+  api.put(`/users/${id}/role`, { role }).then((r) => r.data.user);
+
+/** PUT /api/users/:id/active → { user }. */
+export const setUserActive = (id, active) =>
+  api.put(`/users/${id}/active`, { active }).then((r) => r.data.user);
+
+/** POST /api/users/:id/reset-password → { user }. */
+export const resetUserPassword = (id, newPassword) =>
+  api.post(`/users/${id}/reset-password`, { newPassword }).then((r) => r.data.user);

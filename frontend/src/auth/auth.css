@@ -1,0 +1,130 @@
+/* Auth UI (Phase 1 Sub-step D). Reuses the app's theme tokens so login/change
+   screens match the dark/light system without restyling primitives. */
+
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 28px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 6px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.auth-brand-mark { font-size: 24px; }
+
+.auth-subtitle {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 22px;
+}
+
+.auth-field { margin-bottom: 14px; }
+
+.auth-field label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.auth-field .input { width: 100%; }
+
+.auth-actions { margin-top: 20px; }
+.auth-actions .btn { width: 100%; justify-content: center; }
+
+.auth-error {
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.auth-notice {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  margin-bottom: 16px;
+}
+
+.auth-policy {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* ── Auth bar (user chip + logout, above the app shell) ── */
+.auth-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.auth-bar .spacer { flex: 1; }
+.auth-bar .auth-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+.auth-bar .auth-role {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+/* ── User management modal ── */
+.um-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 24px;
+}
+.um-modal {
+  width: 100%; max-width: 720px; max-height: 85vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 22px 24px;
+}
+.um-head { display: flex; align-items: center; margin-bottom: 16px; }
+.um-head h2 { font-size: 18px; flex: 1; }
+.um-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.um-table th, .um-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.um-table th { color: var(--text-muted); font-weight: 600; }
+.um-inactive { opacity: 0.55; }
+.um-create { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 16px; }
+.um-create-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.um-create-row .auth-field { margin-bottom: 0; }
