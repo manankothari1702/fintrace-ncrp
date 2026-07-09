@@ -10,7 +10,6 @@ import userEvent from '@testing-library/user-event';
 
 import { AuthProvider } from '../context/AuthContext.jsx';
 import AuthGate from '../auth/AuthGate.jsx';
-import AuthBar from '../auth/AuthBar.jsx';
 import { ROLES } from '../auth/permissions.js';
 import * as api from '../utils/api.js';
 
@@ -101,44 +100,68 @@ describe('AuthGate', () => {
   });
 });
 
-describe('AuthBar role-based UI', () => {
+describe('AuthBar profile dropdown + role-based UI', () => {
   // Log a user of the given role into a provider, then render AuthBar within it.
   async function renderBarAs(role) {
     api.authLogin.mockResolvedValue({
       token: 't', user: { id: 9, username: `u_${role}`, role, must_change_password: false },
     });
     const user = userEvent.setup();
+    // AuthGate renders AuthBar itself, so pass a plain child (not another
+    // AuthBar) — otherwise the bar would be duplicated in the DOM.
     render(
       <AuthProvider>
-        <AuthGate><AuthBar /></AuthGate>
+        <AuthGate><div data-testid="app-body" /></AuthGate>
       </AuthProvider>,
     );
     await user.type(screen.getByLabelText(/username/i), `u_${role}`);
     await user.type(screen.getByLabelText(/password/i), 'Secret!2026');
     await user.click(screen.getByRole('button', { name: /sign in/i }));
-    // Wait until the bar (sign out) is present.
-    await screen.findAllByRole('button', { name: /sign out/i });
+    // Wait until the profile control (name + role) is present.
+    await screen.findByRole('button', { name: new RegExp(`account menu for u_${role}`, 'i') });
     return user;
   }
 
-  test('System Admin sees the admin-only Users + Backups buttons', async () => {
-    await renderBarAs(ROLES.SYSTEM_ADMIN);
-    expect(screen.getAllByRole('button', { name: /^users$/i }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('button', { name: /^backups$/i }).length).toBeGreaterThan(0);
+  // Log in, then open the profile dropdown so its menuitems are queryable.
+  async function openMenuAs(role) {
+    const user = await renderBarAs(role);
+    await user.click(screen.getByRole('button', { name: new RegExp(`account menu for u_${role}`, 'i') }));
+    await screen.findByRole('menu');
+    return user;
+  }
+
+  test('System Admin sees Change password + Users + Backups + Sign out in the menu', async () => {
+    await openMenuAs(ROLES.SYSTEM_ADMIN);
+    expect(screen.getByRole('menuitem', { name: /change password/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^users$/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^backups$/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /sign out/i })).toBeInTheDocument();
   });
 
-  test('non-admin (IO) does NOT see the Users or Backups buttons', async () => {
+  test('non-admin (IO) menu shows only Change password + Sign out', async () => {
+    await openMenuAs(ROLES.IO);
+    expect(screen.getByRole('menuitem', { name: /change password/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /sign out/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^users$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^backups$/i })).not.toBeInTheDocument();
+  });
+
+  test('the profile control shows the current user and role even when closed', async () => {
     await renderBarAs(ROLES.IO);
-    expect(screen.queryByRole('button', { name: /^users$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^backups$/i })).not.toBeInTheDocument();
+    expect(screen.getByText('u_io')).toBeInTheDocument();
+    expect(screen.getByText(/investigating officer/i)).toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
-  test('shows the current user and role, and logout clears the session', async () => {
-    const user = await renderBarAs(ROLES.IO);
-    expect(screen.getAllByText('u_io').length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/investigating officer/i).length).toBeGreaterThan(0);
+  test('Escape closes the dropdown', async () => {
+    const user = await openMenuAs(ROLES.IO);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+  });
 
-    await user.click(screen.getAllByRole('button', { name: /sign out/i })[0]);
+  test('Sign out from the menu clears the session', async () => {
+    const user = await openMenuAs(ROLES.IO);
+    await user.click(screen.getByRole('menuitem', { name: /sign out/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument());
   });
 });
