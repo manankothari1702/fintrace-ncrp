@@ -33,8 +33,10 @@ describe('AppRoot workspace shell', () => {
   test('renders the brand and the two-workspace toggle, NCRP active by default', async () => {
     render(<AppRoot />);
 
-    // The brand renders in the shell topbar AND inside the NCRP sidebar.
-    expect(screen.getAllByText('FinTrace').length).toBeGreaterThan(0);
+    // A single authoritative brand label lives in the shell top bar and reflects
+    // the active workspace (NCRP by default). The NCRP sidebar no longer repeats it.
+    expect(screen.getByText('FinTrace NCRP')).toBeInTheDocument();
+    expect(screen.queryByText('FinTrace Bank Statements')).not.toBeInTheDocument();
 
     const group = screen.getByRole('radiogroup', { name: 'Workspace' });
     expect(group).toBeInTheDocument();
@@ -56,6 +58,10 @@ describe('AppRoot workspace shell', () => {
     expect(screen.queryByRole('heading', { name: 'Upload NCRP Report' })).not.toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /Bank statements/ })).toHaveAttribute('aria-checked', 'true');
     expect(localStorage.getItem('fintrace-active-module')).toBe('bankStatement');
+
+    // The top-bar brand label follows the active workspace.
+    expect(screen.getByText('FinTrace Bank Statements')).toBeInTheDocument();
+    expect(screen.queryByText('FinTrace NCRP')).not.toBeInTheDocument();
   });
 
   test('toggling back re-mounts the NCRP module', async () => {

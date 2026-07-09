@@ -7,10 +7,10 @@
  * dashboard, then drill into layers → mules → liens → transactions, and
  * finally act (draft letters) and review (timeline).
  *
- * Labels (nav items, brand text, footer) stay mounted in every state and are
- * shown/hidden purely with CSS (opacity + max-width) so collapse/expand
- * animates smoothly instead of snapping. In the collapsed state a `title`
- * tooltip surfaces each item's name on hover.
+ * Labels (nav items, footer) stay mounted in every state and are shown/hidden
+ * purely with CSS (opacity + max-width) so collapse/expand animates smoothly
+ * instead of snapping. In the collapsed state a `title` tooltip surfaces each
+ * item's name on hover.
  *
  * @param {object} props
  * @param {boolean} props.collapsed
@@ -66,14 +66,9 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   return (
     <aside className={`sidebar${collapsed ? ' is-collapsed' : ''}`}>
-      <div className="sidebar-logo">
-        <span className="mark" aria-hidden="true">🛡️</span>
-        <div className="brand-text">
-          <div className="brand-name">FinTrace</div>
-          <div className="brand-sub">NCRP</div>
-        </div>
-      </div>
-
+      {/* No brand block here: the single authoritative "FinTrace NCRP" wordmark
+          lives in the shell top bar (see shell/AppRoot.jsx). Duplicating it here
+          stacked two "FinTrace" labels directly under the bar. */}
       <nav className="sidebar-nav">
         {NAV_ITEMS.map((item) => {
           const count = item.badge ? (badges[item.badge] || 0) : 0;

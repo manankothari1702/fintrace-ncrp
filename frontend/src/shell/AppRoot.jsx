@@ -65,12 +65,18 @@ export default function AppRoot() {
   // fully unmounted.
   const ActiveModule = MODULE_COMPONENTS[activeModule] || MODULE_COMPONENTS[DEFAULT_MODE_ID];
 
+  // The single authoritative brand label lives here in the top bar and reflects
+  // the active workspace. Derived purely from the existing activeModule state —
+  // no new state, and the toggle logic is untouched. NCRP (and any fallback) →
+  // "FinTrace NCRP"; Bank Statements → "FinTrace Bank Statements".
+  const brandName = activeModule === 'bankStatement' ? 'FinTrace Bank Statements' : 'FinTrace NCRP';
+
   return (
     <div className="fx-root">
       <header className="fx-topbar">
         <div className="fx-brand">
           <span className="fx-brand-mark" aria-hidden="true">🛡️</span>
-          <span className="fx-brand-name">FinTrace</span>
+          <span className="fx-brand-name">{brandName}</span>
         </div>
         <SegmentedControl
           options={MODES}
