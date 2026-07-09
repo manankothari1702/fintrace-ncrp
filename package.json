@@ -35,7 +35,8 @@
   "devDependencies": {
     "@electron/rebuild": "^3.7.0",
     "electron": "33.4.11",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "knip": "^6.25.0"
   },
   "build": {
     "appId": "com.mint.fintrace-ncrp",

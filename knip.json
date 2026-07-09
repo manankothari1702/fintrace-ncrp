@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["electron/preload.js", "scripts/*.js"],
+      "project": ["electron/**/*.js", "scripts/**/*.js"]
+    },
+    "backend": {
+      "entry": ["src/server.js", "scripts/*.js", "src/__tests__/**/*.js"],
+      "project": ["src/**/*.js"]
+    },
+    "frontend": {
+      "entry": ["src/**/*.test.{js,jsx}"],
+      "project": ["src/**/*.{js,jsx}"]
+    }
+  }
+}

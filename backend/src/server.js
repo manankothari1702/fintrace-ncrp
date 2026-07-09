@@ -25,7 +25,6 @@ const path = require('path');
 const express = require('express');
 
 const { initializeDatabase } = require('./db/schema');
-const { resolveDbKey } = require('./lib/dbKey');
 const { createNcrpRouter } = require('./routes/ncrp');
 const { createAuthContext } = require('./auth/authContext');
 const { createAuthRouter } = require('./routes/auth');
