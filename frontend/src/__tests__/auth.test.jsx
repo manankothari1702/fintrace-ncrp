@@ -10,6 +10,7 @@ import userEvent from '@testing-library/user-event';
 
 import { AuthProvider } from '../context/AuthContext.jsx';
 import AuthGate from '../auth/AuthGate.jsx';
+import AuthBar from '../auth/AuthBar.jsx';
 import { ROLES } from '../auth/permissions.js';
 import * as api from '../utils/api.js';
 
@@ -107,11 +108,12 @@ describe('AuthBar profile dropdown + role-based UI', () => {
       token: 't', user: { id: 9, username: `u_${role}`, role, must_change_password: false },
     });
     const user = userEvent.setup();
-    // AuthGate renders AuthBar itself, so pass a plain child (not another
-    // AuthBar) — otherwise the bar would be duplicated in the DOM.
+    // AuthBar is now placed into the shell top bar as a slot (main.jsx), not
+    // rendered by AuthGate. Passing it as the gate's child renders exactly one
+    // AuthBar once authenticated, mirroring the real composition.
     render(
       <AuthProvider>
-        <AuthGate><div data-testid="app-body" /></AuthGate>
+        <AuthGate><AuthBar /></AuthGate>
       </AuthProvider>,
     );
     await user.type(screen.getByLabelText(/username/i), `u_${role}`);

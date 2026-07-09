@@ -81,33 +81,12 @@
   line-height: 1.5;
 }
 
-/* ── Auth bar (user chip + logout, above the app shell) ── */
-.auth-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 14px;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.auth-bar .spacer { flex: 1; }
-.auth-bar .auth-user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text);
-}
-.auth-bar .auth-role {
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-/* ── Account profile dropdown (consolidates the flat account/admin buttons) ── */
+/* ── Account profile control — lives at the right of the shell's single dark
+   navy top bar. The trigger uses the same translucent-white-on-navy treatment
+   as the segmented toggle so it reads on the bar in both themes (the bar is
+   dark in light AND dark mode); the on-solid token drives the text/icon rather
+   than a hardcoded white. The dropdown menu below uses normal app-surface
+   styling. Consolidates the account/admin actions into one dropdown. ── */
 .auth-menu { position: relative; display: inline-flex; }
 
 .auth-profile-btn {
@@ -115,20 +94,31 @@
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  color: var(--text);
+  color: var(--text-on-solid);
   font-size: 13px;
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.auth-profile-btn:hover,
+.auth-profile-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
 .auth-profile-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
-  outline: none;
+  outline: 2px solid var(--text-on-solid);
+  outline-offset: 2px;
 }
 .auth-profile-name { display: flex; align-items: center; gap: 8px; }
-.auth-caret { color: var(--text-muted); font-size: 10px; }
+.auth-profile-btn .auth-role {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+}
+.auth-caret { color: rgba(255, 255, 255, 0.7); font-size: 10px; }
 
 .auth-menu-popover {
   position: absolute;

@@ -5,14 +5,16 @@
  * see main.jsx — so the off-limits shell module (src/shell) is never modified:
  *   • not signed in            → LoginScreen (nothing else is reachable)
  *   • signed in, must-change   → ChangePasswordScreen (forced)
- *   • signed in, provisioned   → AuthBar (user chip + logout + admin tools)
- *                                followed by the app shell (children)
+ *   • signed in, provisioned   → the app shell (children)
+ *
+ * The account/profile control (AuthBar) is no longer rendered here as a separate
+ * strip. The shell host (main.jsx) passes it into the shell's single top bar as
+ * a slot, so the workspace toggle and the profile control share one unified bar.
  */
 
 import { useAuth } from '../context/AuthContext.jsx';
 import LoginScreen from './LoginScreen.jsx';
 import ChangePasswordScreen from './ChangePasswordScreen.jsx';
-import AuthBar from './AuthBar.jsx';
 
 export default function AuthGate({ children }) {
   const { isAuthenticated, mustChangePassword } = useAuth();
@@ -20,10 +22,5 @@ export default function AuthGate({ children }) {
   if (!isAuthenticated) return <LoginScreen />;
   if (mustChangePassword) return <ChangePasswordScreen forced />;
 
-  return (
-    <>
-      <AuthBar />
-      {children}
-    </>
-  );
+  return children;
 }

@@ -47,7 +47,7 @@ function readStoredMode() {
   return DEFAULT_MODE_ID;
 }
 
-export default function AppRoot() {
+export default function AppRoot({ profileSlot = null }) {
   const [activeModule, setActiveModule] = useState(readStoredMode);
 
   const changeModule = useCallback((id) => {
@@ -67,10 +67,10 @@ export default function AppRoot() {
 
   return (
     <div className="fx-root">
-      {/* No brand here: each module owns its wordmark in its own sidebar header
-          (NCRP: "FinTrace NCRP"; Bank Statements: "FinTrace Statements"). The
-          top bar carries only the workspace toggle; the profile control lives in
-          the auth strip above this shell (auth/AuthBar). */}
+      {/* One unified top bar: the workspace toggle on the left and the profile
+          control (passed in as a slot by the shell host — see main.jsx) on the
+          right. No brand here — each module owns its wordmark in its own sidebar
+          header (NCRP: "FinTrace NCRP"; Bank Statements: "FinTrace Statements"). */}
       <header className="fx-topbar">
         <SegmentedControl
           options={MODES}
@@ -78,6 +78,7 @@ export default function AppRoot() {
           onChange={changeModule}
           ariaLabel="Workspace"
         />
+        {profileSlot && <div className="fx-topbar-right">{profileSlot}</div>}
       </header>
 
       {/*

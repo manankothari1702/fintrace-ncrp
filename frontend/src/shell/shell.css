@@ -17,10 +17,10 @@
   overflow: hidden; /* the body scrolls internally; the bar stays put */
 }
 
-/* ─── Top bar: mode toggle ────────────────────────────────────────────
-   The brand used to sit here; it now lives per-module in each sidebar
-   header (AppRoot.jsx), so the bar carries only the workspace toggle,
-   left-aligned with the bar's own padding. */
+/* ─── Top bar: mode toggle + profile control ──────────────────────────
+   One unified dark bar: the workspace toggle sits at the left (with the
+   bar's own padding) and the profile control is pushed to the right. The
+   brand is NOT here — it lives per-module in each sidebar header. */
 
 .fx-topbar {
   flex: 0 0 var(--fx-topbar-h);
@@ -35,6 +35,14 @@
      though the sidebar is also offset below the bar so they never overlap. */
   position: relative;
   z-index: 200;
+}
+
+/* Profile-control slot — pushed hard right so the toggle and profile share the
+   one bar. The control itself (auth/AuthBar) styles for the dark background. */
+.fx-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
 }
 
 /* ─── Segmented mode control ──────────────────────────────────────────

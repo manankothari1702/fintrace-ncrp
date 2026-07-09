@@ -1,10 +1,13 @@
 /**
- * AuthBar (Phase 1 Sub-step D) — a slim strip above the app shell. Account and
- * admin actions are consolidated into a single profile dropdown (name + role +
- * user icon) instead of a row of flat buttons. The menu holds self-service
- * password change, and — for the roles that hold the permission — user
- * management and backups, with sign-out separated at the bottom. Rendered by the
- * AuthGate so NONE of the off-limits shell code (src/shell) is touched.
+ * AuthBar (Phase 1 Sub-step D) — the account/profile control that sits at the
+ * right of the shell's single unified top bar. Account and admin actions are
+ * consolidated into one profile dropdown (name + role + user icon): the menu
+ * holds self-service password change, and — for the roles that hold the
+ * permission — user management and backups, with sign-out separated at the
+ * bottom. The shell places it into the top bar via a slot prop (main.jsx →
+ * shell/AppRoot.jsx), so no off-limits shell logic is touched; only its
+ * placement and on-dark styling differ from the earlier standalone strip. The
+ * dropdown items, role-gating, and keyboard/click-outside behavior are unchanged.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -60,68 +63,65 @@ export default function AuthBar() {
 
   return (
     <>
-      <div className="auth-bar">
-        <span className="spacer" />
-        <div className="auth-menu" ref={menuRef}>
-          <button
-            type="button"
-            ref={triggerRef}
-            className="auth-profile-btn"
-            aria-haspopup="menu"
-            aria-expanded={open}
-            aria-label={`Account menu for ${user.username}`}
-            onClick={() => setOpen((o) => !o)}
-          >
-            <span aria-hidden="true">👤</span>
-            <span className="auth-profile-name">
-              <strong>{user.username}</strong>
-              <span className="auth-role">{roleLabel(user.role)}</span>
-            </span>
-            <span className="auth-caret" aria-hidden="true">▾</span>
-          </button>
+      <div className="auth-menu" ref={menuRef}>
+        <button
+          type="button"
+          ref={triggerRef}
+          className="auth-profile-btn"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`Account menu for ${user.username}`}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span aria-hidden="true">👤</span>
+          <span className="auth-profile-name">
+            <strong>{user.username}</strong>
+            <span className="auth-role">{roleLabel(user.role)}</span>
+          </span>
+          <span className="auth-caret" aria-hidden="true">▾</span>
+        </button>
 
-          {open && (
-            <div className="auth-menu-popover" role="menu" aria-label="Account menu">
+        {open && (
+          <div className="auth-menu-popover" role="menu" aria-label="Account menu">
+            <button
+              type="button"
+              role="menuitem"
+              className="auth-menu-item"
+              onClick={pick(() => setShowChange(true))}
+            >
+              Change password
+            </button>
+            {can(PERMISSIONS.MANAGE_USERS) && (
               <button
                 type="button"
                 role="menuitem"
                 className="auth-menu-item"
-                onClick={pick(() => setShowChange(true))}
+                onClick={pick(() => setShowUsers(true))}
               >
-                Change password
+                Users
               </button>
-              {can(PERMISSIONS.MANAGE_USERS) && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="auth-menu-item"
-                  onClick={pick(() => setShowUsers(true))}
-                >
-                  Users
-                </button>
-              )}
-              {can(PERMISSIONS.MANAGE_BACKUPS) && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="auth-menu-item"
-                  onClick={pick(() => setShowBackups(true))}
-                >
-                  Backups
-                </button>
-              )}
-              <div className="auth-menu-sep" role="separator" />
+            )}
+            {can(PERMISSIONS.MANAGE_BACKUPS) && (
               <button
                 type="button"
                 role="menuitem"
-                className="auth-menu-item auth-menu-danger"
-                onClick={pick(logout)}
+                className="auth-menu-item"
+                onClick={pick(() => setShowBackups(true))}
               >
-                Sign out
+                Backups
               </button>
-            </div>
-          )}
-        </div>
+            )}
+            <div className="auth-menu-sep" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="auth-menu-item auth-menu-danger"
+              onClick={pick(logout)}
+            >
+              Sign out
+            </button>
+          </div>
+        )}
       </div>
 
       {showUsers && <UserManagement onClose={() => setShowUsers(false)} />}
