@@ -17,7 +17,10 @@
   overflow: hidden; /* the body scrolls internally; the bar stays put */
 }
 
-/* ─── Top bar: master brand + mode toggle ─────────────────────────── */
+/* ─── Top bar: mode toggle ────────────────────────────────────────────
+   The brand used to sit here; it now lives per-module in each sidebar
+   header (AppRoot.jsx), so the bar carries only the workspace toggle,
+   left-aligned with the bar's own padding. */
 
 .fx-topbar {
   flex: 0 0 var(--fx-topbar-h);
@@ -32,26 +35,6 @@
      though the sidebar is also offset below the bar so they never overlap. */
   position: relative;
   z-index: 200;
-}
-
-.fx-brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  /* Reserve the sidebar column so the toggle aligns with the content area,
-     echoing the app's left-rail rhythm. */
-  min-width: calc(var(--sidebar-width) - 16px);
-}
-
-.fx-brand-mark {
-  font-size: 20px;
-  line-height: 1;
-}
-
-.fx-brand-name {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 0.01em;
 }
 
 /* ─── Segmented mode control ──────────────────────────────────────────

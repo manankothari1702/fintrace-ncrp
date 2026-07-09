@@ -4,8 +4,8 @@
  *
  * This layer is intentionally *above* both feature modules and owns the only
  * piece of cross-module state: which module is active. A slim top bar carries
- * the master brand plus a segmented mode toggle; the module chosen there is
- * rendered whole into the body below it.
+ * the segmented mode toggle; the module chosen there is rendered whole into the
+ * body below it. Branding lives per-module in each sidebar header, not here.
  *
  * Isolation contract:
  *   • The existing NCRP app (App.jsx) is rendered as an opaque black box — it
@@ -65,19 +65,13 @@ export default function AppRoot() {
   // fully unmounted.
   const ActiveModule = MODULE_COMPONENTS[activeModule] || MODULE_COMPONENTS[DEFAULT_MODE_ID];
 
-  // The single authoritative brand label lives here in the top bar and reflects
-  // the active workspace. Derived purely from the existing activeModule state —
-  // no new state, and the toggle logic is untouched. NCRP (and any fallback) →
-  // "FinTrace NCRP"; Bank Statements → "FinTrace Bank Statements".
-  const brandName = activeModule === 'bankStatement' ? 'FinTrace Bank Statements' : 'FinTrace NCRP';
-
   return (
     <div className="fx-root">
+      {/* No brand here: each module owns its wordmark in its own sidebar header
+          (NCRP: "FinTrace NCRP"; Bank Statements: "FinTrace Statements"). The
+          top bar carries only the workspace toggle; the profile control lives in
+          the auth strip above this shell (auth/AuthBar). */}
       <header className="fx-topbar">
-        <div className="fx-brand">
-          <span className="fx-brand-mark" aria-hidden="true">🛡️</span>
-          <span className="fx-brand-name">{brandName}</span>
-        </div>
         <SegmentedControl
           options={MODES}
           value={activeModule}

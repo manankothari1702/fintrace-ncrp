@@ -33,10 +33,11 @@ describe('AppRoot workspace shell', () => {
   test('renders the brand and the two-workspace toggle, NCRP active by default', async () => {
     render(<AppRoot />);
 
-    // A single authoritative brand label lives in the shell top bar and reflects
-    // the active workspace (NCRP by default). The NCRP sidebar no longer repeats it.
-    expect(screen.getByText('FinTrace NCRP')).toBeInTheDocument();
-    expect(screen.queryByText('FinTrace Bank Statements')).not.toBeInTheDocument();
+    // The brand lives only in the active module's sidebar header now, never the
+    // top bar. NCRP is active by default → its sidebar shows the FinTrace mark.
+    expect(screen.getByText('FinTrace')).toBeInTheDocument();
+    // No combined brand label survives in the top bar.
+    expect(screen.queryByText('FinTrace NCRP')).not.toBeInTheDocument();
 
     const group = screen.getByRole('radiogroup', { name: 'Workspace' });
     expect(group).toBeInTheDocument();
@@ -59,9 +60,11 @@ describe('AppRoot workspace shell', () => {
     expect(screen.getByRole('radio', { name: /Bank statements/ })).toHaveAttribute('aria-checked', 'true');
     expect(localStorage.getItem('fintrace-active-module')).toBe('bankStatement');
 
-    // The top-bar brand label follows the active workspace.
-    expect(screen.getByText('FinTrace Bank Statements')).toBeInTheDocument();
-    expect(screen.queryByText('FinTrace NCRP')).not.toBeInTheDocument();
+    // The brand follows the module: the Bank Statements sidebar shows "FinTrace"
+    // + "STATEMENTS"; the NCRP sidebar (and its "NCRP" sub) is unmounted.
+    expect(screen.getByText('FinTrace')).toBeInTheDocument();
+    expect(screen.getByText('STATEMENTS')).toBeInTheDocument();
+    expect(screen.queryByText('NCRP')).not.toBeInTheDocument();
   });
 
   test('toggling back re-mounts the NCRP module', async () => {
