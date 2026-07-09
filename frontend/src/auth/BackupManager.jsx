@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import {
   getBackups, createBackupNow, restoreBackup, friendlyErrorMessage,
 } from '../utils/api.js';
+import ModalShell from '../components/ModalShell.jsx';
 import './auth.css';
 
 function fmtSize(bytes) {
@@ -58,12 +59,11 @@ export default function BackupManager({ onClose }) {
   };
 
   return (
-    <div className="um-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="um-modal" role="dialog" aria-modal="true" aria-label="Backups">
-        <div className="um-head">
-          <h2>Backups</h2>
-          <button type="button" className="btn btn-sm" onClick={onClose}>✕ Close</button>
-        </div>
+    <ModalShell onClose={onClose} ariaLabel="Backups" panelClassName="um-modal">
+      <div className="um-head">
+        <h2>Backups</h2>
+        <button type="button" className="btn btn-sm" onClick={onClose}>✕ Close</button>
+      </div>
 
         {error && <div className="auth-error" role="alert">{error}</div>}
 
@@ -101,7 +101,6 @@ export default function BackupManager({ onClose }) {
             </tbody>
           </table>
         )}
-      </div>
-    </div>
+    </ModalShell>
   );
 }

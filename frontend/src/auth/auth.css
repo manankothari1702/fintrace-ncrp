@@ -163,17 +163,13 @@
   background: var(--danger-bg);
 }
 
-/* ── User management modal ── */
-.um-overlay {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 1000; padding: 24px;
-}
+/* ── User management / Backups modals ──
+   Rendered through the shared portal-based ModalShell (.modal-overlay /
+   .modal-panel provide the scrim, opaque var(--card-bg) background, border,
+   radius and shadow). These rules only add the panel's width + padding. */
 .um-modal {
-  width: 100%; max-width: 720px; max-height: 85vh; overflow: auto;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 22px 24px;
+  max-width: 720px;
+  padding: 22px 24px;
 }
 .um-head { display: flex; align-items: center; margin-bottom: 16px; }
 .um-head h2 { font-size: 18px; flex: 1; }

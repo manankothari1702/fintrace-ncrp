@@ -12,6 +12,7 @@ import {
   friendlyErrorMessage,
 } from '../utils/api.js';
 import { ROLES, ROLE_LABELS, roleLabel } from './permissions.js';
+import ModalShell from '../components/ModalShell.jsx';
 import './auth.css';
 
 const ROLE_OPTIONS = Object.values(ROLES);
@@ -59,12 +60,11 @@ export default function UserManagement({ onClose }) {
   };
 
   return (
-    <div className="um-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="um-modal" role="dialog" aria-modal="true" aria-label="User management">
-        <div className="um-head">
-          <h2>User management</h2>
-          <button type="button" className="btn btn-sm" onClick={onClose}>✕ Close</button>
-        </div>
+    <ModalShell onClose={onClose} ariaLabel="User management" panelClassName="um-modal">
+      <div className="um-head">
+        <h2>User management</h2>
+        <button type="button" className="btn btn-sm" onClick={onClose}>✕ Close</button>
+      </div>
 
         {error && <div className="auth-error" role="alert">{error}</div>}
 
@@ -140,7 +140,6 @@ export default function UserManagement({ onClose }) {
           </div>
           <p className="auth-policy">New users must change this temporary password at first login.</p>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

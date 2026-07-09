@@ -2445,6 +2445,31 @@ table.data-table tbody td.expanded-cell {
   padding: 28px;
 }
 
+/* Shared modal shell (components/ModalShell.jsx) — same scrim + opaque panel as
+   the DetailModal above, portalled to <body>. z-index sits above the shell's
+   unified top bar (200) so account modals opened from the profile menu are
+   never trapped behind it. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(10, 14, 24, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+.modal-panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-height: 88vh;
+  overflow: auto;
+  outline: none;
+}
+
 .detail-modal {
   background: var(--card-bg);
   border: 1px solid var(--border);
