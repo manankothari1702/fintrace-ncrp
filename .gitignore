@@ -43,6 +43,9 @@ coverage/
 
 *.xlsx
 *.xls
+# …but keep parser ground-truth fixtures (tests are anchored to them)
+!backend/src/__tests__/fixtures/*.xls
+!backend/src/__tests__/fixtures/*.xlsx
 
 # Temp / backup files
 *.tmp

@@ -41,7 +41,7 @@ const PRAGMAS = Object.freeze([
 ]);
 
 /**
- * DDL for all seven tables. Each statement is idempotent
+ * DDL for all tables. Each statement is idempotent
  * (`CREATE TABLE IF NOT EXISTS`) so initialization is safe to re-run on
  * every app launch.
  *
@@ -200,6 +200,54 @@ const CREATE_TABLES = Object.freeze([
     created_at           TEXT    DEFAULT CURRENT_TIMESTAMP,
     last_login           TEXT
   )`,
+
+  // ─── bank_statements ─────────────────────────────────────────────
+  // Bank Statement module (Phase 6) — one row per ingested statement file.
+  // Entirely separate from the NCRP tables: a statement is a single account's
+  // ledger export (PNB Excel/PDF for now), not an NCRP CompleteTrail case.
+  // Dates are ISO-8601 UTC strings (parsed via the shared DD/MM/YYYY-aware
+  // parseDate). source_sha256 mirrors ncrp_reports provenance.
+  `CREATE TABLE IF NOT EXISTS bank_statements (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_number         TEXT    NOT NULL,
+    account_holder         TEXT,
+    ifsc                   TEXT,
+    bank_name              TEXT,
+    branch                 TEXT,
+    statement_period_from  TEXT,
+    statement_period_to    TEXT,
+    source_file            TEXT    NOT NULL,
+    original_filename      TEXT,
+    source_format          TEXT    NOT NULL
+      CHECK (source_format IN ('excel','pdf','csv')),
+    source_sha256          TEXT,
+    txn_count              INTEGER NOT NULL DEFAULT 0,
+    parse_warnings         TEXT,
+    uploaded_at            TEXT    DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  // ─── bank_statement_transactions ─────────────────────────────────
+  // Canonical normalized transaction rows for a bank statement. Debit and
+  // credit are SEPARATE nullable columns (exactly one populated per row —
+  // direction is explicit, never inferred downstream). balance_type keeps the
+  // Cr/Dr indicator that PNB suffixes onto the running balance. value_date is
+  // nullable (PNB statements carry none). source_row preserves the original
+  // sheet row / PDF line ordinal for provenance back to the file.
+  `CREATE TABLE IF NOT EXISTS bank_statement_transactions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    statement_id  INTEGER NOT NULL,
+    txn_date      TEXT    NOT NULL,
+    value_date    TEXT,
+    narration     TEXT,
+    debit_amount  REAL,
+    credit_amount REAL,
+    balance       REAL,
+    balance_type  TEXT
+      CHECK (balance_type IN ('Cr','Dr') OR balance_type IS NULL),
+    ref_no        TEXT,
+    source_row    INTEGER,
+    FOREIGN KEY (statement_id) REFERENCES bank_statements(id) ON DELETE CASCADE
+  )`,
 ]);
 
 /**
@@ -239,6 +287,14 @@ const CREATE_INDEXES = Object.freeze([
 
   // draft_emails lookups
   'CREATE INDEX IF NOT EXISTS idx_email_report_id ON draft_emails(report_id)',
+
+  // bank_statement_transactions hot paths: per-statement listing in native
+  // file order (source_row), and the paginated date-ordered browse — same
+  // composite pattern as idx_txn_report_date above.
+  'CREATE INDEX IF NOT EXISTS idx_bank_txn_statement    ON bank_statement_transactions(statement_id, source_row ASC, id ASC)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_txn_stmt_date    ON bank_statement_transactions(statement_id, txn_date DESC, id DESC)',
+  // bank_statements: lookup by account (cross-statement history later)
+  'CREATE INDEX IF NOT EXISTS idx_bank_stmt_account     ON bank_statements(account_number)',
 ]);
 
 /**
