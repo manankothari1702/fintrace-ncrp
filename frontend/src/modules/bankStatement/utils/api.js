@@ -6,8 +6,8 @@
  * src/utils/api.js — so every request automatically carries the session
  * bearer token, the `/api` prefix, and the normalised ApiError envelope.
  *
- * Only the column-mapping save is still a stub: the manual mapping wizard is
- * UI-only this milestone (unrecognised banks have no ingestion path yet).
+ * The mapping wizard is real: apply-mapping parses a pending upload with the
+ * officer's column mapping and can save it as a reusable bank template.
  */
 
 import api from '../../../utils/api.js';
@@ -70,31 +70,23 @@ export const getStatementTransactions = (statementId, params = {}) =>
     .then((r) => r.data);
 
 /**
- * Persist a confirmed column mapping — STILL A STUB. The wizard stays
- * UI-only until a generic (mapped-column) ingestion path exists; parsing is
- * PNB-only this milestone.
- * TODO(bank-statement/backend): POST /api/bank-statement/files/:id/mapping
- * @param {string} fileId
- * @param {{ mapping: Record<string,string>, saveAsTemplate: boolean }} payload
- */
-export async function saveColumnMapping(fileId, payload) {
-  return { ok: true, fileId, ...payload };
-}
-
-/**
- * Suggest a canonical field for a sniffed header label, so the mapping
- * wizard's dropdowns are pre-seeded from the REAL headers the backend found
- * in an unrecognised spreadsheet.
+ * Wizard confirmation: parse the PENDING upload (kept on disk by the
+ * unrecognised-upload response) with the officer's confirmed column mapping.
+ * Persists the canonical transactions and — when saveAsTemplate — stores the
+ * mapping + detection signature so this bank auto-detects next time.
  *
- * @param {string} header
- * @returns {string} one of mockData.CANONICAL_FIELDS values
+ * @param {{ fileId: string, filename?: string,
+ *   mapping: { version: number, columns: Record<string,string>, options?: object },
+ *   bankName?: string, saveAsTemplate?: boolean }} payload
+ * @returns {Promise<{ recognized: true, via: 'wizard', statementId: number,
+ *   templateId: number|null, bank: string|null, txnCount: number,
+ *   warnings: string[], continuity: { checked: boolean,
+ *   direction: string|null, breakCount: number } }>}
  */
-export function suggestFieldForHeader(header) {
-  const h = String(header || '').toLowerCase();
-  if (/date/.test(h)) return 'date';
-  if (/narration|particular|description|detail|remark/.test(h)) return 'narration';
-  if (/withdraw|debit|\bdr\b/.test(h)) return 'debit';
-  if (/deposit|credit|\bcr\b/.test(h)) return 'credit';
-  if (/balance/.test(h)) return 'balance';
-  return 'ignore';
-}
+export const applyMapping = (payload) =>
+  api.post('/bank-statement/apply-mapping', payload, { timeout: 120000 })
+    .then((r) => r.data);
+
+/** Saved bank templates (mapping + detection signature), newest first. */
+export const listTemplates = () =>
+  api.get('/bank-statement/templates').then((r) => r.data.data);

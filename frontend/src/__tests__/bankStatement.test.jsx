@@ -14,12 +14,13 @@ vi.mock('../modules/bankStatement/utils/api.js', async (importOriginal) => {
     listStatements: vi.fn().mockResolvedValue([]),
     uploadStatement: vi.fn(),
     getStatementTransactions: vi.fn(),
+    applyMapping: vi.fn(),
   };
 });
 
 import BankStatementApp from '../modules/bankStatement/BankStatementApp.jsx';
 import {
-  listStatements, uploadStatement, getStatementTransactions,
+  listStatements, uploadStatement, getStatementTransactions, applyMapping,
 } from '../modules/bankStatement/utils/api.js';
 
 const RECOGNIZED_RESPONSE = {
@@ -99,26 +100,144 @@ describe('Upload page — real ingestion flow', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Parsed 96 transactions from Punjab National Bank.');
   });
 
-  test('an unrecognised file shows "Not recognised" and opens the mapping wizard with real sniffed headers', async () => {
-    uploadStatement.mockResolvedValue({
-      recognized: false,
-      filename: 'other_bank.xlsx',
-      format: 'excel',
-      detectedHeaders: ['Txn Date', 'Particulars', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
-    });
+  const WIZARD_RESPONSE = {
+    recognized: false,
+    wizardEligible: true,
+    fileId: 'bankstmt-00000000-0000-4000-8000-000000000001.csv',
+    filename: 'maple_bank.csv',
+    format: 'csv',
+    detectedHeaders: ['Txn Date', 'Particulars', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+    suggested: {
+      'Txn Date': 'date', Particulars: 'narration', 'Withdrawal Amt.': 'debit',
+      'Deposit Amt.': 'credit', 'Closing Balance': 'balance',
+    },
+    preview: [['28/06/2026', 'RTGS; PROPERTY ADVANCE RECEIVED', '', '2,50,000.00', '3,05,210.40 Cr.']],
+    inferred: { ifsc: 'MUCB0000062', accountNumber: '5566778899001122', bankName: 'Maple Urban Co-op Bank' },
+  };
+
+  test('an unrecognised CSV opens the wizard with server headers, suggestions, preview and inferred bank', async () => {
+    uploadStatement.mockResolvedValue(WIZARD_RESPONSE);
     const { container } = render(<BankStatementApp />);
 
-    uploadFileTo(container, 'other_bank.xlsx');
+    uploadFileTo(container, 'maple_bank.csv');
 
     await screen.findByText('Not recognised');
     fireEvent.click(screen.getByRole('button', { name: /Map columns/ }));
 
-    // Wizard renders the SERVER-sniffed headers with sensible suggestions.
+    // Wizard renders the SERVER-sniffed headers with the SERVER's suggestions.
     expect(screen.getByText('Map columns to canonical fields')).toBeInTheDocument();
-    expect(screen.getByText('Particulars')).toBeInTheDocument();
     expect(screen.getByLabelText('Map column "Withdrawal Amt." to')).toHaveValue('debit');
     expect(screen.getByLabelText('Map column "Deposit Amt." to')).toHaveValue('credit');
     expect(screen.getByLabelText('Map column "Closing Balance" to')).toHaveValue('balance');
+    // Real preview rows keep the mapping honest.
+    expect(screen.getByText('RTGS; PROPERTY ADVANCE RECEIVED')).toBeInTheDocument();
+    // Bank name pre-filled from the preamble-inferred IFSC.
+    expect(screen.getByLabelText('Bank name for the template')).toHaveValue('Maple Urban Co-op Bank');
+    // Split debit/credit selection → direction hint, no token inputs.
+    expect(screen.getByText(/which of the Debit \/ Credit columns is filled/)).toBeInTheDocument();
+  });
+
+  test('applying the mapping parses the file, saves the template, and flips the card to Detected', async () => {
+    uploadStatement.mockResolvedValue(WIZARD_RESPONSE);
+    applyMapping.mockResolvedValue({
+      recognized: true,
+      via: 'wizard',
+      statementId: 11,
+      templateId: 3,
+      bank: 'Maple Urban Co-op Bank',
+      bankName: 'Maple Urban Co-op Bank',
+      format: 'csv',
+      account: { account_number: '5566778899001122', ifsc: 'MUCB0000062' },
+      txnCount: 5,
+      warnings: ['Balance continuity verified: 5 rows reconcile (newest-first)'],
+      continuity: { checked: true, direction: 'newest-first', breakCount: 0 },
+    });
+    const { container } = render(<BankStatementApp />);
+
+    uploadFileTo(container, 'maple_bank.csv');
+    await screen.findByText('Not recognised');
+    fireEvent.click(screen.getByRole('button', { name: /Map columns/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Apply mapping' }));
+
+    await waitFor(() => expect(applyMapping).toHaveBeenCalledTimes(1));
+    expect(applyMapping).toHaveBeenCalledWith({
+      fileId: WIZARD_RESPONSE.fileId,
+      filename: 'maple_bank.csv',
+      mapping: {
+        version: 1,
+        columns: {
+          'Txn Date': 'date', Particulars: 'narration', 'Withdrawal Amt.': 'debit',
+          'Deposit Amt.': 'credit', 'Closing Balance': 'balance',
+        },
+        options: { dateFormat: 'auto' },
+      },
+      bankName: 'Maple Urban Co-op Bank',
+      saveAsTemplate: true,
+    });
+
+    // Card flips to Detected with the parsed count; toast reports the template.
+    await screen.findByText('Detected');
+    expect(screen.getByText(/5 transactions · a\/c …1122 · CSV/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/Template saved — this bank will auto-detect next time/);
+  });
+
+  test('wizard validation blocks applying without a date column', async () => {
+    uploadStatement.mockResolvedValue(WIZARD_RESPONSE);
+    const { container } = render(<BankStatementApp />);
+
+    uploadFileTo(container, 'maple_bank.csv');
+    await screen.findByText('Not recognised');
+    fireEvent.click(screen.getByRole('button', { name: /Map columns/ }));
+
+    // Un-map the date column, then try to apply.
+    fireEvent.change(screen.getByLabelText('Map column "Txn Date" to'), { target: { value: 'ignore' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply mapping' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Map one column to Date.');
+    expect(applyMapping).not.toHaveBeenCalled();
+  });
+
+  test('a statement matching a saved template skips the wizard entirely', async () => {
+    uploadStatement.mockResolvedValue({
+      recognized: true,
+      via: 'template',
+      templateId: 3,
+      statementId: 12,
+      bank: 'Maple Urban Co-op Bank',
+      bankName: 'Maple Urban Co-op Bank',
+      format: 'csv',
+      account: { account_number: '5566778899001122' },
+      txnCount: 5,
+      warnings: [],
+      continuity: { checked: true, direction: 'newest-first', breakCount: 0 },
+    });
+    const { container } = render(<BankStatementApp />);
+
+    uploadFileTo(container, 'maple_bank_july.csv');
+
+    await screen.findByText('Detected');
+    expect(screen.queryByRole('button', { name: /Map columns/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Auto-detected via saved template — parsed 5 transactions from Maple Urban Co-op Bank.',
+    );
+  });
+
+  test('an unrecognised PDF explains that a dedicated parser is needed — no wizard', async () => {
+    uploadStatement.mockResolvedValue({
+      recognized: false,
+      wizardEligible: false,
+      reason: 'PDF_NEEDS_DEDICATED_PARSER',
+      message: 'This PDF layout is not recognised. PDF statements need a dedicated per-bank parser — upload the bank\'s Excel/CSV export instead to map its columns with the wizard.',
+      filename: 'unknown_bank.pdf',
+      format: 'pdf',
+    });
+    const { container } = render(<BankStatementApp />);
+
+    uploadFileTo(container, 'unknown_bank.pdf');
+
+    await screen.findByText('Needs dedicated parser');
+    expect(screen.getByText(/dedicated per-bank parser/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Map columns/ })).not.toBeInTheDocument();
   });
 
   test('a failed upload surfaces an error card', async () => {

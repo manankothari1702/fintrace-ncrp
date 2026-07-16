@@ -10,9 +10,15 @@
  *      parsed and persisted in the same request; the card shows the bank,
  *      confidence, and parsed transaction count, and the data appears on the
  *      Transactions page.
- *   3. Unrecognised files come back with their sniffed headers and route into
- *      the manual column-mapping wizard (UI-only this milestone — parsing is
- *      PNB-only for now).
+ *   3. Unrecognised CSV/Excel files come back wizard-eligible: the backend
+ *      keeps the file and returns its real headers, role suggestions, preview
+ *      rows and preamble-inferred facts. The officer confirms the mapping in
+ *      the inline wizard → apply-mapping parses + persists, and can save the
+ *      mapping as a bank template so the layout auto-detects next time.
+ *      Files a saved template already matches skip the wizard entirely.
+ *   4. Unrecognised PDFs are NOT wizard-eligible (column boundaries come from
+ *      text positions, which manual mapping can't express) — the card explains
+ *      that a dedicated per-bank parser is needed.
  *
  * Previously-ingested statements are loaded from the backend on mount, so the
  * list survives navigation and app restarts.
@@ -20,9 +26,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import MappingPanel from '../components/MappingPanel.jsx';
-import { ACCEPTED_EXTENSIONS } from '../utils/mockData.js';
+import { ACCEPTED_EXTENSIONS } from '../utils/constants.js';
 import {
-  listStatements, uploadStatement, saveColumnMapping, suggestFieldForHeader,
+  listStatements, uploadStatement, applyMapping as applyMappingApi,
 } from '../utils/api.js';
 
 function formatBytes(bytes) {
@@ -114,6 +120,7 @@ export default function Upload() {
       uploadStatement(f)
         .then((res) => {
           if (res.recognized) {
+            const viaTemplate = res.via === 'template';
             setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
               id: cardId,
               statementId: res.statementId,
@@ -122,19 +129,40 @@ export default function Upload() {
               meta: `${res.txnCount} transactions · a/c ${maskAccount(res.account?.account_number)} · ${String(res.format || '').toUpperCase()}`,
               status: 'detected',
               bank: res.bankName,
-              confidence: Math.round((res.confidence || 0) * 100),
+              confidence: viaTemplate || !res.confidence ? null : Math.round(res.confidence * 100),
+              viaTemplate,
             })));
-            showToast(`Parsed ${res.txnCount} transactions from ${res.bankName}.`);
-          } else {
+            const breaks = res.continuity?.breakCount || 0;
+            showToast(viaTemplate
+              ? `Auto-detected via saved template — parsed ${res.txnCount} transactions from ${res.bankName}.`
+                + (breaks > 0 ? ` ${breaks} balance-continuity warning${breaks > 1 ? 's' : ''}.` : '')
+              : `Parsed ${res.txnCount} transactions from ${res.bankName}.`);
+          } else if (res.wizardEligible) {
+            // Column-mapping wizard: the backend kept the file (fileId) and
+            // supplies real headers, role suggestions, preview rows and
+            // preamble-inferred facts (IFSC → bank name).
             setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
               id: cardId,
               name: f.name,
               size: f.size,
               status: 'unrecognized',
+              fileId: res.fileId,
               detectedHeaders: (res.detectedHeaders || []).map((h) => ({
                 header: h,
-                suggested: suggestFieldForHeader(h),
+                suggested: (res.suggested && res.suggested[h]) || 'ignore',
               })),
+              preview: res.preview || [],
+              inferredBankName: res.inferred?.bankName || '',
+            })));
+          } else {
+            // Not wizard-eligible: unrecognised PDF (needs a dedicated
+            // parser) or a file with no mappable table header.
+            setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
+              id: cardId,
+              name: f.name,
+              size: f.size,
+              status: 'unsupported',
+              message: res.message || 'This file cannot be mapped.',
             })));
           }
         })
@@ -161,12 +189,46 @@ export default function Upload() {
     setExpandedId((current) => (current === id ? null : id));
   }, []);
 
-  // ── Apply a confirmed mapping (wizard is UI-only this milestone) ──────────
-  const applyMapping = useCallback(async (fileId, payload) => {
-    await saveColumnMapping(fileId, payload); // stub — no generic ingestion path yet
-    setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, mapped: true } : f)));
-    setExpandedId(null);
-    showToast('Mapping applied — this file is ready to parse.');
+  // ── Apply a confirmed mapping: REAL parse + optional template save ────────
+  // Receives the card from render scope (a state-updater side effect would
+  // not run synchronously, so it can't be used to look the card up).
+  const applyMapping = useCallback(async (card, payload) => {
+    const cardId = card.id;
+    setFiles((prev) => prev.map((f) => (
+      f.id !== cardId ? f : { ...f, mapBusy: true, mapError: null }
+    )));
+
+    try {
+      const res = await applyMappingApi({
+        fileId: card.fileId,
+        filename: card.name,
+        mapping: payload.mapping,
+        bankName: payload.bankName,
+        saveAsTemplate: payload.saveAsTemplate,
+      });
+      setFiles((prev) => prev.map((f) => (f.id !== cardId ? f : {
+        id: cardId,
+        statementId: res.statementId,
+        name: card.name,
+        size: card.size,
+        meta: `${res.txnCount} transactions · a/c ${maskAccount(res.account?.account_number)} · ${String(res.format || '').toUpperCase()}`,
+        status: 'detected',
+        bank: res.bankName || payload.bankName || 'Mapped statement',
+        confidence: null,
+      })));
+      setExpandedId(null);
+      const breaks = res.continuity?.breakCount || 0;
+      const bits = [`Parsed ${res.txnCount} transactions with your mapping.`];
+      if (res.templateId) bits.push('Template saved — this bank will auto-detect next time.');
+      if (breaks > 0) bits.push(`${breaks} balance-continuity warning${breaks > 1 ? 's' : ''} — check the amount/balance columns.`);
+      showToast(bits.join(' '));
+    } catch (err) {
+      const message = err.message || 'Applying the mapping failed.';
+      setFiles((prev) => prev.map((f) => (f.id !== cardId ? f : {
+        ...f, mapBusy: false, mapError: message,
+      })));
+      showToast(`Mapping failed: ${message}`);
+    }
   }, [showToast]);
 
   const removeFile = useCallback((id) => {
@@ -239,9 +301,9 @@ export default function Upload() {
             const isUploading = file.status === 'uploading';
             const isDetected = file.status === 'detected';
             const isError = file.status === 'error';
-            const isMapped = !!file.mapped;
+            const isUnsupported = file.status === 'unsupported';
             const isOpen = expandedId === file.id;
-            const canMap = file.status === 'unrecognized' && !isMapped;
+            const canMap = file.status === 'unrecognized';
             return (
               <div className={`card bs-file-card${isOpen ? ' is-open' : ''}`} key={file.id}>
                 <div className="bs-file-row">
@@ -252,6 +314,7 @@ export default function Upload() {
                     <div className="bs-file-meta">
                       {file.meta || formatBytes(file.size)}
                       {isError && <span> — {file.error}</span>}
+                      {isUnsupported && <span> — {file.message}</span>}
                     </div>
                   </div>
 
@@ -282,10 +345,10 @@ export default function Upload() {
                         Failed
                       </span>
                     )}
-                    {isMapped && (
-                      <span className="badge badge-success">
+                    {isUnsupported && (
+                      <span className="badge bs-chip-warning">
                         <span className="dot" />
-                        Mapping applied
+                        Needs dedicated parser
                       </span>
                     )}
                     {canMap && (
@@ -322,7 +385,11 @@ export default function Upload() {
                 {isOpen && canMap && (
                   <MappingPanel
                     headers={file.detectedHeaders || []}
-                    onApply={(payload) => applyMapping(file.id, payload)}
+                    preview={file.preview || []}
+                    defaultBankName={file.inferredBankName || ''}
+                    applyError={file.mapError || null}
+                    busy={!!file.mapBusy}
+                    onApply={(payload) => applyMapping(file, payload)}
                     onCancel={() => setExpandedId(null)}
                   />
                 )}
