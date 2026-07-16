@@ -36,12 +36,39 @@ const SQL_INSERT_TRANSACTION = `
   INSERT INTO bank_statement_transactions (
     statement_id, txn_date, value_date, narration,
     debit_amount, credit_amount, balance, balance_type,
-    ref_no, source_row
+    ref_no, source_row,
+    counterparty_name, counterparty_bank_code, counterparty_ifsc,
+    counterparty_vpa, counterparty_phone, txn_channel, extraction_confidence
   ) VALUES (
     @statement_id, @txn_date, @value_date, @narration,
     @debit_amount, @credit_amount, @balance, @balance_type,
-    @ref_no, @source_row
+    @ref_no, @source_row,
+    @counterparty_name, @counterparty_bank_code, @counterparty_ifsc,
+    @counterparty_vpa, @counterparty_phone, @txn_channel, @extraction_confidence
   )
+`;
+
+/**
+ * Re-extraction write-back: counterparty fields are a pure function of the
+ * narration, so re-running is idempotent (see routes' reextract handler).
+ */
+const SQL_UPDATE_COUNTERPARTY = `
+  UPDATE bank_statement_transactions
+     SET counterparty_name      = @counterparty_name,
+         counterparty_bank_code = @counterparty_bank_code,
+         counterparty_ifsc      = @counterparty_ifsc,
+         counterparty_vpa       = @counterparty_vpa,
+         counterparty_phone     = @counterparty_phone,
+         txn_channel            = @txn_channel,
+         extraction_confidence  = @extraction_confidence
+   WHERE id = @id
+`;
+
+const SQL_ALL_TRANSACTIONS_FOR_STATEMENT = `
+  SELECT id, narration
+    FROM bank_statement_transactions
+   WHERE statement_id = @statement_id
+   ORDER BY source_row ASC, id ASC
 `;
 
 const SQL_LIST_STATEMENTS = `
@@ -76,7 +103,9 @@ const SQL_COUNT_TRANSACTIONS = `
 const SQL_PAGE_TRANSACTIONS = `
   SELECT id, statement_id, txn_date, value_date, narration,
          debit_amount, credit_amount, balance, balance_type,
-         ref_no, source_row
+         ref_no, source_row,
+         counterparty_name, counterparty_bank_code, counterparty_ifsc,
+         counterparty_vpa, counterparty_phone, txn_channel, extraction_confidence
     FROM bank_statement_transactions
    WHERE statement_id = @statement_id
    ORDER BY source_row ASC, id ASC
@@ -164,11 +193,59 @@ function insertManyStatementTransactions(db, statementId, rows) {
         balance_type: nz(t.balance_type),
         ref_no: nz(t.ref_no),
         source_row: nz(t.source_row),
+        counterparty_name: nz(t.counterparty_name),
+        counterparty_bank_code: nz(t.counterparty_bank_code),
+        counterparty_ifsc: nz(t.counterparty_ifsc),
+        counterparty_vpa: nz(t.counterparty_vpa),
+        counterparty_phone: nz(t.counterparty_phone),
+        txn_channel: nz(t.txn_channel),
+        extraction_confidence: nz(t.extraction_confidence),
       });
     }
     return txns.length;
   });
   return runAll(rows);
+}
+
+/**
+ * All (id, narration) pairs for one statement, in file order — the
+ * re-extraction working set.
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {number} statementId
+ * @returns {Array<{ id: number, narration: string|null }>}
+ */
+function getStatementNarrations(db, statementId) {
+  return getOrPrepare(db, SQL_ALL_TRANSACTIONS_FOR_STATEMENT)
+    .all({ statement_id: statementId });
+}
+
+/**
+ * Write extracted counterparty fields back onto existing rows, atomically.
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {Array<object>} updates - rows with `id` + the seven extraction fields.
+ * @returns {number} updated count
+ */
+function updateTransactionCounterparties(db, updates) {
+  const update = getOrPrepare(db, SQL_UPDATE_COUNTERPARTY);
+  const runAll = db.transaction((rows) => {
+    let n = 0;
+    for (const r of rows) {
+      n += update.run({
+        id: r.id,
+        counterparty_name: nz(r.counterparty_name),
+        counterparty_bank_code: nz(r.counterparty_bank_code),
+        counterparty_ifsc: nz(r.counterparty_ifsc),
+        counterparty_vpa: nz(r.counterparty_vpa),
+        counterparty_phone: nz(r.counterparty_phone),
+        txn_channel: nz(r.txn_channel),
+        extraction_confidence: nz(r.extraction_confidence),
+      }).changes;
+    }
+    return n;
+  });
+  return runAll(updates);
 }
 
 /**
@@ -278,6 +355,8 @@ module.exports = {
   listStatements,
   getStatementById,
   getStatementTransactions,
+  getStatementNarrations,
+  updateTransactionCounterparties,
   insertTemplate,
   listTemplates,
   getTemplateById,

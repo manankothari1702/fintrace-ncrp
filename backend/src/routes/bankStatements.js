@@ -63,6 +63,7 @@ const {
 } = require('../parsers/bankStatement/tabular');
 const { parseWithMapping, validateBalanceContinuity } = require('../parsers/bankStatement/genericMapped');
 const { buildSignature, findMatchingTemplate } = require('../parsers/bankStatement/templateMatch');
+const { enrichTransactions, coverageSummary } = require('../parsers/bankStatement/counterparty');
 
 // ─── On-disk location (same redirect contract as routes/ncrp.js) ─────
 
@@ -255,6 +256,9 @@ function createBankStatementRouter(db, authCtx) {
   const persistStatement = (req, {
     parsed, format, originalName, storedFile, sourceSha256, warnings, via, bankLabel, templateId,
   }) => {
+    // Counterparty extraction (Phase 6 m3) runs on every ingestion path —
+    // a pure function of the narration, so re-runnable via /reextract.
+    const transactions = enrichTransactions(parsed.transactions);
     const insertBoth = db.transaction(() => {
       const statementId = insertStatement(db, {
         ...parsed.account,
@@ -265,7 +269,7 @@ function createBankStatementRouter(db, authCtx) {
         txn_count: parsed.transactions.length,
         parse_warnings: warnings.length > 0 ? warnings : null,
       });
-      insertManyStatementTransactions(db, statementId, parsed.transactions);
+      insertManyStatementTransactions(db, statementId, transactions);
       return statementId;
     });
     const statementId = insertBoth();
@@ -460,6 +464,9 @@ function createBankStatementRouter(db, authCtx) {
         }
 
         const warnings = [...uploadWarnings, ...parsed.warnings];
+        // Counterparty extraction (Phase 6 m3) — same enrichment as the
+        // template/wizard paths in persistStatement.
+        const enriched = enrichTransactions(parsed.transactions);
         const insertBoth = db.transaction(() => {
           const statementId = insertStatement(db, {
             ...parsed.account,
@@ -470,7 +477,7 @@ function createBankStatementRouter(db, authCtx) {
             txn_count: parsed.transactions.length,
             parse_warnings: warnings.length > 0 ? warnings : null,
           });
-          insertManyStatementTransactions(db, statementId, parsed.transactions);
+          insertManyStatementTransactions(db, statementId, enriched);
           return statementId;
         });
         const statementId = insertBoth();

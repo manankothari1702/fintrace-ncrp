@@ -252,19 +252,34 @@ const CREATE_TABLES = Object.freeze([
   // Cr/Dr indicator that PNB suffixes onto the running balance. value_date is
   // nullable (PNB statements carry none). source_row preserves the original
   // sheet row / PDF line ordinal for provenance back to the file.
+  //
+  // counterparty_* / txn_channel / extraction_confidence (Phase 6 m3) are
+  // EXTRACTED from the narration by parsers/bankStatement/counterparty.js —
+  // the raw narration is always kept; every extracted field is either
+  // confidently parsed or NULL (never guessed). extraction_confidence ∈
+  // {high, low, none}; txn_channel ∈ {UPI, IMPS, NEFT, RTGS, INTEREST,
+  // CHARGE, CASH, OTHER} (app-enforced like users.role — no CHECK, so the
+  // channel set stays editable in one place: the extractor registry).
   `CREATE TABLE IF NOT EXISTS bank_statement_transactions (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    statement_id  INTEGER NOT NULL,
-    txn_date      TEXT    NOT NULL,
-    value_date    TEXT,
-    narration     TEXT,
-    debit_amount  REAL,
-    credit_amount REAL,
-    balance       REAL,
-    balance_type  TEXT
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    statement_id           INTEGER NOT NULL,
+    txn_date               TEXT    NOT NULL,
+    value_date             TEXT,
+    narration              TEXT,
+    debit_amount           REAL,
+    credit_amount          REAL,
+    balance                REAL,
+    balance_type           TEXT
       CHECK (balance_type IN ('Cr','Dr') OR balance_type IS NULL),
-    ref_no        TEXT,
-    source_row    INTEGER,
+    ref_no                 TEXT,
+    source_row             INTEGER,
+    counterparty_name      TEXT,
+    counterparty_bank_code TEXT,
+    counterparty_ifsc      TEXT,
+    counterparty_vpa       TEXT,
+    counterparty_phone     TEXT,
+    txn_channel            TEXT,
+    extraction_confidence  TEXT,
     FOREIGN KEY (statement_id) REFERENCES bank_statements(id) ON DELETE CASCADE
   )`,
 ]);
@@ -371,6 +386,25 @@ const COLUMN_MIGRATIONS = Object.freeze([
     ddl: 'ALTER TABLE audit_log ADD COLUMN user_id INTEGER' },
   { table: 'audit_log', column: 'username',
     ddl: 'ALTER TABLE audit_log ADD COLUMN username TEXT' },
+
+  // Phase 6 m3 — counterparty extraction from bank-statement narration.
+  // Databases created by m1/m2 already have bank_statement_transactions
+  // without these columns; POST /bank-statement/statements/:id/reextract
+  // backfills the values for already-ingested statements.
+  { table: 'bank_statement_transactions', column: 'counterparty_name',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN counterparty_name TEXT' },
+  { table: 'bank_statement_transactions', column: 'counterparty_bank_code',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN counterparty_bank_code TEXT' },
+  { table: 'bank_statement_transactions', column: 'counterparty_ifsc',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN counterparty_ifsc TEXT' },
+  { table: 'bank_statement_transactions', column: 'counterparty_vpa',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN counterparty_vpa TEXT' },
+  { table: 'bank_statement_transactions', column: 'counterparty_phone',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN counterparty_phone TEXT' },
+  { table: 'bank_statement_transactions', column: 'txn_channel',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN txn_channel TEXT' },
+  { table: 'bank_statement_transactions', column: 'extraction_confidence',
+    ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN extraction_confidence TEXT' },
 ]);
 
 /**
