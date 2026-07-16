@@ -226,6 +226,25 @@ const CREATE_TABLES = Object.freeze([
     uploaded_at            TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
 
+  // ─── bank_templates ──────────────────────────────────────────────
+  // Reusable column mappings for banks WITHOUT a dedicated parser (Phase 6
+  // milestone 2). A template is created when the officer confirms the
+  // mapping wizard once; its detection signature (normalized header-row
+  // fingerprint + optional IFSC prefix, both JSON) lets the same layout
+  // auto-detect on every later upload. mapping is the genericMapped spec
+  // (see parsers/bankStatement/genericMapped.js module doc). Dedicated
+  // parsers (PNB) always take priority over templates.
+  `CREATE TABLE IF NOT EXISTS bank_templates (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_name      TEXT    NOT NULL,
+    source_format  TEXT    NOT NULL
+      CHECK (source_format IN ('csv','excel')),
+    signature      TEXT    NOT NULL,
+    mapping        TEXT    NOT NULL,
+    created_by     TEXT,
+    created_at     TEXT    DEFAULT CURRENT_TIMESTAMP
+  )`,
+
   // ─── bank_statement_transactions ─────────────────────────────────
   // Canonical normalized transaction rows for a bank statement. Debit and
   // credit are SEPARATE nullable columns (exactly one populated per row —

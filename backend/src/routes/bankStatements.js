@@ -53,10 +53,16 @@ const { insertAuditLog } = require('../db/queries');
 const {
   insertStatement, insertManyStatementTransactions,
   listStatements, getStatementById, getStatementTransactions,
+  insertTemplate, listTemplates, getTemplateById, deleteTemplate,
 } = require('../db/bankStatementQueries');
-const { detectBank, sniffSpreadsheetHeaders } = require('../parsers/bankStatement/detect');
+const { detectBank } = require('../parsers/bankStatement/detect');
 const { parsePnbExcel } = require('../parsers/bankStatement/pnbExcel');
 const { parsePnbPdf } = require('../parsers/bankStatement/pnbPdf');
+const {
+  readTabularRows, findHeaderRowGeneric, previewRows, suggestMapping, sniffPreambleFacts,
+} = require('../parsers/bankStatement/tabular');
+const { parseWithMapping, validateBalanceContinuity } = require('../parsers/bankStatement/genericMapped');
+const { buildSignature, findMatchingTemplate } = require('../parsers/bankStatement/templateMatch');
 
 // ─── On-disk location (same redirect contract as routes/ncrp.js) ─────
 
@@ -81,6 +87,13 @@ const ALLOWED_MIMETYPES = new Set([
 /** Pagination caps (mirrors routes/ncrp.js). */
 const MAX_PAGE_LIMIT = 500;
 const MAX_PAGE_INDEX = 1_000_000;
+
+/**
+ * Shape of the on-disk name multer gives every upload. apply-mapping only
+ * ever touches files matching this (a bare UUID name inside UPLOADS_DIR —
+ * no client-supplied paths), and only wizard-eligible extensions.
+ */
+const PENDING_FILE_RE = /^bankstmt-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(csv|xls|xlsx)$/;
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -234,6 +247,45 @@ function createBankStatementRouter(db, authCtx) {
   router.use(makeLimiter(100, 'Too many requests; please slow down.'));
   const uploadLimiter = makeLimiter(5, 'Too many uploads in a short period; please wait a moment.');
 
+  /**
+   * Persist a parsed statement (+ its transactions, atomically) and audit
+   * it. Shared by the template auto-apply and wizard apply paths (the PNB
+   * dedicated path keeps its original inline block, unchanged).
+   */
+  const persistStatement = (req, {
+    parsed, format, originalName, storedFile, sourceSha256, warnings, via, bankLabel, templateId,
+  }) => {
+    const insertBoth = db.transaction(() => {
+      const statementId = insertStatement(db, {
+        ...parsed.account,
+        source_file: storedFile,
+        original_filename: originalName,
+        source_format: format,
+        source_sha256: sourceSha256,
+        txn_count: parsed.transactions.length,
+        parse_warnings: warnings.length > 0 ? warnings : null,
+      });
+      insertManyStatementTransactions(db, statementId, parsed.transactions);
+      return statementId;
+    });
+    const statementId = insertBoth();
+    audit(req, {
+      action: 'bank_statement.uploaded',
+      details: {
+        statement_id: statementId,
+        bank: bankLabel,
+        via,
+        template_id: templateId != null ? templateId : null,
+        account_number: parsed.account.account_number,
+        source_format: format,
+        source_sha256: sourceSha256,
+        txn_count: parsed.transactions.length,
+        original_filename: originalName,
+      },
+    });
+    return statementId;
+  };
+
   // ── Multer (disk storage, UUID names, size + type guards) ──────────
   const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
@@ -287,20 +339,104 @@ function createBankStatementRouter(db, authCtx) {
             'File content does not match its extension (failed magic-byte check).');
         }
 
-        // Content-based bank detection (never filename-based).
+        // Content-based bank detection (never filename-based). Dedicated
+        // parsers (PNB) always take priority; templates and the wizard are
+        // the fallback for everything else.
         const detected = await detectBank(filePath, format);
         if (!detected) {
-          // Not a statement any parser understands yet: hand the UI its
-          // sniffed headers for the manual mapping wizard, keep nothing.
-          const detectedHeaders = format === 'excel' || format === 'csv'
-            ? sniffSpreadsheetHeaders(filePath)
-            : [];
-          tryUnlink(filePath);
+          if (format === 'pdf') {
+            // The wizard cannot help a PDF: its column boundaries come from
+            // text x-positions, not from a header row a user could map. A
+            // dedicated per-bank parser is required.
+            tryUnlink(filePath);
+            return res.status(200).json({
+              recognized: false,
+              wizardEligible: false,
+              reason: 'PDF_NEEDS_DEDICATED_PARSER',
+              message: 'This PDF layout is not recognised. PDF statements need a '
+                + 'dedicated per-bank parser — upload the bank\'s Excel/CSV export '
+                + 'instead to map its columns with the wizard.',
+              filename: originalName,
+              format,
+            });
+          }
+
+          let rows;
+          try {
+            rows = readTabularRows(filePath);
+          } catch (readErr) {
+            tryUnlink(filePath);
+            return sendError(res, 422, 'PARSE_BLOCKED', 'The file could not be read as a table.',
+              { reason: readErr.message, publicDetails: true });
+          }
+
+          // Saved template match? Auto-apply — the "detects next time" payoff.
+          const template = findMatchingTemplate(listTemplates(db), rows);
+          if (template) {
+            try {
+              const mapping = JSON.parse(template.mapping);
+              const parsed = parseWithMapping(rows, mapping, { bankName: template.bank_name });
+              const continuity = validateBalanceContinuity(parsed.transactions);
+              const warnings = [...parsed.warnings, ...continuity.warnings];
+              let sourceSha256 = null;
+              try {
+                sourceSha256 = sha256File(filePath);
+              } catch (hashErr) {
+                warnings.push(`PROVENANCE_HASH_FAILED: ${hashErr.message}`);
+              }
+              const statementId = persistStatement(req, {
+                parsed, format, originalName, storedFile: req.file.filename,
+                sourceSha256, warnings, via: 'template',
+                bankLabel: template.bank_name, templateId: template.id,
+              });
+              return res.status(201).json({
+                recognized: true,
+                via: 'template',
+                templateId: template.id,
+                statementId,
+                bank: template.bank_name,
+                bankName: template.bank_name,
+                format,
+                account: parsed.account,
+                txnCount: parsed.transactions.length,
+                sourceSha256,
+                warnings,
+                continuity: {
+                  checked: continuity.checked,
+                  direction: continuity.direction,
+                  breakCount: continuity.breakCount,
+                },
+              });
+            } catch (_tmplErr) {
+              // A stale or mismatched template must never block ingestion —
+              // fall through to the wizard so the officer can re-map.
+            }
+          }
+
+          // Wizard path: KEEP the stored file so apply-mapping can parse it.
+          const header = findHeaderRowGeneric(rows);
+          if (!header) {
+            tryUnlink(filePath);
+            return res.status(200).json({
+              recognized: false,
+              wizardEligible: false,
+              reason: 'NO_TABLE_HEADER',
+              message: 'No table header row could be found in this file, so its '
+                + 'columns cannot be mapped.',
+              filename: originalName,
+              format,
+            });
+          }
           return res.status(200).json({
             recognized: false,
+            wizardEligible: true,
+            fileId: req.file.filename,
             filename: originalName,
             format,
-            detectedHeaders,
+            detectedHeaders: header.headers,
+            suggested: suggestMapping(header.headers),
+            preview: previewRows(rows, header.headerRow, header.headers.length),
+            inferred: sniffPreambleFacts(rows, header.headerRow),
           });
         }
 
@@ -370,6 +506,142 @@ function createBankStatementRouter(db, authCtx) {
           { reason: unexpected.message });
       }
     });
+  });
+
+  // ── POST /bank-statement/apply-mapping ─────────────────────────────
+  // Wizard confirmation: parse a PENDING upload (kept on disk by the
+  // unrecognized-upload response) with the officer's column mapping,
+  // persist the canonical transactions, and optionally save the mapping as
+  // a reusable bank template so this layout auto-detects next time.
+  router.post('/apply-mapping', P(PERMISSIONS.UPLOAD_REPORT), (req, res) => {
+    const body = req.body || {};
+    const { fileId, mapping } = body;
+    const saveAsTemplate = body.saveAsTemplate === true;
+    const originalName = sanitizeOriginalName(body.filename);
+    const bankName = typeof body.bankName === 'string'
+      ? body.bankName.replace(/[<>]/g, '').trim().slice(0, 80)
+      : '';
+
+    if (typeof fileId !== 'string' || !PENDING_FILE_RE.test(fileId)) {
+      return sendError(res, 400, 'VALIDATION_FAILED',
+        'fileId must reference a pending statement upload.');
+    }
+    const filePath = path.join(UPLOADS_DIR, fileId);
+    if (!fs.existsSync(filePath)) {
+      return sendError(res, 404, 'PENDING_FILE_NOT_FOUND',
+        'The uploaded file is no longer available — upload it again.');
+    }
+    if (saveAsTemplate && bankName === '') {
+      return sendError(res, 400, 'VALIDATION_FAILED',
+        'A bank name is required to save the mapping as a template.');
+    }
+    const format = fileId.toLowerCase().endsWith('.csv') ? 'csv' : 'excel';
+
+    try {
+      let rows;
+      let parsed;
+      try {
+        rows = readTabularRows(filePath);
+        parsed = parseWithMapping(rows, mapping, bankName ? { bankName } : {});
+      } catch (parseErr) {
+        return sendError(res, 422, 'MAPPING_FAILED',
+          'The file could not be parsed with this mapping.',
+          { reason: parseErr.message, code: parseErr.code, publicDetails: true });
+      }
+
+      const continuity = validateBalanceContinuity(parsed.transactions);
+      const warnings = [...parsed.warnings, ...continuity.warnings];
+      let sourceSha256 = null;
+      try {
+        sourceSha256 = sha256File(filePath);
+      } catch (hashErr) {
+        warnings.push(`PROVENANCE_HASH_FAILED: ${hashErr.message}`);
+      }
+
+      const bankLabel = parsed.account.bank_name || bankName || null;
+      const statementId = persistStatement(req, {
+        parsed, format, originalName, storedFile: fileId,
+        sourceSha256, warnings, via: 'wizard', bankLabel, templateId: null,
+      });
+
+      let templateId = null;
+      if (saveAsTemplate) {
+        try {
+          const signature = buildSignature(rows, mapping);
+          templateId = insertTemplate(db, {
+            bank_name: bankName,
+            source_format: format,
+            signature,
+            mapping,
+            created_by: req.user && req.user.username ? req.user.username : null,
+          });
+          audit(req, {
+            action: 'bank_statement.template_saved',
+            details: {
+              template_id: templateId, bank_name: bankName,
+              source_format: format, signature,
+            },
+          });
+        } catch (sigErr) {
+          // Saving the template is best-effort; the statement itself is in.
+          warnings.push(`TEMPLATE_NOT_SAVED: ${sigErr.message}`);
+        }
+      }
+
+      return res.status(201).json({
+        recognized: true,
+        via: 'wizard',
+        statementId,
+        templateId,
+        bank: bankLabel,
+        bankName: bankLabel,
+        format,
+        account: parsed.account,
+        txnCount: parsed.transactions.length,
+        sourceSha256,
+        warnings,
+        continuity: {
+          checked: continuity.checked,
+          direction: continuity.direction,
+          breakCount: continuity.breakCount,
+        },
+      });
+    } catch (unexpected) {
+      return sendError(res, 500, 'MAPPING_FAILED', 'Applying the mapping failed.',
+        { reason: unexpected.message });
+    }
+  });
+
+  // ── GET /bank-statement/templates ───────────────────────────────────
+  router.get('/templates', P(PERMISSIONS.VIEW_CASES), (_req, res) => {
+    const data = listTemplates(db).map((t) => {
+      let signature = null;
+      let mapping = null;
+      try { signature = JSON.parse(t.signature); } catch (_e) { /* keep null */ }
+      try { mapping = JSON.parse(t.mapping); } catch (_e) { /* keep null */ }
+      return { ...t, signature, mapping };
+    });
+    return res.json({ data });
+  });
+
+  // ── DELETE /bank-statement/templates/:id ───────────────────────────
+  // Same permission as creating one: a wrong template would silently
+  // hijack every future upload of that layout, so uploaders can remove it.
+  router.delete('/templates/:id', P(PERMISSIONS.UPLOAD_REPORT), (req, res) => {
+    const id = parseStatementId(req);
+    if (id === null) {
+      return sendError(res, 400, 'VALIDATION_FAILED', 'Template id must be a positive integer.');
+    }
+    const template = getTemplateById(db, id);
+    if (!template) {
+      return sendError(res, 404, 'TEMPLATE_NOT_FOUND', `No bank template with id ${id}.`);
+    }
+    deleteTemplate(db, id);
+    audit(req, {
+      action: 'bank_statement.template_deleted',
+      details: { template_id: id, bank_name: template.bank_name },
+    });
+    return res.json({ deleted: true, id });
   });
 
   // ── GET /bank-statement/statements ─────────────────────────────────

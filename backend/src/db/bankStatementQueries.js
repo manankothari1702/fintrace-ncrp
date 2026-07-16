@@ -214,10 +214,72 @@ function getStatementTransactions(db, statementId, opts = {}) {
   };
 }
 
+// ─── Bank templates (wizard-confirmed reusable mappings) ─────────────
+
+const SQL_INSERT_TEMPLATE = `
+  INSERT INTO bank_templates (bank_name, source_format, signature, mapping, created_by)
+  VALUES (@bank_name, @source_format, @signature, @mapping, @created_by)
+`;
+
+/** Newest first — findMatchingTemplate uses this order as its tiebreaker. */
+const SQL_LIST_TEMPLATES = `
+  SELECT id, bank_name, source_format, signature, mapping, created_by, created_at
+    FROM bank_templates
+   ORDER BY datetime(created_at) DESC, id DESC
+`;
+
+const SQL_GET_TEMPLATE = `
+  SELECT id, bank_name, source_format, signature, mapping, created_by, created_at
+    FROM bank_templates
+   WHERE id = ?
+   LIMIT 1
+`;
+
+const SQL_DELETE_TEMPLATE = 'DELETE FROM bank_templates WHERE id = ?';
+
+/**
+ * Insert a bank template. signature/mapping objects are stringified here.
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {{ bank_name: string, source_format: string, signature: object|string,
+ *           mapping: object|string, created_by?: string }} data
+ * @returns {number} new template id
+ */
+function insertTemplate(db, data) {
+  const asJson = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+  const info = getOrPrepare(db, SQL_INSERT_TEMPLATE).run({
+    bank_name: nz(data.bank_name),
+    source_format: nz(data.source_format),
+    signature: asJson(data.signature),
+    mapping: asJson(data.mapping),
+    created_by: nz(data.created_by),
+  });
+  return Number(info.lastInsertRowid);
+}
+
+/** All templates, newest first. */
+function listTemplates(db) {
+  return getOrPrepare(db, SQL_LIST_TEMPLATES).all();
+}
+
+/** One template by id, or undefined. */
+function getTemplateById(db, id) {
+  return getOrPrepare(db, SQL_GET_TEMPLATE).get(id);
+}
+
+/** Delete a template. @returns {boolean} true if a row was removed. */
+function deleteTemplate(db, id) {
+  return getOrPrepare(db, SQL_DELETE_TEMPLATE).run(id).changes > 0;
+}
+
 module.exports = {
   insertStatement,
   insertManyStatementTransactions,
   listStatements,
   getStatementById,
   getStatementTransactions,
+  insertTemplate,
+  listTemplates,
+  getTemplateById,
+  deleteTemplate,
 };

@@ -232,3 +232,228 @@ describe('GET /api/bank-statement/statements/:id/transactions', () => {
     expect((await admin.get(`/api/bank-statement/statements/${statementId}/transactions?limit=9999`)).status).toBe(400);
   });
 });
+
+// ─── Milestone 2: wizard + template flow ─────────────────────────────
+
+describe('wizard + template flow (CSV/Excel without a dedicated parser)', () => {
+  const CSV_SINGLE = path.join(FIXTURES, 'generic_single_amount.csv');
+  const CSV_SPLIT = path.join(FIXTURES, 'generic_split_semicolon.csv');
+  const SINGLE_MAPPING = {
+    version: 1,
+    columns: {
+      Date: 'date', Details: 'narration', 'Ref No': 'ref_no',
+      Amount: 'amount', Type: 'type', Balance: 'balance',
+    },
+    options: {},
+  };
+  let pendingFileId; // captured from the wizard-eligible upload
+
+  test('unrecognised CSV → wizard-eligible: kept file + headers + suggestions + preview + inferred facts', async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', CSV_SINGLE);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      recognized: false,
+      wizardEligible: true,
+      format: 'csv',
+      detectedHeaders: ['Date', 'Details', 'Ref No', 'Amount', 'Type', 'Balance'],
+    });
+    expect(res.body.suggested).toEqual({
+      Date: 'date', Details: 'narration', 'Ref No': 'ref_no',
+      Amount: 'amount', Type: 'type', Balance: 'balance',
+    });
+    expect(res.body.preview).toHaveLength(5);
+    expect(res.body.preview[0][0]).toBe('01-06-2026');
+    expect(res.body.inferred).toMatchObject({
+      ifsc: 'SYNB0001234', account_number: '991100223344',
+    });
+    // The pending file is KEPT for apply-mapping.
+    expect(res.body.fileId).toMatch(/^bankstmt-[0-9a-f-]{36}\.csv$/);
+    expect(fs.existsSync(path.join(TEST_UPLOADS, res.body.fileId))).toBe(true);
+    pendingFileId = res.body.fileId;
+  });
+
+  test('apply-mapping input gate: traversal, unknown file, missing bank name, broken mapping', async () => {
+    const post = (body) => admin.post('/api/bank-statement/apply-mapping').send(body);
+
+    // Path traversal / non-pending names never reach the filesystem.
+    expect((await post({ fileId: '../../etc/passwd', mapping: SINGLE_MAPPING })).status).toBe(400);
+    expect((await post({ fileId: 'pnb_statement.xls', mapping: SINGLE_MAPPING })).status).toBe(400);
+    // Well-formed but vanished pending file.
+    const gone = await post({
+      fileId: 'bankstmt-00000000-0000-4000-8000-000000000000.csv', mapping: SINGLE_MAPPING,
+    });
+    expect(gone.status).toBe(404);
+    expect(gone.body.error.code).toBe('PENDING_FILE_NOT_FOUND');
+    // Saving a template needs a bank name.
+    const noName = await post({
+      fileId: pendingFileId, mapping: SINGLE_MAPPING, saveAsTemplate: true,
+    });
+    expect(noName.status).toBe(400);
+    // Structurally invalid mapping → 422 with the parser's reason.
+    const badMap = await post({
+      fileId: pendingFileId, mapping: { columns: { Details: 'narration' } },
+    });
+    expect(badMap.status).toBe(422);
+    expect(badMap.body.error.code).toBe('MAPPING_FAILED');
+  });
+
+  test('apply-mapping ingests, verifies balance continuity, and saves the template', async () => {
+    const res = await admin.post('/api/bank-statement/apply-mapping').send({
+      fileId: pendingFileId,
+      filename: 'synth_bank_june.csv',
+      mapping: SINGLE_MAPPING,
+      bankName: 'Synthetic Bank of Bharat',
+      saveAsTemplate: true,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      recognized: true,
+      via: 'wizard',
+      bank: 'Synthetic Bank of Bharat',
+      format: 'csv',
+      txnCount: 10,
+      continuity: { checked: true, direction: 'oldest-first', breakCount: 0 },
+    });
+    expect(res.body.templateId).toEqual(expect.any(Number));
+    expect(res.body.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Balance continuity verified: 10 rows/)]),
+    );
+    expect(res.body.account).toMatchObject({
+      account_number: '991100223344', ifsc: 'SYNB0001234',
+    });
+
+    // Canonical rows landed and read back through the normal route.
+    const txns = await admin.get(
+      `/api/bank-statement/statements/${res.body.statementId}/transactions?limit=100`,
+    );
+    expect(txns.body.total).toBe(10);
+    expect(txns.body.data[0]).toMatchObject({
+      txn_date: '2026-06-01T00:00:00.000Z', credit_amount: 5000, balance: 15000,
+    });
+
+    // Template save is audited.
+    const auditRow = db.prepare(
+      "SELECT * FROM audit_log WHERE action = 'bank_statement.template_saved' ORDER BY id DESC LIMIT 1",
+    ).get();
+    expect(JSON.parse(auditRow.details)).toMatchObject({
+      template_id: res.body.templateId, bank_name: 'Synthetic Bank of Bharat',
+    });
+  });
+
+  test('round trip: the same layout now auto-detects via the template — no wizard', async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', CSV_SINGLE);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      recognized: true,
+      via: 'template',
+      bank: 'Synthetic Bank of Bharat',
+      txnCount: 10,
+      continuity: { checked: true, breakCount: 0 },
+    });
+    expect(res.body.templateId).toEqual(expect.any(Number));
+    // Audit records the template-driven ingestion.
+    const auditRow = db.prepare(
+      "SELECT * FROM audit_log WHERE action = 'bank_statement.uploaded' ORDER BY id DESC LIMIT 1",
+    ).get();
+    expect(JSON.parse(auditRow.details)).toMatchObject({ via: 'template' });
+  });
+
+  test('a DIFFERENT layout still goes to the wizard (template does not overreach)', async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', CSV_SPLIT);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ recognized: false, wizardEligible: true });
+    expect(res.body.detectedHeaders).toEqual(
+      ['Txn Date', 'Particulars', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+    );
+    expect(res.body.suggested).toMatchObject({
+      'Withdrawal Amt.': 'debit', 'Deposit Amt.': 'credit',
+    });
+  });
+
+  test('PNB priority: the dedicated parser still wins while templates exist', async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', PNB_XLS);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ recognized: true, bank: 'PNB', txnCount: 96 });
+    expect(res.body.via).toBeUndefined(); // dedicated path, not template/wizard
+  });
+
+  test('unrecognised PDF → no wizard, clear dedicated-parser message', async () => {
+    // Generate a real (non-PNB) PDF with pdfkit — already a backend dep.
+    const PDFDocument = require('pdfkit');
+    const pdfPath = path.join(TEST_UPLOADS, 'other_bank_statement.pdf');
+    await new Promise((resolve, reject) => {
+      const doc = new PDFDocument();
+      const out = fs.createWriteStream(pdfPath);
+      out.on('finish', resolve);
+      out.on('error', reject);
+      doc.pipe(out);
+      doc.text('Some Other Bank — Account Statement');
+      doc.text('01/06/2026  ATM CASH  500.00  900.00');
+      doc.end();
+    });
+
+    const before = db.prepare('SELECT COUNT(*) AS n FROM bank_statements').get().n;
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', pdfPath);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      recognized: false,
+      wizardEligible: false,
+      reason: 'PDF_NEEDS_DEDICATED_PARSER',
+      format: 'pdf',
+    });
+    expect(res.body.message).toMatch(/dedicated per-bank parser/i);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM bank_statements').get().n).toBe(before);
+  });
+
+  test('a table-less CSV is not wizard-eligible (NO_TABLE_HEADER)', async () => {
+    const file = path.join(TEST_UPLOADS, 'numbers_only.csv');
+    fs.writeFileSync(file, '1,2,3\n4,5,6\n7,8,9\n');
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', file);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      recognized: false, wizardEligible: false, reason: 'NO_TABLE_HEADER',
+    });
+  });
+});
+
+describe('template registry routes + RBAC', () => {
+  test('lists templates with parsed signature and mapping objects', async () => {
+    const res = await admin.get('/api/bank-statement/templates');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+    const t = res.body.data.find((x) => x.bank_name === 'Synthetic Bank of Bharat');
+    expect(t).toBeDefined();
+    expect(t.source_format).toBe('csv');
+    expect(t.signature.headers).toEqual(['date', 'details', 'refno', 'amount', 'type', 'balance']);
+    expect(t.signature.ifscPrefix).toBe('SYNB0');
+    expect(t.mapping.columns).toMatchObject({ Amount: 'amount', Type: 'type' });
+    expect(t.created_by).toBe(`test_${ROLES.SYSTEM_ADMIN}`);
+  });
+
+  test('sho can view templates but cannot apply mappings or delete templates', async () => {
+    const sho = authed(app, await loginAs(app, ROLES.SHO));
+    expect((await sho.get('/api/bank-statement/templates')).status).toBe(200);
+    expect((await sho.post('/api/bank-statement/apply-mapping').send({})).status).toBe(403);
+    expect((await sho.delete('/api/bank-statement/templates/1')).status).toBe(403);
+  });
+
+  test('deleting the template returns the layout to the wizard path', async () => {
+    const list = await admin.get('/api/bank-statement/templates');
+    const t = list.body.data.find((x) => x.bank_name === 'Synthetic Bank of Bharat');
+
+    const del = await admin.delete(`/api/bank-statement/templates/${t.id}`);
+    expect(del.status).toBe(200);
+    expect(del.body).toEqual({ deleted: true, id: t.id });
+    expect((await admin.delete(`/api/bank-statement/templates/${t.id}`)).status).toBe(404);
+
+    // Same layout, no template → wizard again.
+    const res = await admin.post('/api/bank-statement/upload')
+      .attach('statementFile', path.join(FIXTURES, 'generic_single_amount.csv'));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ recognized: false, wizardEligible: true });
+  });
+
+  test('validates the template id shape', async () => {
+    expect((await admin.delete('/api/bank-statement/templates/abc')).status).toBe(400);
+  });
+});
