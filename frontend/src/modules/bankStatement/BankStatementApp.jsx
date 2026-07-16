@@ -12,7 +12,8 @@
  *     primitives (.app-shell, .app-main, .sidebar, .card, .btn, .badge, …) so
  *     it matches the existing look without a second design system.
  *
- * Only Upload is a real page in this pass; the rest are navigable placeholders.
+ * Upload and Transactions are real (wired to /api/bank-statement/*); the rest
+ * are navigable placeholders.
  */
 import { lazy, Suspense } from 'react';
 import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';

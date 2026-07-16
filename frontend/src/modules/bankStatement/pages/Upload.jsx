@@ -1,27 +1,29 @@
 /**
- * Bank Statement — Upload page.
+ * Bank Statement — Upload page (REAL ingestion).
  *
- * The only fully-built page in this scaffold pass. It demonstrates the intended
- * ingest flow against mock/static data (no real parsing or backend yet):
+ * The flow, now wired to the live backend:
  *
- *   1. Drag-and-drop (or browse) PDF / XLSX / CSV statements — UI only; the
- *      file bytes are never read in this pass.
- *   2. Each file lands in a list with a detection status chip: green
- *      "detected" (bank + confidence) for recognised files, amber
- *      "not recognised" for the rest.
- *   3. A not-recognised file offers "Map columns", which expands an inline
- *      panel within that row to map its headers onto canonical fields.
+ *   1. Drag-and-drop (or browse) PDF / XLS / XLSX / CSV statements. Each file
+ *      is POSTed to /api/bank-statement/upload.
+ *   2. The BACKEND detects the bank from file content (banner text + IFSC +
+ *      header signature — never the filename). Recognised statements are
+ *      parsed and persisted in the same request; the card shows the bank,
+ *      confidence, and parsed transaction count, and the data appears on the
+ *      Transactions page.
+ *   3. Unrecognised files come back with their sniffed headers and route into
+ *      the manual column-mapping wizard (UI-only this milestone — parsing is
+ *      PNB-only for now).
  *
- * Every place a real API call belongs is marked with a TODO referencing the
- * stub in ../utils/api.js.
+ * Previously-ingested statements are loaded from the backend on mount, so the
+ * list survives navigation and app restarts.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import MappingPanel from '../components/MappingPanel.jsx';
-import { ACCEPTED_EXTENSIONS, MOCK_FILES, mockDetect } from '../utils/mockData.js';
-// TODO(bank-statement/backend): replace the mock seed + mockDetect with the
-// real client — listStatementFiles(), uploadStatement(file), saveColumnMapping().
-// import { listStatementFiles, uploadStatement, saveColumnMapping } from '../utils/api.js';
+import { ACCEPTED_EXTENSIONS } from '../utils/mockData.js';
+import {
+  listStatements, uploadStatement, saveColumnMapping, suggestFieldForHeader,
+} from '../utils/api.js';
 
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return '';
@@ -35,15 +37,35 @@ function hasAcceptedExtension(name) {
   return ACCEPTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+/** Mask an account number for the card meta line (last 4 kept). */
+function maskAccount(acct) {
+  const s = acct ? String(acct) : '';
+  if (s.length <= 4) return s;
+  return `…${s.slice(-4)}`;
+}
+
+/** Map a persisted statement row onto the file-card shape. */
+function cardFromStatement(s) {
+  return {
+    id: `stmt-${s.id}`,
+    statementId: s.id,
+    name: s.original_filename || `${s.bank_name || 'Statement'} ${maskAccount(s.account_number)}`,
+    size: null,
+    meta: `${s.txn_count} transactions · a/c ${maskAccount(s.account_number)} · ${String(s.source_format || '').toUpperCase()}`,
+    status: 'detected',
+    bank: s.bank_name,
+    confidence: null,
+  };
+}
+
 let localFileSeq = 0;
 
 export default function Upload() {
   const inputRef = useRef(null);
   const toastTimer = useRef(null);
 
-  // Seed from mock data. TODO(bank-statement/backend): load via
-  // listStatementFiles() in an effect once the route exists.
-  const [files, setFiles] = useState(MOCK_FILES);
+  const [files, setFiles] = useState([]);
+  const [loadError, setLoadError] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -56,24 +78,78 @@ export default function Upload() {
     toastTimer.current = setTimeout(() => setToast(null), 2800);
   }, []);
 
-  // ── Add files (drop or browse) ────────────────────────────────────────────
+  // ── Load previously-ingested statements ───────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    listStatements()
+      .then((statements) => {
+        if (cancelled) return;
+        // MERGE under the current state, never replace: an upload started
+        // before this list resolves already has an in-flight card that a
+        // plain setFiles(list) would silently wipe.
+        setFiles((prev) => {
+          const known = new Set(prev.map((f) => f.id));
+          return [...prev, ...statements.map(cardFromStatement).filter((c) => !known.has(c.id))];
+        });
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err.message || 'Could not load statements.');
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Add files (drop or browse): real upload + backend detection ───────────
   const addFiles = useCallback((fileList) => {
     const picked = Array.from(fileList || []).filter((f) => hasAcceptedExtension(f.name));
     if (picked.length === 0) return;
 
-    // TODO(bank-statement/backend): POST each file to uploadStatement(file) and
-    // use the server's detection result instead of the local mockDetect().
-    const added = picked.map((f) => {
+    for (const f of picked) {
       localFileSeq += 1;
-      return {
-        id: `local-${localFileSeq}`,
-        name: f.name,
-        size: f.size,
-        ...mockDetect(f.name),
-      };
-    });
-    setFiles((prev) => [...added, ...prev]);
-  }, []);
+      const cardId = `local-${localFileSeq}`;
+      setFiles((prev) => [
+        { id: cardId, name: f.name, size: f.size, status: 'uploading' },
+        ...prev,
+      ]);
+
+      uploadStatement(f)
+        .then((res) => {
+          if (res.recognized) {
+            setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
+              id: cardId,
+              statementId: res.statementId,
+              name: f.name,
+              size: f.size,
+              meta: `${res.txnCount} transactions · a/c ${maskAccount(res.account?.account_number)} · ${String(res.format || '').toUpperCase()}`,
+              status: 'detected',
+              bank: res.bankName,
+              confidence: Math.round((res.confidence || 0) * 100),
+            })));
+            showToast(`Parsed ${res.txnCount} transactions from ${res.bankName}.`);
+          } else {
+            setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
+              id: cardId,
+              name: f.name,
+              size: f.size,
+              status: 'unrecognized',
+              detectedHeaders: (res.detectedHeaders || []).map((h) => ({
+                header: h,
+                suggested: suggestFieldForHeader(h),
+              })),
+            })));
+          }
+        })
+        .catch((err) => {
+          setFiles((prev) => prev.map((card) => (card.id !== cardId ? card : {
+            id: cardId,
+            name: f.name,
+            size: f.size,
+            status: 'error',
+            error: err.message || 'Upload failed.',
+          })));
+          showToast(`Upload failed: ${err.message || 'unknown error'}`);
+        });
+    }
+  }, [showToast]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -85,17 +161,17 @@ export default function Upload() {
     setExpandedId((current) => (current === id ? null : id));
   }, []);
 
-  // ── Apply a confirmed mapping (no-op in this pass) ──────────────────────────
-  const applyMapping = useCallback((fileId, payload) => {
-    // TODO(bank-statement/backend): await saveColumnMapping(fileId, payload).
-    // For now flip the row to a "mapped" success state and confirm via a toast.
-    void payload;
+  // ── Apply a confirmed mapping (wizard is UI-only this milestone) ──────────
+  const applyMapping = useCallback(async (fileId, payload) => {
+    await saveColumnMapping(fileId, payload); // stub — no generic ingestion path yet
     setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, mapped: true } : f)));
     setExpandedId(null);
     showToast('Mapping applied — this file is ready to parse.');
   }, [showToast]);
 
   const removeFile = useCallback((id) => {
+    // Visual-only: clears the card from this session's list. Persisted
+    // statements reappear on reload (no delete route this milestone).
     setFiles((prev) => prev.filter((f) => f.id !== id));
     setExpandedId((current) => (current === id ? null : current));
   }, []);
@@ -147,17 +223,25 @@ export default function Upload() {
         <p className="subtitle">Detection results and column mapping for each statement.</p>
       </header>
 
-      {files.length === 0 ? (
+      {loadError && (
+        <div className="card card-pad empty-state" role="alert">
+          Could not load previously uploaded statements: {loadError}
+        </div>
+      )}
+
+      {!loadError && files.length === 0 ? (
         <div className="card card-pad empty-state">
           No files yet. Drop a bank statement above to see it detected here.
         </div>
       ) : (
         <div className="bs-file-list">
           {files.map((file) => {
+            const isUploading = file.status === 'uploading';
             const isDetected = file.status === 'detected';
+            const isError = file.status === 'error';
             const isMapped = !!file.mapped;
             const isOpen = expandedId === file.id;
-            const canMap = !isDetected && !isMapped;
+            const canMap = file.status === 'unrecognized' && !isMapped;
             return (
               <div className={`card bs-file-card${isOpen ? ' is-open' : ''}`} key={file.id}>
                 <div className="bs-file-row">
@@ -165,10 +249,19 @@ export default function Upload() {
 
                   <div className="bs-file-main">
                     <div className="bs-file-name" title={file.name}>{file.name}</div>
-                    <div className="bs-file-meta">{formatBytes(file.size)}</div>
+                    <div className="bs-file-meta">
+                      {file.meta || formatBytes(file.size)}
+                      {isError && <span> — {file.error}</span>}
+                    </div>
                   </div>
 
                   <div className="bs-file-status">
+                    {isUploading && (
+                      <span className="badge">
+                        <span className="dot" />
+                        Uploading…
+                      </span>
+                    )}
                     {isDetected && (
                       <>
                         <span className="badge badge-success">
@@ -176,9 +269,18 @@ export default function Upload() {
                           Detected
                         </span>
                         <span className="bs-detect-meta">
-                          {file.bank} · <span className="tabular">{file.confidence}%</span> confidence
+                          {file.bank}
+                          {file.confidence !== null && file.confidence !== undefined && (
+                            <> · <span className="tabular">{file.confidence}%</span> confidence</>
+                          )}
                         </span>
                       </>
+                    )}
+                    {isError && (
+                      <span className="badge bs-chip-warning">
+                        <span className="dot" />
+                        Failed
+                      </span>
                     )}
                     {isMapped && (
                       <span className="badge badge-success">
