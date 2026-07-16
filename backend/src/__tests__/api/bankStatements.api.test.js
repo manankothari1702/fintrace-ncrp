@@ -457,3 +457,111 @@ describe('template registry routes + RBAC', () => {
     expect((await admin.delete('/api/bank-statement/templates/abc')).status).toBe(400);
   });
 });
+
+// ─── Milestone 3: counterparty extraction ────────────────────────────
+
+describe('counterparty extraction at ingest + re-extraction', () => {
+  let statementId;
+
+  beforeAll(async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', PNB_XLS);
+    expect(res.status).toBe(201);
+    statementId = res.body.statementId;
+  });
+
+  test('ingested transactions carry extracted counterparty fields (raw narration untouched)', async () => {
+    const res = await admin.get(
+      `/api/bank-statement/statements/${statementId}/transactions?limit=500`,
+    );
+    expect(res.status).toBe(200);
+
+    const ram = res.body.data.find((t) => (t.narration || '').includes('RAM BAHA'));
+    expect(ram).toMatchObject({
+      narration: 'UPI/DR/360729244657/RAM BAHA/BARB/8004806574@axl/P',
+      counterparty_name: 'RAM BAHA',
+      counterparty_bank_code: 'BARB',
+      counterparty_vpa: '8004806574@axl',
+      counterparty_ifsc: null,
+      counterparty_phone: null,
+      txn_channel: 'UPI',
+      extraction_confidence: 'high',
+    });
+
+    const neft = res.body.data.find((t) => (t.narration || '').includes('INTERGRAPH'));
+    expect(neft).toMatchObject({
+      counterparty_name: 'M INTERGRAPH SYSTEMS PVT',
+      counterparty_ifsc: 'HDFC0000240',
+      counterparty_bank_code: 'HDFC',
+      txn_channel: 'NEFT',
+      extraction_confidence: 'high',
+    });
+
+    const interest = res.body.data.find((t) => (t.narration || '').includes('Int.Pd'));
+    expect(interest).toMatchObject({
+      counterparty_name: null,
+      counterparty_vpa: null,
+      txn_channel: 'INTEREST',
+      extraction_confidence: 'none',
+    });
+
+    const high = res.body.data.filter((t) => t.extraction_confidence === 'high');
+    expect(high).toHaveLength(95);
+  });
+
+  test('reextract backfills wiped fields and reports coverage (pre-m3 data path)', async () => {
+    // Simulate a statement ingested BEFORE extraction existed.
+    db.prepare(`
+      UPDATE bank_statement_transactions
+         SET counterparty_name = NULL, counterparty_bank_code = NULL,
+             counterparty_ifsc = NULL, counterparty_vpa = NULL,
+             counterparty_phone = NULL, txn_channel = NULL,
+             extraction_confidence = NULL
+       WHERE statement_id = ?
+    `).run(statementId);
+
+    const res = await admin.post(`/api/bank-statement/statements/${statementId}/reextract`);
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(96);
+    expect(res.body.coverage).toMatchObject({
+      total: 96,
+      byChannel: { UPI: 92, IMPS: 1, NEFT: 2, INTEREST: 1 },
+      byConfidence: { high: 95, low: 0, none: 1 },
+      withName: 95,
+      withVpa: 92,
+      withIfsc: 2,
+      withPhone: 1,
+    });
+
+    const txns = await admin.get(
+      `/api/bank-statement/statements/${statementId}/transactions?limit=500`,
+    );
+    const ram = txns.body.data.find((t) => (t.narration || '').includes('RAM BAHA'));
+    expect(ram.counterparty_name).toBe('RAM BAHA');
+
+    // Audited with the coverage detail.
+    const auditRow = db.prepare(
+      "SELECT * FROM audit_log WHERE action = 'bank_statement.reextracted' ORDER BY id DESC LIMIT 1",
+    ).get();
+    expect(JSON.parse(auditRow.details)).toMatchObject({ statement_id: statementId, updated: 96 });
+  });
+
+  test('reextract is idempotent — a second run reproduces identical rows', async () => {
+    const before = db.prepare(
+      'SELECT * FROM bank_statement_transactions WHERE statement_id = ? ORDER BY id',
+    ).all(statementId);
+    const res = await admin.post(`/api/bank-statement/statements/${statementId}/reextract`);
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(96);
+    const after = db.prepare(
+      'SELECT * FROM bank_statement_transactions WHERE statement_id = ? ORDER BY id',
+    ).all(statementId);
+    expect(after).toEqual(before);
+  });
+
+  test('reextract validates id, 404s on unknown statements, and enforces RBAC', async () => {
+    expect((await admin.post('/api/bank-statement/statements/abc/reextract')).status).toBe(400);
+    expect((await admin.post('/api/bank-statement/statements/99999/reextract')).status).toBe(404);
+    const sho = authed(app, await loginAs(app, ROLES.SHO));
+    expect((await sho.post(`/api/bank-statement/statements/${statementId}/reextract`)).status).toBe(403);
+  });
+});

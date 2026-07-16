@@ -53,6 +53,7 @@ const { insertAuditLog } = require('../db/queries');
 const {
   insertStatement, insertManyStatementTransactions,
   listStatements, getStatementById, getStatementTransactions,
+  getStatementNarrations, updateTransactionCounterparties,
   insertTemplate, listTemplates, getTemplateById, deleteTemplate,
 } = require('../db/bankStatementQueries');
 const { detectBank } = require('../parsers/bankStatement/detect');
@@ -63,7 +64,9 @@ const {
 } = require('../parsers/bankStatement/tabular');
 const { parseWithMapping, validateBalanceContinuity } = require('../parsers/bankStatement/genericMapped');
 const { buildSignature, findMatchingTemplate } = require('../parsers/bankStatement/templateMatch');
-const { enrichTransactions, coverageSummary } = require('../parsers/bankStatement/counterparty');
+const {
+  enrichTransactions, extractCounterparty, coverageSummary,
+} = require('../parsers/bankStatement/counterparty');
 
 // ─── On-disk location (same redirect contract as routes/ncrp.js) ─────
 
@@ -649,6 +652,40 @@ function createBankStatementRouter(db, authCtx) {
       details: { template_id: id, bank_name: template.bank_name },
     });
     return res.json({ deleted: true, id });
+  });
+
+  // ── POST /bank-statement/statements/:id/reextract ──────────────────
+  // Re-run counterparty extraction on an ALREADY-ingested statement — the
+  // backfill path for data ingested before extraction existed (or after an
+  // extractor improves), like NCRP's reanalyze. Idempotent: the extracted
+  // fields are a pure function of the stored narration, which is never
+  // modified.
+  router.post('/statements/:id/reextract', P(PERMISSIONS.UPLOAD_REPORT), (req, res) => {
+    const id = parseStatementId(req);
+    if (id === null) {
+      return sendError(res, 400, 'VALIDATION_FAILED', 'Statement id must be a positive integer.');
+    }
+    const statement = getStatementById(db, id);
+    if (!statement) {
+      return sendError(res, 404, 'STATEMENT_NOT_FOUND', `No bank statement with id ${id}.`);
+    }
+
+    const rows = getStatementNarrations(db, id);
+    const enriched = rows.map((r) => ({ id: r.id, ...extractCounterparty(r.narration) }));
+    const updated = updateTransactionCounterparties(db, enriched);
+    const coverage = coverageSummary(enriched);
+
+    audit(req, {
+      action: 'bank_statement.reextracted',
+      details: {
+        statement_id: id,
+        updated,
+        by_channel: coverage.byChannel,
+        by_confidence: coverage.byConfidence,
+      },
+    });
+
+    return res.json({ statementId: id, updated, coverage });
   });
 
   // ── GET /bank-statement/statements ─────────────────────────────────
