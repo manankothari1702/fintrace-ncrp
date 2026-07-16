@@ -7,6 +7,11 @@
  * a statement selector in the toolbar; server-side paging kicks in only past
  * the 500-row window.
  *
+ * Counterparty columns (Phase 6 m3) AUGMENT the raw narration, never replace
+ * it: the Description column always shows the source string the fields were
+ * extracted from, and low-confidence extractions carry a ≈ marker + tooltip
+ * so partial fields are verified against it.
+ *
  * Dates are rendered with UTC components: statement dates are the source
  * file's wall-clock relabelled as UTC (same model as NCRP transaction dates),
  * so reading them in the local zone would shift the calendar day.
@@ -36,6 +41,23 @@ function maskAccount(acct) {
   return s.length <= 4 ? s : `…${s.slice(-4)}`;
 }
 
+/**
+ * Subtle low-confidence marker: extraction was partial/ambiguous, so the
+ * investigator should verify the field against the raw narration (always
+ * visible in the Description column right alongside).
+ */
+function LowConfidenceMark() {
+  return (
+    <span
+      className="bs-cp-low"
+      title="Partial extraction — verify against narration"
+      aria-label="Partial extraction — verify against narration"
+    >
+      ≈
+    </span>
+  );
+}
+
 const COLUMNS = [
   {
     id: 'txn_date',
@@ -48,6 +70,49 @@ const COLUMNS = [
     accessorKey: 'narration',
     header: 'Description',
     cell: (info) => <span title={info.getValue() || ''}>{info.getValue() || '—'}</span>,
+  },
+  {
+    id: 'counterparty_name',
+    accessorKey: 'counterparty_name',
+    header: 'Counterparty',
+    cell: (info) => {
+      const row = info.row.original;
+      const name = info.getValue();
+      if (!name) return <span>—</span>;
+      return (
+        <span title={`Extracted from: ${row.narration || ''}`}>
+          {row.extraction_confidence === 'low' && <LowConfidenceMark />}
+          {name}
+        </span>
+      );
+    },
+  },
+  {
+    id: 'txn_channel',
+    accessorKey: 'txn_channel',
+    header: 'Channel',
+    cell: (info) => (info.getValue()
+      ? <span className="bs-chip-channel">{info.getValue()}</span>
+      : <span>—</span>),
+  },
+  {
+    id: 'counterparty_handle',
+    // Sort/filter/export on whichever identifier the row carries.
+    accessorFn: (row) => row.counterparty_vpa || row.counterparty_ifsc || row.counterparty_phone || '',
+    header: 'VPA / IFSC / Phone',
+    cell: (info) => {
+      const row = info.row.original;
+      const value = row.counterparty_vpa || row.counterparty_ifsc || row.counterparty_phone;
+      if (!value) return <span>—</span>;
+      const kind = row.counterparty_vpa ? 'UPI handle (VPA)'
+        : row.counterparty_ifsc ? 'IFSC' : 'Phone';
+      return (
+        <span className="tabular" title={`${kind} — extracted from: ${row.narration || ''}`}>
+          {row.extraction_confidence === 'low' && <LowConfidenceMark />}
+          {value}
+        </span>
+      );
+    },
   },
   {
     id: 'debit_amount',

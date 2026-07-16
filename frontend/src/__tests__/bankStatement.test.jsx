@@ -59,15 +59,30 @@ const TXN_PAGE = {
       narration: 'UPI/CR/168797098045/Mrs Lale/IDIB/9631574663-2@yb/',
       debit_amount: null, credit_amount: 500, balance: 2274.95, balance_type: 'Cr',
       ref_no: 'U12010768', source_row: 20,
+      counterparty_name: 'Mrs Lale', counterparty_bank_code: 'IDIB',
+      counterparty_ifsc: null, counterparty_vpa: '9631574663-2@yb',
+      counterparty_phone: null, txn_channel: 'UPI', extraction_confidence: 'high',
     },
     {
       id: 2, statement_id: 7, txn_date: '2026-07-01T00:00:00.000Z', value_date: null,
-      narration: 'UPI/DR/360729244657/RAM BAHA/BARB/8004806574@axl/P',
+      narration: 'UPI/DR/360729244657/RAM BAHA/NOT-A-CODE/8004806574@axl/P',
       debit_amount: 300, credit_amount: null, balance: 1774.95, balance_type: 'Cr',
       ref_no: 'T48579145', source_row: 21,
+      counterparty_name: 'RAM BAHA', counterparty_bank_code: null,
+      counterparty_ifsc: null, counterparty_vpa: '8004806574@axl',
+      counterparty_phone: null, txn_channel: 'UPI', extraction_confidence: 'low',
+    },
+    {
+      id: 3, statement_id: 7, txn_date: '2026-06-02T00:00:00.000Z', value_date: null,
+      narration: '4563000100036079:Int.Pd:01-03-2026 to 31-05-2026',
+      debit_amount: null, credit_amount: 141, balance: 8759.95, balance_type: 'Cr',
+      ref_no: 'U90904741', source_row: 115,
+      counterparty_name: null, counterparty_bank_code: null,
+      counterparty_ifsc: null, counterparty_vpa: null,
+      counterparty_phone: null, txn_channel: 'INTEREST', extraction_confidence: 'none',
     },
   ],
-  total: 2, page: 1, limit: 500, total_pages: 1,
+  total: 3, page: 1, limit: 500, total_pages: 1,
 };
 
 function uploadFileTo(container, name) {
@@ -281,6 +296,32 @@ describe('Transactions page — parsed ledger', () => {
     // Account identity appears (page subtitle and/or statement selector).
     expect(screen.getAllByText(/a\/c …6079/).length).toBeGreaterThan(0);
     expect(screen.getByText(/ABHISHEK BHARDWAJ/)).toBeInTheDocument();
+  });
+
+  test('counterparty columns augment the ledger; low confidence is marked, narration stays visible', async () => {
+    listStatements.mockResolvedValue([STATEMENT_ROW]);
+    getStatementTransactions.mockResolvedValue(TXN_PAGE);
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Transactions/ }));
+
+    const table = within(await screen.findByRole('table'));
+
+    // Extracted counterparty fields render alongside the RAW narration.
+    expect(table.getByText('Mrs Lale')).toBeInTheDocument();
+    expect(table.getByText('9631574663-2@yb')).toBeInTheDocument();
+    expect(table.getAllByText('UPI')).toHaveLength(2);       // channel chips
+    expect(table.getByText('INTEREST')).toBeInTheDocument();
+    expect(table.getByText('UPI/CR/168797098045/Mrs Lale/IDIB/9631574663-2@yb/')).toBeInTheDocument();
+
+    // Low-confidence extraction (row 2) carries the ≈ marker + tooltip;
+    // the high-confidence and non-counterparty rows do not.
+    const markers = table.getAllByLabelText('Partial extraction — verify against narration');
+    expect(markers).toHaveLength(2); // name cell + identifier cell of row 2
+    expect(markers[0]).toHaveAttribute('title', 'Partial extraction — verify against narration');
+
+    // Non-counterparty rows stay honestly blank (dashes, no fabrication).
+    const interestRow = table.getByText('4563000100036079:Int.Pd:01-03-2026 to 31-05-2026').closest('tr');
+    expect(within(interestRow).getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
   test('shows the upload-first empty state when no statements exist', async () => {

@@ -302,6 +302,29 @@
   margin: 0 0 12px;
 }
 
+/* ─── Transactions: counterparty columns ─────────────────────────────── */
+
+/* Low-confidence extraction marker (≈): partial parse — verify against the
+   narration shown alongside. */
+.bs-cp-low {
+  color: var(--warning, #b98700);
+  font-weight: 700;
+  margin-right: 4px;
+  cursor: help;
+}
+
+.bs-chip-channel {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+
 /* ─── Coming-soon placeholder pages ──────────────────────────────────── */
 
 .bs-coming-soon {
