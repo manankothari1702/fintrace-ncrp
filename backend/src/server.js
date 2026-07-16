@@ -26,6 +26,7 @@ const express = require('express');
 
 const { initializeDatabase } = require('./db/schema');
 const { createNcrpRouter } = require('./routes/ncrp');
+const { createBankStatementRouter } = require('./routes/bankStatements');
 const { createAuthContext } = require('./auth/authContext');
 const { createAuthRouter } = require('./routes/auth');
 const { createUserRouter } = require('./routes/users');
@@ -126,6 +127,9 @@ function createApp(db, opts = {}) {
   app.use('/api', createAuthRouter(authContext));
   app.use('/api', createUserRouter(authContext));
   app.use('/api', createBackupRouter(authContext));
+  // Scoped mount, and BEFORE the NCRP router: routes/ncrp.js ends in a
+  // catch-all 404 fallback, so anything mounted after it never matches.
+  app.use('/api/bank-statement', createBankStatementRouter(db, authContext));
   app.use('/api', createNcrpRouter(db, authContext));
 
   return app;
@@ -153,6 +157,21 @@ function createServerApp(authContext) {
   // Health works even while the DB is locked (no auth required).
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', locked: authContext.isLocked(), timestamp: new Date().toISOString() });
+  });
+
+  // Bank-statement routes: lazy, login-gated mount — scoped, and registered
+  // BEFORE the NCRP delegate below (routes/ncrp.js ends in a catch-all 404
+  // fallback, so anything mounted after it never matches).
+  let bankStatementRouter = null;
+  app.use('/api/bank-statement', (req, res, next) => {
+    const db = authContext.getDb();
+    if (!db) {
+      return res.status(503).json({
+        error: { code: 'DB_LOCKED', message: 'Sign in to load case data.' },
+      });
+    }
+    if (!bankStatementRouter) bankStatementRouter = createBankStatementRouter(db, authContext);
+    return bankStatementRouter(req, res, next);
   });
 
   // Lazily build + delegate to the NCRP router once a login has opened the DB.
