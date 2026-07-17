@@ -1,0 +1,8 @@
+{
+  "name": "canvas",
+  "version": "0.0.0-fintrace-stub",
+  "private": true,
+  "description": "MSVC-free stub replacing node-canvas (native). pdfjs-dist lists canvas as an OPTIONAL dependency for PDF-to-image RENDERING; FinTrace only does TEXT extraction (getTextContent) and pre-stubs DOMMatrix/Path2D, so the real module is never needed — but its presence makes @electron/rebuild attempt a node-gyp/MSVC compile at package time. Applied via the `overrides` field in the root and backend package.json.",
+  "main": "index.js",
+  "license": "UNLICENSED"
+}
