@@ -267,6 +267,147 @@ function rankTop(counterparties) {
   return { by_amount: byAmount, by_frequency: byFrequency };
 }
 
+// ─── Behavioral flags (single-account, honest scope) ─────────────────
+//
+// Only signals one ledger + its counterparties genuinely support — no mule
+// scores, no layer flags (those need multi-account structure). Every flag
+// pairs a machine value with a plain-language "why" (the NCRP pattern), and
+// timing flags state their day-granularity limitation outright.
+
+/** The row's movement amount (whichever side is populated). */
+const amountOf = (t) => {
+  if (t.debit_amount !== null && t.debit_amount !== undefined) return t.debit_amount;
+  if (t.credit_amount !== null && t.credit_amount !== undefined) return t.credit_amount;
+  return null;
+};
+
+/**
+ * Build the flag list. Fired flags only — an absent id means "not observed".
+ *
+ * @param {Array<object>} txns
+ * @param {Array<object>} counterparties - from buildCounterparties.
+ * @param {{ low_confidence_groups: number, unattributed: number }} honesty
+ * @returns {Array<{ id: string, severity: 'signal'|'info', value: object, why: string }>}
+ */
+function buildFlags(txns, counterparties, honesty) {
+  const flags = [];
+
+  // Round-figure transactions — a structuring signal when they dominate.
+  const amounts = txns.map(amountOf).filter((a) => a !== null);
+  const roundCount = amounts.filter(
+    (a) => a >= T.ROUND_FIGURE_MIN_AMOUNT && a % T.ROUND_FIGURE_MODULUS === 0,
+  ).length;
+  const roundShare = amounts.length > 0 ? roundCount / amounts.length : 0;
+  if (roundCount >= T.ROUND_FIGURE_FLAG_MIN_COUNT && roundShare >= T.ROUND_FIGURE_FLAG_MIN_SHARE) {
+    flags.push({
+      id: 'round_figure_txns',
+      severity: 'signal',
+      value: { count: roundCount, share: round2(roundShare) },
+      why: `${roundCount} of ${amounts.length} transactions (${Math.round(roundShare * 100)}%) are exact `
+        + `multiples of ₹${T.ROUND_FIGURE_MODULUS} of at least ₹${T.ROUND_FIGURE_MIN_AMOUNT} — `
+        + 'a high share of round figures is a structuring signal.',
+    });
+  }
+
+  // Per-day movement (statement dates carry no time-of-day).
+  const days = new Map();
+  for (const t of txns) {
+    const day = dayKey(t.txn_date);
+    if (!day) continue;
+    let d = days.get(day);
+    if (!d) { d = { count: 0, credited: 0, debited: 0 }; days.set(day, d); }
+    d.count += 1;
+    d.credited += t.credit_amount || 0;
+    d.debited += t.debit_amount || 0;
+  }
+
+  // Rapid-transaction days.
+  const rapidDays = [...days.entries()]
+    .filter(([, d]) => d.count >= T.RAPID_DAY_MIN_TXNS)
+    .map(([day, d]) => ({ day, count: d.count }))
+    .sort((a, b) => b.count - a.count);
+  if (rapidDays.length > 0) {
+    flags.push({
+      id: 'rapid_transaction_days',
+      severity: 'signal',
+      value: { days: rapidDays },
+      why: `${rapidDays.length} day(s) with ${T.RAPID_DAY_MIN_TXNS}+ transactions `
+        + `(busiest: ${rapidDays[0].day} with ${rapidDays[0].count}). Statement dates carry no `
+        + 'time-of-day, so this is day-granularity — not intra-day timing.',
+    });
+  }
+
+  // Pass-through days: money in and mostly out again the same day.
+  const passDays = [...days.entries()]
+    .filter(([, d]) => d.credited >= T.PASSTHROUGH_MIN_CREDIT_TOTAL
+      && d.debited >= T.PASSTHROUGH_MIN_OUT_RATIO * d.credited)
+    .map(([day, d]) => ({
+      day,
+      credited: round2(d.credited),
+      debited: round2(d.debited),
+      out_ratio: round2(d.debited / d.credited),
+    }))
+    .sort((a, b) => b.credited - a.credited);
+  if (passDays.length > 0) {
+    flags.push({
+      id: 'pass_through_days',
+      severity: 'signal',
+      value: { days: passDays },
+      why: `${passDays.length} day(s) where at least ${Math.round(T.PASSTHROUGH_MIN_OUT_RATIO * 100)}% `
+        + `of ≥₹${T.PASSTHROUGH_MIN_CREDIT_TOTAL} credited left the account the SAME day `
+        + `(largest: ₹${passDays[0].credited} in, ₹${passDays[0].debited} out on ${passDays[0].day}) — `
+        + 'pass-through behavior. Day-granularity: dates carry no time-of-day.',
+    });
+  }
+
+  // Repeat counterparties (high frequency with one party).
+  const repeat = counterparties
+    .filter((c) => c.txn_count >= T.REPEAT_COUNTERPARTY_MIN_TXNS)
+    .map((c) => ({ key: c.key, display_name: c.display_name, txn_count: c.txn_count, volume: c.volume }));
+  if (repeat.length > 0) {
+    flags.push({
+      id: 'repeat_counterparties',
+      severity: 'signal',
+      value: { counterparties: repeat },
+      why: `${repeat.length} counterparty(ies) with ${T.REPEAT_COUNTERPARTY_MIN_TXNS}+ transactions `
+        + `(most frequent: ${repeat[0].display_name || repeat[0].key}, ${repeat[0].txn_count} txns) — `
+        + 'repeated dealings with the same party are a behavioral signal worth reviewing.',
+    });
+  }
+
+  // High-value counterparties (large total volume with one party).
+  const highValue = counterparties
+    .filter((c) => c.volume >= T.HIGH_VALUE_COUNTERPARTY_MIN_TOTAL)
+    .map((c) => ({ key: c.key, display_name: c.display_name, volume: c.volume }));
+  if (highValue.length > 0) {
+    flags.push({
+      id: 'high_value_counterparties',
+      severity: 'signal',
+      value: { counterparties: highValue },
+      why: `${highValue.length} counterparty(ies) with total volume ≥ ₹${T.HIGH_VALUE_COUNTERPARTY_MIN_TOTAL} `
+        + `(largest: ${highValue[0].display_name || highValue[0].key}, ₹${highValue[0].volume}).`,
+    });
+  }
+
+  // Confidence honesty — informational, fires whenever the distribution
+  // rests partly on low-confidence extractions.
+  if (honesty.low_confidence_groups > 0 || honesty.unattributed > 0) {
+    flags.push({
+      id: 'low_confidence_distribution',
+      severity: 'info',
+      value: {
+        low_confidence_groups: honesty.low_confidence_groups,
+        unattributed: honesty.unattributed,
+      },
+      why: `The counterparty distribution includes ${honesty.low_confidence_groups} low-confidence `
+        + `counterparty group(s) and ${honesty.unattributed} unattributable transaction(s) — `
+        + 'verify those against the raw narration before relying on their aggregates.',
+    });
+  }
+
+  return flags;
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────
 
 /**
@@ -283,6 +424,11 @@ function analyzeStatement(statement, transactions) {
   const summary = buildSummary(statement || {}, txns);
   const { counterparties, unattributed_count } = buildCounterparties(txns);
   const top = rankTop(counterparties);
+  const lowConfidenceGroups = counterparties.filter((c) => c.confidence === 'low').length;
+  const flags = buildFlags(txns, counterparties, {
+    low_confidence_groups: lowConfidenceGroups,
+    unattributed: unattributed_count,
+  });
 
   return {
     engine_version: ENGINE_VERSION,
@@ -291,7 +437,8 @@ function analyzeStatement(statement, transactions) {
     unattributed_count,
     top_by_amount: top.by_amount,
     top_by_frequency: top.by_frequency,
-    low_confidence_counterparty_count: counterparties.filter((c) => c.confidence === 'low').length,
+    low_confidence_counterparty_count: lowConfidenceGroups,
+    flags,
     thresholds: { ...T },
   };
 }
@@ -301,6 +448,7 @@ module.exports = {
   ENGINE_VERSION,
   // Exposed for unit tests; not part of the public contract.
   _internals: Object.freeze({
-    buildSummary, buildCounterparties, counterpartyKeyOf, rankTop, ledgerOrder, dayKey, round2,
+    buildSummary, buildCounterparties, counterpartyKeyOf, rankTop, ledgerOrder,
+    buildFlags, dayKey, round2,
   }),
 };

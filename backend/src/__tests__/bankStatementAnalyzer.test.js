@@ -212,3 +212,122 @@ describe('top-N rankings', () => {
     for (let i = 1; i < vols.length; i++) expect(vols[i]).toBeLessThanOrEqual(vols[i - 1]);
   });
 });
+
+describe('behavioral flags — value + plain-language why, day granularity stated', () => {
+  const analysis = analyzePnbFixture();
+  const flagById = new Map(analysis.flags.map((f) => [f.id, f]));
+
+  test('the PNB fixture fires exactly rapid days, pass-through, and repeat counterparties', () => {
+    expect([...flagById.keys()].sort()).toEqual(
+      ['pass_through_days', 'rapid_transaction_days', 'repeat_counterparties'],
+    );
+  });
+
+  test('rapid_transaction_days: 5 days at ≥8 txns, day-granularity stated', () => {
+    const f = flagById.get('rapid_transaction_days');
+    expect(f.severity).toBe('signal');
+    expect(f.value.days).toHaveLength(5);
+    expect(f.value.days[0]).toEqual({ day: '2026-06-29', count: 9 });
+    expect(f.why).toMatch(/day-granularity|no time-of-day/);
+  });
+
+  test('pass_through_days catches the ₹16,000-in / ₹17,860-out day', () => {
+    const f = flagById.get('pass_through_days');
+    expect(f.value.days).toEqual([
+      { day: '2026-06-14', credited: 16000, debited: 17860, out_ratio: 1.12 },
+    ]);
+    expect(f.why).toMatch(/SAME day/);
+  });
+
+  test('repeat_counterparties: Mr Rajne (10) and Balaji (5)', () => {
+    const f = flagById.get('repeat_counterparties');
+    expect(f.value.counterparties.map((c) => c.display_name)).toEqual(['MR RAJNE', 'BALAJI T']);
+    expect(f.why).toContain('MR RAJNE');
+  });
+
+  test('round-figure and high-value correctly do NOT fire on this account', () => {
+    expect(flagById.has('round_figure_txns')).toBe(false);       // odd small UPI amounts
+    expect(flagById.has('high_value_counterparties')).toBe(false); // max volume ₹23,180 < ₹50k
+    expect(flagById.has('low_confidence_distribution')).toBe(false); // 0 low, 0 unattributed
+  });
+
+  test('round_figure_txns fires on a structuring-shaped ledger and respects both thresholds', () => {
+    const mk = (n, amount) => row({
+      id: n, txn_date: `2026-06-${String(10 + n).padStart(2, '0')}T00:00:00.000Z`,
+      debit_amount: amount, counterparty_name: `P${n}`,
+    });
+    // 6 round of 8 (75% share, count 6) → fires.
+    const firing = [1000, 5000, 2000, 10000, 3000, 1000, 777.5, 123].map((a, i) => mk(i + 1, a));
+    const fired = analyzeStatement({}, firing).flags.find((f) => f.id === 'round_figure_txns');
+    expect(fired).toBeDefined();
+    expect(fired.value).toEqual({ count: 6, share: 0.75 });
+
+    // Same 6 round txns diluted below the share threshold → silent.
+    const diluted = [
+      ...firing,
+      ...Array.from({ length: 20 }, (_, i) => mk(100 + i, 333.33)),
+    ];
+    expect(analyzeStatement({}, diluted).flags.find((f) => f.id === 'round_figure_txns')).toBeUndefined();
+
+    // ₹500 round-ish amounts below MIN_AMOUNT never count.
+    const small = Array.from({ length: 10 }, (_, i) => mk(i + 1, 500));
+    expect(analyzeStatement({}, small).flags.find((f) => f.id === 'round_figure_txns')).toBeUndefined();
+  });
+
+  test('pass_through_days honours the credit floor and out-ratio', () => {
+    const day = '2026-06-20T00:00:00.000Z';
+    const stamp = (i) => `2026-06-${String(i).padStart(2, '0')}T00:00:00.000Z`;
+    // ₹4,999 in (below floor) fully out → silent.
+    const belowFloor = [
+      row({ id: 1, txn_date: day, credit_amount: 4999, counterparty_name: 'A' }),
+      row({ id: 2, txn_date: day, debit_amount: 4999, counterparty_name: 'B' }),
+      row({ id: 3, txn_date: stamp(21), debit_amount: 10, counterparty_name: 'C' }),
+    ];
+    expect(analyzeStatement({}, belowFloor).flags.find((f) => f.id === 'pass_through_days')).toBeUndefined();
+    // ₹10,000 in, only ₹5,000 out (50% < 80%) → silent.
+    const lowRatio = [
+      row({ id: 1, txn_date: day, credit_amount: 10000, counterparty_name: 'A' }),
+      row({ id: 2, txn_date: day, debit_amount: 5000, counterparty_name: 'B' }),
+      row({ id: 3, txn_date: stamp(21), debit_amount: 10, counterparty_name: 'C' }),
+    ];
+    expect(analyzeStatement({}, lowRatio).flags.find((f) => f.id === 'pass_through_days')).toBeUndefined();
+    // ₹10,000 in, ₹9,000 out (90%) → fires.
+    const firing = [
+      row({ id: 1, txn_date: day, credit_amount: 10000, counterparty_name: 'A' }),
+      row({ id: 2, txn_date: day, debit_amount: 9000, counterparty_name: 'B' }),
+      row({ id: 3, txn_date: stamp(21), debit_amount: 10, counterparty_name: 'C' }),
+    ];
+    const f = analyzeStatement({}, firing).flags.find((x) => x.id === 'pass_through_days');
+    expect(f.value.days).toEqual([{ day: '2026-06-20', credited: 10000, debited: 9000, out_ratio: 0.9 }]);
+  });
+
+  test('high_value_counterparties fires at the volume threshold', () => {
+    const txns = [
+      row({ id: 1, counterparty_vpa: 'big@upi', counterparty_name: 'BIG', credit_amount: 30000 }),
+      row({ id: 2, counterparty_vpa: 'big@upi', counterparty_name: 'BIG', debit_amount: 20000 }),
+      row({ id: 3, counterparty_vpa: 'small@upi', counterparty_name: 'SMALL', debit_amount: 100 }),
+    ];
+    const f = analyzeStatement({}, txns).flags.find((x) => x.id === 'high_value_counterparties');
+    expect(f.value.counterparties).toEqual([{ key: 'vpa:big@upi', display_name: 'BIG', volume: 50000 }]);
+  });
+
+  test('low_confidence_distribution info flag fires whenever low/unattributed rows exist', () => {
+    const txns = [
+      row({ id: 1, counterparty_vpa: 'a@b', counterparty_name: 'A', debit_amount: 10, extraction_confidence: 'low' }),
+      row({ id: 2, debit_amount: 20, extraction_confidence: 'low' }), // no identifier
+      row({ id: 3, counterparty_name: 'C', credit_amount: 30 }),
+    ];
+    const f = analyzeStatement({}, txns).flags.find((x) => x.id === 'low_confidence_distribution');
+    expect(f.severity).toBe('info');
+    expect(f.value).toEqual({ low_confidence_groups: 1, unattributed: 1 });
+    expect(f.why).toMatch(/verify.*narration/i);
+  });
+
+  test('thresholds snapshot travels with the analysis (tunable constants pattern)', () => {
+    expect(analysis.thresholds).toMatchObject({
+      RAPID_DAY_MIN_TXNS: T.RAPID_DAY_MIN_TXNS,
+      PASSTHROUGH_MIN_OUT_RATIO: T.PASSTHROUGH_MIN_OUT_RATIO,
+      REPEAT_COUNTERPARTY_MIN_TXNS: T.REPEAT_COUNTERPARTY_MIN_TXNS,
+    });
+  });
+});

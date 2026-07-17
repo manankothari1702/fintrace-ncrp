@@ -54,6 +54,7 @@ const {
   insertStatement, insertManyStatementTransactions,
   listStatements, getStatementById, getStatementTransactions,
   getStatementNarrations, updateTransactionCounterparties,
+  getFullStatementTransactions, updateStatementAnalysis, getStatementAnalysis,
   insertTemplate, listTemplates, getTemplateById, deleteTemplate,
 } = require('../db/bankStatementQueries');
 const { detectBank } = require('../parsers/bankStatement/detect');
@@ -67,6 +68,7 @@ const { buildSignature, findMatchingTemplate } = require('../parsers/bankStateme
 const {
   enrichTransactions, extractCounterparty, coverageSummary,
 } = require('../parsers/bankStatement/counterparty');
+const { analyzeStatement } = require('../analysis/bankStatementAnalyzer');
 
 // ─── On-disk location (same redirect contract as routes/ncrp.js) ─────
 
@@ -252,6 +254,29 @@ function createBankStatementRouter(db, authCtx) {
   const uploadLimiter = makeLimiter(5, 'Too many uploads in a short period; please wait a moment.');
 
   /**
+   * Compute the single-statement analysis from the PERSISTED rows and cache
+   * it on the statement (the ncrp_reports.analysis_json pattern). Runs at
+   * ingest, after re-extraction, and lazily on first GET for statements
+   * ingested before the analysis milestone. Pure computation — failures
+   * never block ingestion (the analysis route recomputes on demand).
+   *
+   * @param {number} statementId
+   * @returns {object|null} the analysis document, or null on failure.
+   */
+  const computeAndCacheAnalysis = (statementId) => {
+    try {
+      const statement = getStatementById(db, statementId);
+      if (!statement) return null;
+      const rows = getFullStatementTransactions(db, statementId);
+      const analysis = analyzeStatement(statement, rows);
+      updateStatementAnalysis(db, statementId, analysis);
+      return analysis;
+    } catch (_e) {
+      return null;
+    }
+  };
+
+  /**
    * Persist a parsed statement (+ its transactions, atomically) and audit
    * it. Shared by the template auto-apply and wizard apply paths (the PNB
    * dedicated path keeps its original inline block, unchanged).
@@ -276,6 +301,7 @@ function createBankStatementRouter(db, authCtx) {
       return statementId;
     });
     const statementId = insertBoth();
+    computeAndCacheAnalysis(statementId);
     audit(req, {
       action: 'bank_statement.uploaded',
       details: {
@@ -484,6 +510,7 @@ function createBankStatementRouter(db, authCtx) {
           return statementId;
         });
         const statementId = insertBoth();
+        computeAndCacheAnalysis(statementId);
 
         audit(req, {
           action: 'bank_statement.uploaded',
@@ -674,6 +701,8 @@ function createBankStatementRouter(db, authCtx) {
     const enriched = rows.map((r) => ({ id: r.id, ...extractCounterparty(r.narration) }));
     const updated = updateTransactionCounterparties(db, enriched);
     const coverage = coverageSummary(enriched);
+    // The analysis is derived from the extraction — refresh its cache too.
+    computeAndCacheAnalysis(id);
 
     audit(req, {
       action: 'bank_statement.reextracted',
@@ -691,6 +720,34 @@ function createBankStatementRouter(db, authCtx) {
   // ── GET /bank-statement/statements ─────────────────────────────────
   router.get('/statements', P(PERMISSIONS.VIEW_CASES), (_req, res) => {
     return res.json({ data: listStatements(db) });
+  });
+
+  // ── GET /bank-statement/statements/:id/analysis ────────────────────
+  // Cached single-statement analysis. Statements ingested before the
+  // analysis milestone have no cache yet — computed and cached on first
+  // read (idempotent fill, same document either way).
+  router.get('/statements/:id/analysis', P(PERMISSIONS.VIEW_CASES), (req, res) => {
+    const id = parseStatementId(req);
+    if (id === null) {
+      return sendError(res, 400, 'VALIDATION_FAILED', 'Statement id must be a positive integer.');
+    }
+    const row = getStatementAnalysis(db, id);
+    if (!row) {
+      return sendError(res, 404, 'STATEMENT_NOT_FOUND', `No bank statement with id ${id}.`);
+    }
+
+    let analysis = null;
+    if (row.analysis_json) {
+      try { analysis = JSON.parse(row.analysis_json); } catch (_e) { /* recompute below */ }
+    }
+    if (!analysis) {
+      analysis = computeAndCacheAnalysis(id);
+      if (!analysis) {
+        return sendError(res, 500, 'ANALYSIS_FAILED', 'The statement analysis could not be computed.');
+      }
+    }
+    const fresh = getStatementAnalysis(db, id);
+    return res.json({ statementId: id, analyzed_at: fresh ? fresh.analyzed_at : null, analysis });
   });
 
   // ── GET /bank-statement/statements/:id ─────────────────────────────

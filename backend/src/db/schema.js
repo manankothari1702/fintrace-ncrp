@@ -223,6 +223,8 @@ const CREATE_TABLES = Object.freeze([
     source_sha256          TEXT,
     txn_count              INTEGER NOT NULL DEFAULT 0,
     parse_warnings         TEXT,
+    analysis_json          TEXT,
+    analyzed_at            TEXT,
     uploaded_at            TEXT    DEFAULT CURRENT_TIMESTAMP
   )`,
 
@@ -405,6 +407,15 @@ const COLUMN_MIGRATIONS = Object.freeze([
     ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN txn_channel TEXT' },
   { table: 'bank_statement_transactions', column: 'extraction_confidence',
     ddl: 'ALTER TABLE bank_statement_transactions ADD COLUMN extraction_confidence TEXT' },
+
+  // Phase 6 m4 — single-statement analysis, computed once and cached (the
+  // ncrp_reports.analysis_json pattern, in the bank-statement store).
+  // Statements ingested before m4 get theirs lazily on first GET
+  // /bank-statement/statements/:id/analysis (compute-if-missing).
+  { table: 'bank_statements', column: 'analysis_json',
+    ddl: 'ALTER TABLE bank_statements ADD COLUMN analysis_json TEXT' },
+  { table: 'bank_statements', column: 'analyzed_at',
+    ddl: 'ALTER TABLE bank_statements ADD COLUMN analyzed_at TEXT' },
 ]);
 
 /**

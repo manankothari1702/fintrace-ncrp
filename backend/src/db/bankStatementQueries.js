@@ -71,6 +71,32 @@ const SQL_ALL_TRANSACTIONS_FOR_STATEMENT = `
    ORDER BY source_row ASC, id ASC
 `;
 
+/** Full rows in file order — the analysis engine's working set. */
+const SQL_FULL_TRANSACTIONS_FOR_STATEMENT = `
+  SELECT id, statement_id, txn_date, value_date, narration,
+         debit_amount, credit_amount, balance, balance_type,
+         ref_no, source_row,
+         counterparty_name, counterparty_bank_code, counterparty_ifsc,
+         counterparty_vpa, counterparty_phone, txn_channel, extraction_confidence
+    FROM bank_statement_transactions
+   WHERE statement_id = @statement_id
+   ORDER BY source_row ASC, id ASC
+`;
+
+const SQL_UPDATE_ANALYSIS = `
+  UPDATE bank_statements
+     SET analysis_json = @analysis_json,
+         analyzed_at   = CURRENT_TIMESTAMP
+   WHERE id = @id
+`;
+
+const SQL_GET_ANALYSIS = `
+  SELECT id, analysis_json, analyzed_at
+    FROM bank_statements
+   WHERE id = ?
+   LIMIT 1
+`;
+
 const SQL_LIST_STATEMENTS = `
   SELECT id, account_number, account_holder, ifsc, bank_name, branch,
          statement_period_from, statement_period_to,
@@ -221,6 +247,44 @@ function getStatementNarrations(db, statementId) {
 }
 
 /**
+ * All full transaction rows for one statement, in file order (analysis
+ * working set — no pagination).
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {number} statementId
+ * @returns {Array<object>}
+ */
+function getFullStatementTransactions(db, statementId) {
+  return getOrPrepare(db, SQL_FULL_TRANSACTIONS_FOR_STATEMENT)
+    .all({ statement_id: statementId });
+}
+
+/**
+ * Cache an analysis document on its statement row (stamps analyzed_at).
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {number} statementId
+ * @param {object|string} analysis - document (stringified here if needed).
+ * @returns {boolean} true if the row existed.
+ */
+function updateStatementAnalysis(db, statementId, analysis) {
+  const json = typeof analysis === 'string' ? analysis : JSON.stringify(analysis);
+  return getOrPrepare(db, SQL_UPDATE_ANALYSIS)
+    .run({ id: statementId, analysis_json: json }).changes > 0;
+}
+
+/**
+ * The cached analysis for one statement (analysis_json still JSON text).
+ *
+ * @param {import('better-sqlite3-multiple-ciphers').Database} db
+ * @param {number} statementId
+ * @returns {{ id: number, analysis_json: string|null, analyzed_at: string|null }|undefined}
+ */
+function getStatementAnalysis(db, statementId) {
+  return getOrPrepare(db, SQL_GET_ANALYSIS).get(statementId);
+}
+
+/**
  * Write extracted counterparty fields back onto existing rows, atomically.
  *
  * @param {import('better-sqlite3-multiple-ciphers').Database} db
@@ -357,6 +421,9 @@ module.exports = {
   getStatementTransactions,
   getStatementNarrations,
   updateTransactionCounterparties,
+  getFullStatementTransactions,
+  updateStatementAnalysis,
+  getStatementAnalysis,
   insertTemplate,
   listTemplates,
   getTemplateById,

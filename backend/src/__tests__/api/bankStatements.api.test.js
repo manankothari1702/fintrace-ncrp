@@ -565,3 +565,70 @@ describe('counterparty extraction at ingest + re-extraction', () => {
     expect((await sho.post(`/api/bank-statement/statements/${statementId}/reextract`)).status).toBe(403);
   });
 });
+
+// ─── Milestone 4: single-statement analysis (cached) ─────────────────
+
+describe('GET /statements/:id/analysis — computed once, served cached', () => {
+  let statementId;
+
+  beforeAll(async () => {
+    const res = await admin.post('/api/bank-statement/upload').attach('statementFile', PNB_XLS);
+    statementId = res.body.statementId;
+  });
+
+  test('analysis is cached at ingest and reconciles with ingestion totals', async () => {
+    // Cache exists on the row before any analysis GET.
+    const cachedRow = db.prepare(
+      'SELECT analysis_json, analyzed_at FROM bank_statements WHERE id = ?',
+    ).get(statementId);
+    expect(cachedRow.analysis_json).toBeTruthy();
+    expect(cachedRow.analyzed_at).toBeTruthy();
+
+    const res = await admin.get(`/api/bank-statement/statements/${statementId}/analysis`);
+    expect(res.status).toBe(200);
+    expect(res.body.statementId).toBe(statementId);
+    expect(res.body.analysis.summary).toMatchObject({
+      total_credit: 43852,   // = ingestion credit total (the anchor)
+      total_debit: 50196,    // = ingestion debit total
+      net_flow: -6344,
+      credit_count: 11,
+      debit_count: 85,
+      txn_count: 96,
+      opening_balance: 8618.95,
+      closing_balance: 2274.95,
+    });
+    expect(res.body.analysis.counterparties).toHaveLength(70);
+    expect(res.body.analysis.flags.map((f) => f.id).sort()).toEqual(
+      ['pass_through_days', 'rapid_transaction_days', 'repeat_counterparties'],
+    );
+  });
+
+  test('statements without a cache (pre-m4 data) compute lazily on first read', async () => {
+    db.prepare('UPDATE bank_statements SET analysis_json = NULL, analyzed_at = NULL WHERE id = ?')
+      .run(statementId);
+    const res = await admin.get(`/api/bank-statement/statements/${statementId}/analysis`);
+    expect(res.status).toBe(200);
+    expect(res.body.analysis.summary.txn_count).toBe(96);
+    // …and the cache is filled for the next read.
+    const row = db.prepare('SELECT analysis_json FROM bank_statements WHERE id = ?').get(statementId);
+    expect(JSON.parse(row.analysis_json).summary.total_debit).toBe(50196);
+  });
+
+  test('reextract refreshes the cached analysis', async () => {
+    const before = db.prepare('SELECT analyzed_at FROM bank_statements WHERE id = ?').get(statementId);
+    // Make the timestamps distinguishable (CURRENT_TIMESTAMP is second-granular).
+    db.prepare("UPDATE bank_statements SET analyzed_at = '2000-01-01 00:00:00' WHERE id = ?").run(statementId);
+    await admin.post(`/api/bank-statement/statements/${statementId}/reextract`);
+    const after = db.prepare('SELECT analyzed_at, analysis_json FROM bank_statements WHERE id = ?').get(statementId);
+    expect(after.analyzed_at).not.toBe('2000-01-01 00:00:00');
+    expect(JSON.parse(after.analysis_json).counterparties).toHaveLength(70);
+    expect(before).toBeTruthy();
+  });
+
+  test('validates id, 404s unknown, and readers (sho) may view', async () => {
+    expect((await admin.get('/api/bank-statement/statements/abc/analysis')).status).toBe(400);
+    expect((await admin.get('/api/bank-statement/statements/99999/analysis')).status).toBe(404);
+    const sho = authed(app, await loginAs(app, ROLES.SHO));
+    expect((await sho.get(`/api/bank-statement/statements/${statementId}/analysis`)).status).toBe(200);
+  });
+});
