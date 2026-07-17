@@ -325,6 +325,102 @@
   background: var(--surface-2, rgba(127, 127, 127, 0.06));
 }
 
+/* ─── Analysis: summary cards, flag chips, counterparty page ─────────── */
+
+.bs-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.bs-flags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.bs-flag-chip {
+  cursor: help;
+}
+
+.bs-cp-caveat {
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  border-left: 3px solid var(--warning, #b98700);
+}
+
+.bs-top-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.bs-top-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+
+.bs-top-list {
+  margin: 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+.bs-top-list li {
+  display: list-item;
+}
+
+.bs-top-name {
+  margin-right: 8px;
+}
+
+.bs-top-metric {
+  float: right;
+  color: var(--text-muted);
+}
+
+.bs-cp-alt {
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: help;
+}
+
+.bs-cp-drill {
+  padding: 10px 12px 14px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.05));
+}
+
+.bs-cp-drill-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.bs-cp-drill-table th,
+.bs-cp-drill-table td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.bs-cp-drill-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 /* ─── Coming-soon placeholder pages ──────────────────────────────────── */
 
 .bs-coming-soon {

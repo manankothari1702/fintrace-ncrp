@@ -15,12 +15,14 @@ vi.mock('../modules/bankStatement/utils/api.js', async (importOriginal) => {
     uploadStatement: vi.fn(),
     getStatementTransactions: vi.fn(),
     applyMapping: vi.fn(),
+    getStatementAnalysis: vi.fn(),
   };
 });
 
 import BankStatementApp from '../modules/bankStatement/BankStatementApp.jsx';
 import {
   listStatements, uploadStatement, getStatementTransactions, applyMapping,
+  getStatementAnalysis,
 } from '../modules/bankStatement/utils/api.js';
 
 const RECOGNIZED_RESPONSE = {
@@ -92,9 +94,63 @@ function uploadFileTo(container, name) {
   return file;
 }
 
+/** Single-statement analysis document matching TXN_PAGE's rows. */
+const ANALYSIS_DOC = {
+  engine_version: 1,
+  summary: {
+    total_credit: 43852, total_debit: 50196, net_flow: -6344,
+    credit_count: 11, debit_count: 85, txn_count: 96,
+    period_from: '2026-06-02T00:00:00.000Z', period_to: '2026-07-02T00:00:00.000Z',
+    opening_balance: 8618.95, closing_balance: 2274.95,
+    ledger_order: 'newest-first', low_confidence_count: 1, non_counterparty_count: 1,
+  },
+  counterparties: [
+    {
+      key: 'vpa:9631574663-2@yb', id_kind: 'vpa', confidence: 'high',
+      display_name: 'MRS LALE', names: ['MRS LALE'],
+      vpa: '9631574663-2@yb', ifsc: null, bank_code: 'IDIB', phone: null,
+      sent_total: 0, received_total: 500, net: 500, volume: 500,
+      sent_count: 0, received_count: 1, txn_count: 1,
+      first_seen: '2026-07-02T00:00:00.000Z', last_seen: '2026-07-02T00:00:00.000Z',
+      txn_ids: [1],
+    },
+    {
+      key: 'low|vpa:8004806574@axl', id_kind: 'vpa', confidence: 'low',
+      display_name: 'RAM BAHA', names: ['RAM BAHA'],
+      vpa: '8004806574@axl', ifsc: null, bank_code: null, phone: null,
+      sent_total: 300, received_total: 0, net: -300, volume: 300,
+      sent_count: 1, received_count: 0, txn_count: 1,
+      first_seen: '2026-07-01T00:00:00.000Z', last_seen: '2026-07-01T00:00:00.000Z',
+      txn_ids: [2],
+    },
+  ],
+  unattributed_count: 0,
+  top_by_amount: ['vpa:9631574663-2@yb', 'low|vpa:8004806574@axl'],
+  top_by_frequency: ['vpa:9631574663-2@yb', 'low|vpa:8004806574@axl'],
+  low_confidence_counterparty_count: 1,
+  flags: [
+    {
+      id: 'pass_through_days',
+      severity: 'signal',
+      value: { days: [{ day: '2026-06-14', credited: 16000, debited: 17860, out_ratio: 1.12 }] },
+      why: '1 day(s) where at least 80% of ≥₹5000 credited left the account the SAME day.',
+    },
+    {
+      id: 'low_confidence_distribution',
+      severity: 'info',
+      value: { low_confidence_groups: 1, unattributed: 0 },
+      why: 'Verify low-confidence counterparties against the raw narration.',
+    },
+  ],
+  thresholds: {},
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   listStatements.mockResolvedValue([]);
+  // Header analysis is optional garnish — reject by default so existing
+  // upload/ledger tests exercise the "ledger works without analysis" path.
+  getStatementAnalysis.mockRejectedValue(new Error('no analysis'));
 });
 
 describe('Upload page — real ingestion flow', () => {
@@ -332,5 +388,88 @@ describe('Transactions page — parsed ledger', () => {
 
     await screen.findByText(/upload a bank statement first/i);
     expect(getStatementTransactions).not.toHaveBeenCalled();
+  });
+
+  test('summary header: in/out stat cards + behavioral flag chips with why-tooltips', async () => {
+    listStatements.mockResolvedValue([STATEMENT_ROW]);
+    getStatementTransactions.mockResolvedValue(TXN_PAGE);
+    getStatementAnalysis.mockResolvedValue({ statementId: 7, analyzed_at: 'x', analysis: ANALYSIS_DOC });
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Transactions/ }));
+
+    // Aggregation headline (reconciles with ingestion totals).
+    await screen.findByText('Total In');
+    expect(screen.getByText('₹43,852.00')).toBeInTheDocument();
+    expect(screen.getByText('₹50,196.00')).toBeInTheDocument();
+    expect(screen.getByText('-₹6,344.00')).toBeInTheDocument();
+    expect(screen.getByText(/opened at ₹8,618.95/)).toBeInTheDocument();
+
+    // Flags render as chips whose tooltip carries the plain-language why.
+    const flagsRow = screen.getByRole('list', { name: 'Behavioral flags' });
+    expect(within(flagsRow).getByText('Pass-through')).toBeInTheDocument();
+    expect(within(flagsRow).getByText('Verify low-confidence')).toBeInTheDocument();
+    expect(screen.getByTitle(/left the account the SAME day/)).toBeInTheDocument();
+  });
+
+  test('the ledger stays fully usable when the analysis fetch fails', async () => {
+    listStatements.mockResolvedValue([STATEMENT_ROW]);
+    getStatementTransactions.mockResolvedValue(TXN_PAGE);
+    // default getStatementAnalysis mock rejects
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Transactions/ }));
+
+    await screen.findByText('UPI/CR/168797098045/Mrs Lale/IDIB/9631574663-2@yb/');
+    expect(screen.queryByText('Total In')).not.toBeInTheDocument();
+  });
+});
+
+describe('Counterparty page — distribution, top-N, honesty caveat, drill-down', () => {
+  beforeEach(() => {
+    listStatements.mockResolvedValue([STATEMENT_ROW]);
+    getStatementTransactions.mockResolvedValue(TXN_PAGE);
+    getStatementAnalysis.mockResolvedValue({ statementId: 7, analyzed_at: 'x', analysis: ANALYSIS_DOC });
+  });
+
+  test('renders the distribution with confidence markers and the caveat banner', async () => {
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Counterparty/ }));
+
+    // Appears in BOTH top-5 cards and the distribution table.
+    expect(await screen.findAllByText('MRS LALE')).toHaveLength(3);
+    // Caveat surfaces the low-confidence honesty note.
+    expect(screen.getByText(/includes 1 low-confidence counterparty group/)).toBeInTheDocument();
+    // Distribution table: identifiers, kind chips, amounts.
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('9631574663-2@yb')).toBeInTheDocument();
+    expect(table.getAllByText('VPA').length).toBeGreaterThan(0);
+    expect(table.getAllByText('₹500.00').length).toBeGreaterThan(0); // received + net cells
+    // The low-confidence group wears the ≈ marker inside the table too.
+    expect(table.getAllByLabelText(/verify against narration/i).length).toBeGreaterThan(0);
+    // Top-5 cards present both rankings.
+    expect(screen.getByText('Top by amount')).toBeInTheDocument();
+    expect(screen.getByText('Top by frequency')).toBeInTheDocument();
+    // Distinct-counterparty count appears in the header.
+    expect(screen.getByText(/2 distinct counterparties/)).toBeInTheDocument();
+  });
+
+  test('expanding a counterparty row reveals its transactions with the RAW narration', async () => {
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Counterparty/ }));
+
+    const cells = await screen.findAllByText('MRS LALE');
+    const nameCell = cells.find((el) => el.closest('tr')); // the table instance
+    fireEvent.click(nameCell.closest('tr'));
+
+    await screen.findByText('UPI/CR/168797098045/Mrs Lale/IDIB/9631574663-2@yb/');
+    expect(screen.getByText('Narration (raw)')).toBeInTheDocument();
+  });
+
+  test('shows the upload-first empty state when no statements exist', async () => {
+    listStatements.mockResolvedValue([]);
+    render(<BankStatementApp />);
+    fireEvent.click(screen.getByRole('link', { name: /Counterparty/ }));
+
+    await screen.findByText(/upload a bank statement first/i);
+    expect(getStatementAnalysis).not.toHaveBeenCalled();
   });
 });

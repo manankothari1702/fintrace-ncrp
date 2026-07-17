@@ -90,3 +90,14 @@ export const applyMapping = (payload) =>
 /** Saved bank templates (mapping + detection signature), newest first. */
 export const listTemplates = () =>
   api.get('/bank-statement/templates').then((r) => r.data.data);
+
+/**
+ * Cached single-statement analysis (summary, counterparty distribution,
+ * top-N, behavioral flags). Computed at ingest; pre-analysis statements get
+ * theirs on first read.
+ *
+ * @param {number} statementId
+ * @returns {Promise<{ statementId: number, analyzed_at: string|null, analysis: object }>}
+ */
+export const getStatementAnalysis = (statementId) =>
+  api.get(`/bank-statement/statements/${statementId}/analysis`).then((r) => r.data);

@@ -18,10 +18,22 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 
+import Badge from '../../../components/Badge.jsx';
 import DataTable from '../../../components/DataTable.jsx';
+import StatCard from '../../../components/StatCard.jsx';
 import { formatINR } from '../../../utils/format.js';
 import ComingSoon from '../components/ComingSoon.jsx';
-import { listStatements, getStatementTransactions } from '../utils/api.js';
+import { listStatements, getStatementTransactions, getStatementAnalysis } from '../utils/api.js';
+
+/** Short officer-facing labels for the analyzer's behavioral flags. */
+const FLAG_LABELS = {
+  round_figure_txns: 'Round figures',
+  rapid_transaction_days: 'Rapid txn days',
+  pass_through_days: 'Pass-through',
+  repeat_counterparties: 'Repeat counterparties',
+  high_value_counterparties: 'High-value counterparty',
+  low_confidence_distribution: 'Verify low-confidence',
+};
 
 /** Rows fetched per server page (backend cap). */
 const SERVER_PAGE_SIZE = 500;
@@ -157,6 +169,7 @@ export default function Transactions() {
   const [serverPage, setServerPage] = useState(1);
   const [result, setResult] = useState(null);
   const [txnsLoading, setTxnsLoading] = useState(false);
+  const [analysis, setAnalysis] = useState(null); // cached single-statement analysis
 
   // Load the statement list once; default to the newest statement.
   useEffect(() => {
@@ -184,6 +197,18 @@ export default function Transactions() {
       .finally(() => { if (!cancelled) setTxnsLoading(false); });
     return () => { cancelled = true; };
   }, [selectedId, serverPage]);
+
+  // The cached analysis drives the summary cards + behavioral flag chips.
+  // Failure here never blocks the ledger — the header simply stays plain.
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    let cancelled = false;
+    setAnalysis(null);
+    getStatementAnalysis(selectedId)
+      .then((res) => { if (!cancelled) setAnalysis(res.analysis); })
+      .catch(() => { /* ledger stays usable without the summary */ });
+    return () => { cancelled = true; };
+  }, [selectedId]);
 
   const selected = useMemo(
     () => (statements || []).find((s) => s.id === selectedId) || null,
@@ -251,6 +276,57 @@ export default function Transactions() {
             : 'Parsed ledger of the selected statement.'}
         </p>
       </header>
+
+      {/* Headline in/out aggregation from the cached single-statement analysis. */}
+      {analysis && (
+        <>
+          <div className="bs-summary-grid">
+            <StatCard
+              title="Total In"
+              value={formatINR(analysis.summary.total_credit, { paise: true })}
+              subtitle={`${analysis.summary.credit_count} credits`}
+              icon="↓"
+              color="var(--success, #1a7f37)"
+            />
+            <StatCard
+              title="Total Out"
+              value={formatINR(analysis.summary.total_debit, { paise: true })}
+              subtitle={`${analysis.summary.debit_count} debits`}
+              icon="↑"
+              color="var(--danger, #c0392b)"
+            />
+            <StatCard
+              title="Net Flow"
+              value={formatINR(analysis.summary.net_flow, { paise: true })}
+              subtitle="credits − debits"
+              color={analysis.summary.net_flow >= 0 ? 'var(--success, #1a7f37)' : 'var(--warning, #b98700)'}
+            />
+            <StatCard
+              title="Balance"
+              value={analysis.summary.closing_balance === null
+                ? '—'
+                : formatINR(analysis.summary.closing_balance, { paise: true })}
+              subtitle={analysis.summary.opening_balance === null
+                ? 'opening unknown'
+                : `opened at ${formatINR(analysis.summary.opening_balance, { paise: true })}`}
+              info="Closing balance from the ledger's running balance; opening derived from the oldest row."
+            />
+          </div>
+
+          {analysis.flags.length > 0 && (
+            <div className="bs-flags-row" role="list" aria-label="Behavioral flags">
+              <span className="subtitle" style={{ margin: 0 }}>Behavioral flags:</span>
+              {analysis.flags.map((f) => (
+                <span key={f.id} role="listitem" title={f.why} className="bs-flag-chip">
+                  <Badge color={f.severity === 'info' ? 'var(--text-muted)' : 'var(--warning, #b98700)'}>
+                    {FLAG_LABELS[f.id] || f.id}
+                  </Badge>
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       <DataTable
         columns={COLUMNS}
